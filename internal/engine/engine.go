@@ -58,6 +58,13 @@ type Engine struct {
 	filters  sync.Map
 	onPanic  PanicHandler
 
+	// docPool переиспользует разобранные документы между запросами. Разбор
+	// строит копию текста в нижнем регистре, срез токенов и индекс рун, и на
+	// коротких текстах это самая дорогая по памяти часть запроса. Документ
+	// живёт только внутри одного запроса и после ответа нигде не сохраняется,
+	// поэтому пул безопасен по сроку жизни.
+	docPool sync.Pool
+
 	// chunkHook — точка вмешательства перед разбором куска. В рабочем режиме
 	// она пустая и стоит ровно ноль: поле нужно тесту, которому иначе нечем
 	// уронить панику именно внутри рабочей горутины, не подкладывая в рабочий
@@ -71,7 +78,24 @@ type Engine struct {
 type PanicHandler func(chunk int, recovered any)
 
 // New создаёт конвейер поверх набора детекторов.
-func New(reg *pii.Registry) *Engine { return &Engine{registry: reg} }
+func New(reg *pii.Registry) *Engine {
+	e := &Engine{registry: reg}
+	e.docPool.New = func() any { return &pii.Doc{} }
+	return e
+}
+
+// getDoc берёт документ из пула и разбирает в него текст.
+func (e *Engine) getDoc(text string) *pii.Doc {
+	d := e.docPool.Get().(*pii.Doc)
+	d.Parse(text)
+	return d
+}
+
+// putDoc возвращает документ в пул после того, как запрос закончил с ним
+// работу. Документ нигде не сохраняется, поэтому возврат безопасен.
+func (e *Engine) putDoc(d *pii.Doc) {
+	e.docPool.Put(d)
+}
 
 // OnPanic задаёт обработчик сбоя обработки куска. Задаётся один раз при сборке
 // сервиса, до первого запроса, как и такой же обработчик у набора детекторов.
@@ -125,8 +149,10 @@ func (e *Engine) Mask(text string, sys config.System, defs config.Defaults) Resu
 	// Разбор текста делается один раз и переиспользуется всеми этапами:
 	// и детекторами, и контекстными правилами. Разбор строит копию текста в
 	// нижнем регистре, срез токенов и индекс рун, и на коротких текстах это
-	// самая дорогая по памяти часть запроса.
-	doc := pii.NewDoc(text)
+	// самая дорогая по памяти часть запроса. Документ берётся из пула, чтобы
+	// срезы токенов и индекса рун переживали запрос и не выделялись заново.
+	doc := e.getDoc(text)
+	defer e.putDoc(doc)
 	spans := e.detectDoc(doc)
 	spans = filterByTypes(spans, sys)
 	spans = filterDatesByMode(spans, sys.DateMode(defs))
