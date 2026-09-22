@@ -3,7 +3,12 @@
 /bin/
 /dist/
 *.out
-coverage.*
+# Отчёты о покрытии. Узор нарочно узкий: прежний coverage.* проглатывал
+# исходник internal/api/coverage.go, файл молча не попадал в git, ветка
+# не собиралась, а ворота этого не видели, потому что на диске он был.
+/coverage.out
+/coverage.html
+/coverage.txt
 corpus/
 deploy/terraform/.terraform/
 deploy/terraform/*.tfstate
