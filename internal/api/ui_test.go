@@ -86,6 +86,10 @@ func TestUIPageElements(t *testing.T) {
 		`id="skipped"`,
 		`/v1/inspect`,
 		`/process`,
+		`id="panel-coverage"`,
+		`id="coverage-body"`,
+		`/v1/coverage`,
+		`setInterval(refreshCoverage, 5000)`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(body, needle) {
