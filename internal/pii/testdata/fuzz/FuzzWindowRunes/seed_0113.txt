@@ -1,0 +1,6 @@
+go test fuzz v1
+string("PIN is required for contactless payments above the limit.")
+int(0)
+int(0)
+int(0)
+int(0)

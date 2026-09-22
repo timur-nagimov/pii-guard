@@ -1,0 +1,4 @@
+go test fuzz v1
+string("Client Vera Smirnov, passport 2976 813797, email вера.смирнов@почта.рф.")
+int(0)
+int(0)

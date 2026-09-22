@@ -1,0 +1,2 @@
+go test fuzz v1
+string("Электронная почта: a_romanov@outlook.com — данные взяты из анкеты.")

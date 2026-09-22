@@ -1,0 +1,4 @@
+go test fuzz v1
+string("имя на карте: nina grigorev, проверьте данные.\nИМЯ НА КАРТЕ: NINA GRIGOREV, ПРОВЕРЬТЕ ДАННЫЕ.\nИмя нА Карте: niNA gRigOREv, провЕРьТе ДанНые.")
+int(0)
+int(0)

@@ -1,0 +1,4 @@
+go test fuzz v1
+string("Почта для связи — galina.tarasov+bank@list.ru.")
+int(0)
+int(0)

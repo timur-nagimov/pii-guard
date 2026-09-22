@@ -1,0 +1,2 @@
+go test fuzz v1
+string("Отправьте документы на valeriy.sorokin@list.ru.")
