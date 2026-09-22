@@ -10,16 +10,16 @@ var (
 	anchorsINN      = []string{"инн", "налогоплательщик", "идентификационный номер"}
 	anchorsCard     = []string{"карт", "card", "pan", "visa", "mastercard", "мир", "maestro", "счёт карты", "номер карты"}
 	anchorsPhone    = []string{"тел", "телефон", "моб", "сот", "звонить", "whatsapp", "вайбер", "номер телефона", "связь", "phone"}
-	anchorsPostcode = []string{"индекс", "почтовый индекс", "zip", "postcode"}
+	anchorsPostcode = []string{"индекс", "почтовый индекс", "почтовый код", "индекс получателя", "индекс адреса", "индекс отправления", "индекс по прописке", "zip", "postcode"}
 	anchorsSNILS    = []string{"снилс", "страховой номер", "лицевого счета", "лицевого счёта"}
 	anchorsDriver   = []string{"водительск", "в/у", "ву ", "права", "driver"}
-	anchorsCVV      = []string{"cvv", "cvc", "cvv2", "cvc2", "код безопасности", "защитный код", "три цифры", "с обратной стороны", "с оборота"}
+	anchorsCVV      = []string{"cvv", "cvc", "cvv2", "cvc2", "код безопасности", "защитный код", "три цифры", "с обратной стороны", "с оборота", "оборотн"}
 	anchorsPIN      = []string{"пин", "pin", "пин-код", "пинкод", "pin-code"}
 
 	// anchorsDept — код подразделения пишут и полным словом, и сокращением.
 	// Основа «подразделени» закрывает все падежи, «к/п» и «кп» — сокращения
 	// из анкет и строк таблиц.
-	anchorsDept = []string{"код подразделения", "код подр", "подразделени", "подразделение", "к/п", "к\\п", "кп:", "код п/п"}
+	anchorsDept = []string{"код подразделения", "код подр", "подразделени", "подразделение", "к/п", "к\\п", "кп:", "код п/п", "код органа выдачи", "номер подразделения выдачи"}
 
 	// anchorsAddressLead — адресные слова, после которых шесть цифр почти
 	// всегда почтовый индекс, даже если слово «индекс» не написано:
@@ -34,7 +34,7 @@ var (
 	// anchorsPassportStrict — якоря, которые говорят о паспорте однозначно.
 	// Слова «номер» и «№» сюда не входят: они стоят рядом с любым служебным
 	// номером организации.
-	anchorsPassportStrict = []string{"паспорт", "пасп.", "пасп ", "серия", "серии"}
+	anchorsPassportStrict = []string{"паспорт", "пасп.", "пасп ", "серия", "серии", "основной документ", "данные документа", "документ: паспорт"}
 
 	// anchorsStrongPersonal — сильные персональные якоря. Если такое слово
 	// стоит между служебным признаком и числом, признак к числу не относится:
@@ -329,10 +329,22 @@ func (c numContext) anchorNear(anchors []string) bool {
 	return ok
 }
 
+// anchorAfter ищет якорь сразу после значения. Нужно для записи «746 —
+// защитный код», где якорь стоит после числа.
+func (c numContext) anchorAfter(anchors []string) bool {
+	_, ok := c.d.FindAnchor(c.run.End, c.run.End, anchors, 0, nearAnchorWindow)
+	return ok
+}
+
 // anchorFuzzy ищет якорное слово с одной опечаткой в окне перед значением.
 func (c numContext) anchorFuzzy(anchors []string) bool {
 	return hasFuzzyWord(c.d.LowerWindow(c.run.Start, c.run.End, anchorWindow, anchorWindow/2), anchors)
 }
+
+// hasDigits сообщает, что в кандидате ровно n цифр. Нужно для зашумлённых
+// значений: лишний пробел внутри номера меняет длины групп, но не общее число
+// цифр, и при явном якоре этого достаточно, чтобы опознать тип.
+func (c numContext) hasDigits(n int) bool { return len(c.digits) == n }
 
 // hasWordAround сообщает, что рядом с числом есть хотя бы одно слово.
 // Число, вокруг которого нет ни одной буквы, не несёт никаких признаков
@@ -440,11 +452,19 @@ func matchCard(c numContext) (numMatch, bool) {
 
 // matchSNILS: одиннадцать цифр, обычно в записи три-три-три-два.
 func matchSNILS(c numContext) (numMatch, bool) {
-	if len(c.digits) != 11 || (c.pattern != patternSNILS && c.pattern != "11") {
+	if len(c.digits) != 11 {
+		// Опечатка в самом номере: цифра потерялась или задвоилась. Форма уже
+		// не сходится, поэтому якорь обязателен.
+		if (len(c.digits) == 10 || len(c.digits) == 12) && c.anchorAt(anchorsSNILS) {
+			return numMatch{TypeSNILS, ConfAnchored, "snils:anchor_typo_digits"}, true
+		}
 		return numMatch{}, false
 	}
 	if c.anchorAt(anchorsSNILS) {
 		return numMatch{TypeSNILS, ConfHigh, "snils:anchor"}, true
+	}
+	if c.pattern != patternSNILS && c.pattern != "11" {
+		return numMatch{}, false
 	}
 	if SNILSValid(c.digits) && c.pattern == patternSNILS {
 		return numMatch{TypeSNILS, ConfAnchored, "snils:checksum"}, true
@@ -455,6 +475,11 @@ func matchSNILS(c numContext) (numMatch, bool) {
 // matchINN: десять цифр у организации, двенадцать у человека.
 func matchINN(c numContext) (numMatch, bool) {
 	if len(c.digits) != 10 && len(c.digits) != 12 {
+		// Опечатка в самом номере: цифра потерялась или задвоилась. Форма уже
+		// не сходится, поэтому якорь обязателен.
+		if (len(c.digits) == 11 || len(c.digits) == 13) && c.anchorAt(anchorsINN) {
+			return numMatch{TypeINN, ConfAnchored, "inn:anchor_typo_digits"}, true
+		}
 		return numMatch{}, false
 	}
 	if c.anchorAt(anchorsINN) {
@@ -528,7 +553,7 @@ func matchDriver(c numContext) (numMatch, bool) {
 // неотличимы от почтового индекса, и якорь из другой части строки таблицы
 // пометил бы индекс кодом подразделения.
 func matchDept(c numContext) (numMatch, bool) {
-	if !isDeptShape(c.pattern) {
+	if !isDeptShape(c.pattern) && !c.hasDigits(6) && !c.hasDigits(5) {
 		return numMatch{}, false
 	}
 	if c.anchorNear(anchorsDept) {
@@ -545,10 +570,10 @@ func matchDept(c numContext) (numMatch, bool) {
 
 // matchPostcode: шесть цифр в почтовом или адресном окружении.
 func matchPostcode(c numContext) (numMatch, bool) {
-	if c.pattern != "6" {
+	if !c.hasDigits(6) {
 		return numMatch{}, false
 	}
-	if c.anchorNear(anchorsPostcode) {
+	if c.anchorNear(anchorsPostcode) || c.anchorAfter(anchorsPostcode) {
 		return numMatch{TypePostcode, ConfHigh, "postcode:anchor"}, true
 	}
 	if c.anchorNear(anchorsAddressLead) {
@@ -557,20 +582,34 @@ func matchPostcode(c numContext) (numMatch, bool) {
 	if inAddressTail(c) {
 		return numMatch{TypePostcode, ConfAnchored, "postcode:address_tail"}, true
 	}
+	// Опечатка в якоре: «инедкс» вместо «индекс». Короткие якоря допускают
+	// одну опечатку только рядом со значением.
+	if hasFuzzyWordMin(c.d.LowerWindow(c.run.Start, c.run.Start, nearAnchorWindow, 0), anchorsPostcode, 6) {
+		return numMatch{TypePostcode, ConfAnchored, "postcode:anchor_typo"}, true
+	}
 	return numMatch{}, false
 }
 
 // matchSecretCode: код безопасности и пин-код маскируются только по явному
 // якорю — три или четыре цифры сами по себе встречаются в любом тексте.
 func matchSecretCode(c numContext) (numMatch, bool) {
-	if len(c.digits) < 3 || len(c.digits) > 4 || len(c.run.Groups) != 1 {
+	if len(c.digits) < 3 || len(c.digits) > 5 {
 		return numMatch{}, false
 	}
-	if c.anchorNear(anchorsCVV) {
+	if c.anchorNear(anchorsCVV) || c.anchorAfter(anchorsCVV) {
 		return numMatch{TypeCVV, ConfHigh, "cvv:anchor"}, true
 	}
-	if c.anchorNear(anchorsPIN) {
+	if c.anchorNear(anchorsPIN) || c.anchorAfter(anchorsPIN) {
 		return numMatch{TypePIN, ConfHigh, "pin:anchor"}, true
+	}
+	// Опечатка в якоре: «пни» вместо «пин», «оборотнои» вместо «оборота».
+	// Короткие якоря допускают одну опечатку только рядом со значением.
+	win := c.d.LowerWindow(c.run.Start, c.run.Start, nearAnchorWindow, 0)
+	if hasFuzzyWordMin(win, anchorsCVV, 5) {
+		return numMatch{TypeCVV, ConfAnchored, "cvv:anchor_typo"}, true
+	}
+	if hasFuzzyWordMin(win, anchorsPIN, 3) {
+		return numMatch{TypePIN, ConfAnchored, "pin:anchor_typo"}, true
 	}
 	return numMatch{}, false
 }
@@ -682,15 +721,44 @@ func onlyConnectors(gap string) bool {
 // hasFuzzyWord ищет в окне слово, отличающееся от якоря не более чем на одну
 // букву. Проверяются только якоря длиной от fuzzyMinRunes: у коротких слов
 // одна замена буквы даёт другое слово, и якорь начинает ловить лишнее.
+//
+// Окно и якоря сворачиваются по омоглифам: латинская «о» и кириллическая «о»
+// считаются одной буквой, поэтому «пасп0рт» с латинской буквой совпадает с
+// якорем «паспорт». Пробелы внутри слова не мешают: «поч товый» совпадает с
+// якорем «почтовый».
 func hasFuzzyWord(window string, anchors []string) bool {
-	for _, word := range letterWords(window) {
+	return hasFuzzyWordMin(window, anchors, fuzzyMinRunes)
+}
+
+// hasFuzzyWordMin — как hasFuzzyWord, но с настраиваемой минимальной длиной
+// якоря. Короткие якоря вроде «индекс» (шесть букв) допускают одну опечатку
+// только рядом со значением, поэтому порог для них ниже.
+func hasFuzzyWordMin(window string, anchors []string, minRunes int) bool {
+	norm := FoldHomoglyphs(window)
+	for _, word := range letterWords(norm) {
 		for _, a := range anchors {
-			if len([]rune(a)) < fuzzyMinRunes {
+			if len([]rune(a)) < minRunes {
 				continue
 			}
-			if nearlyEqual(word, a) {
+			if nearlyEqual(word, FoldHomoglyphs(a)) {
 				return true
 			}
+		}
+	}
+	// Пробел, вставленный внутрь якоря, разрывает слово: «поч товый» вместо
+	// «почтовый». Проверяем окно без пробелов целиком.
+	compact := strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\t' || r == '\u00a0' {
+			return -1
+		}
+		return r
+	}, norm)
+	for _, a := range anchors {
+		if len([]rune(a)) < minRunes {
+			continue
+		}
+		if strings.Contains(compact, FoldHomoglyphs(a)) {
+			return true
 		}
 	}
 	return false
@@ -720,7 +788,8 @@ func letterWords(window string) []string {
 }
 
 // nearlyEqual сообщает, что строки совпадают или различаются одной вставкой,
-// удалением либо заменой руны.
+// удалением, заменой либо перестановкой соседних рун. Перестановка — частая
+// опечатка: «инедкс» вместо «индекс».
 func nearlyEqual(a, b string) bool {
 	ra, rb := []rune(a), []rune(b)
 	if len(ra) > len(rb) {
@@ -734,6 +803,15 @@ func nearlyEqual(a, b string) bool {
 	for i < len(ra) && j < len(rb) {
 		if ra[i] == rb[j] {
 			i, j = i+1, j+1
+			continue
+		}
+		// Перестановка соседних рун: «ab» против «ba».
+		if same && i+1 < len(ra) && j+1 < len(rb) &&
+			ra[i] == rb[j+1] && ra[i+1] == rb[j] {
+			i, j, diff = i+2, j+2, diff+1
+			if diff > 1 {
+				return false
+			}
 			continue
 		}
 		diff++

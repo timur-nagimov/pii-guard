@@ -216,14 +216,19 @@ func (d *Doc) LowerWindow(start, end, before, after int) string {
 
 // FindAnchor ищет любое из якорных слов в окне вокруг диапазона и возвращает
 // найденное слово. Якоря задаются в нижнем регистре.
+//
+// Поиск идёт по свёрнутой строке, где латинские омоглифы заменены на
+// кириллические: «пасп0рт» с латинской «о» и «паспорт» с кириллической
+// считаются одним словом. Свёртка меняет длину строки в байтах, но для
+// проверки наличия якоря это не важно.
 func (d *Doc) FindAnchor(start, end int, anchors []string, before, after int) (string, bool) {
-	w := d.LowerWindow(start, end, before, after)
+	w := FoldHomoglyphs(d.LowerWindow(start, end, before, after))
 	best := ""
 	for _, a := range anchors {
 		if a == "" {
 			continue
 		}
-		if strings.Contains(w, a) && len(a) > len(best) {
+		if strings.Contains(w, FoldHomoglyphs(a)) && len(a) > len(best) {
 			best = a
 		}
 	}
