@@ -1,0 +1,78 @@
+# Доставка журнала в Loki. Читает journald и файл журнала аудита.
+#
+# Правило о метках. Меткой становится только поле из закрытого набора
+# значений: уровень, событие, система-потребитель. Идентификатор запроса,
+# идентификатор текста и любые числа метками не становятся: каждая новая
+# комбинация меток это отдельный поток в Loki, а миллион потоков кладёт
+# хранилище. Искать по ним всё равно можно, они остаются в теле записи.
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    # При недоступности Loki записи копятся в памяти ограниченное время, а
+    # не теряются сразу и не растут без предела.
+    backoff_config:
+      min_period: 500ms
+      max_period: 30s
+      max_retries: 10
+
+scrape_configs:
+  # Обычный журнал сервиса: пишется в стандартный вывод, попадает в journald.
+  - job_name: pii-guard-journal
+    journal:
+      path: /var/log/journal
+      max_age: 12h
+      json: false
+      labels:
+        job: pii-guard
+    relabel_configs:
+      - source_labels: ['__journal__systemd_unit']
+        target_label: unit
+      - source_labels: ['__journal__hostname']
+        target_label: instance
+      # Берём только нашу службу: остальное на машине нам не нужно.
+      - source_labels: ['__journal__systemd_unit']
+        regex: 'pii-guard\.service'
+        action: keep
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            event: event
+            system: system
+            stream: stream
+      - labels:
+          level:
+          event:
+          system:
+      # Записи аудита отделяются сразу: у них свой срок хранения и свои права.
+      - match:
+          selector: '{job="pii-guard"} |= "\"stream\":\"audit\""'
+          stages:
+            - static_labels:
+                stream: audit
+
+  # Журнал аудита, если он пишется в отдельный файл.
+  - job_name: pii-guard-audit
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: pii-guard-audit
+          stream: audit
+          __path__: /var/log/pii-guard/audit.log
+    pipeline_stages:
+      - json:
+          expressions:
+            op: op
+            system: system
+            result: result
+      - labels:
+          op:
+          system:
+          result:

@@ -1,0 +1,38 @@
+# Необязательный слой: единое окно над журналом в той же Grafana, где уже
+# лежит панель показателей.
+#
+# Запуск:
+#   docker compose -f docker-compose.yml -f deploy/logging/loki/docker-compose.logging.yml up -d loki promtail
+#
+# Цена решения: два контейнера, около 400 мегабайт памяти и место на диске под
+# хранение. Если единое окно не нужно, слой не поднимается, а журнал читается
+# через journalctl. Смотри разбор вариантов в docs/LOGGING.md.
+services:
+  loki:
+    image: grafana/loki:3.4.2
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ./deploy/logging/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+    mem_limit: 1g
+
+  promtail:
+    image: grafana/promtail:3.4.2
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/promtail.yml"]
+    volumes:
+      - ./deploy/logging/loki/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/log/journal:/var/log/journal:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /var/log/pii-guard:/var/log/pii-guard:ro
+      - promtail-positions:/var/lib/promtail
+    depends_on: [loki]
+    mem_limit: 256m
+
+volumes:
+  loki-data:
+  promtail-positions:

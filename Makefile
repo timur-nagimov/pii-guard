@@ -52,6 +52,29 @@ bench: ## полный нагрузочный прогон, как у прове
 verify: ## короткая проверка: контракт, маска, обратное преобразование
 	@bash scripts/verify.sh $(URL)
 
+.PHONY: logs
+logs: ## показать журнал сервиса
+	@if docker compose ps --status running app >/dev/null 2>&1 && \
+	    [ -n "$$(docker compose ps -q app 2>/dev/null)" ]; then \
+		docker compose logs -f app; \
+	elif systemctl is-active --quiet pii-guard 2>/dev/null; then \
+		journalctl -u pii-guard -f --no-pager; \
+	else \
+		echo "Сервис не найден ни в docker compose, ни в systemd."; \
+		echo "Если запущен через make run, журнал идёт в тот же терминал."; \
+		echo "Журнал пишется в стандартный вывод в формате JSON, читать удобно так:"; \
+		echo "  make run 2>&1 | python3 -m json.tool --json-lines"; \
+		exit 1; \
+	fi
+
+.PHONY: gate
+gate: ## ворота качества: четырнадцать проверок, один код возврата
+	@bash scripts/gate.sh
+
+.PHONY: gate-quick
+gate-quick: ## ворота без набора данных и без схем, для быстрой проверки
+	@bash scripts/gate.sh --quick
+
 .PHONY: jury-check
 jury-check: ## прогнать все проверочные сценарии для жюри
 	@bash scripts/jury.sh $(URL) all

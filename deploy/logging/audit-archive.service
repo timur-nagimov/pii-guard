@@ -1,0 +1,13 @@
+# Разовая задача архивации журнала аудита.
+# Кладётся в /etc/systemd/system/audit-archive.service.
+[Unit]
+Description=Архивация журнала аудита pii-guard
+After=pii-guard.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/pii-guard/deploy/logging/audit-archive.sh
+User=ubuntu
+# Задача фоновая и не должна мешать обслуживанию запросов.
+Nice=10
+IOSchedulingClass=idle

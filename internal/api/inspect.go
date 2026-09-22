@@ -2,9 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
+	"pii-guard/internal/logging"
 	"pii-guard/internal/mask"
 )
 
@@ -182,14 +184,20 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, http.StatusOK, out)
-	s.log.Info("разбор текста",
-		"event", "inspect",
-		"system", sys.Name,
-		"text_bytes", out.TextBytes,
-		"spans", len(out.Spans),
-		"skipped", len(out.Skipped),
-		"took_ms", out.TookMs,
-		"pii_types", out.Counts)
+	// Идентификатор запроса и имя системы в записи не повторяются: их
+	// подставляет обработчик журнала из контекста запроса.
+	s.log.LogAttrs(r.Context(), slog.LevelInfo, "разбор текста",
+		logging.Event(logging.EventInspect),
+		logging.Component("api"),
+		slog.Int(logging.FieldBytes, out.TextBytes),
+		slog.Int("spans", len(out.Spans)),
+		slog.Int("skipped", len(out.Skipped)),
+		logging.Took(took),
+		slog.Any("pii_types", out.Counts))
+	// Ручка разбора отдаёт значения персональных данных вызывающему, пусть и
+	// его собственные. Для службы контроля это такое же обращение к данным,
+	// как маскирование, поэтому оно идёт в аудит наравне с ним.
+	s.auditProcess(r, sys, "", "inspect", out.TextBytes, out.Counts, took, "ok")
 }
 
 // runeOffsets строит перевод байтового смещения в номер руны для каждой

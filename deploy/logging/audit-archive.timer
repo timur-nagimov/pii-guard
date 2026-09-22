@@ -1,0 +1,14 @@
+# Расписание архивации журнала аудита.
+# Кладётся в /etc/systemd/system/audit-archive.timer.
+[Unit]
+Description=Ежечасная архивация журнала аудита pii-guard
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+# Разброс нужен, чтобы копии сервиса не начали сжимать журнал одновременно.
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

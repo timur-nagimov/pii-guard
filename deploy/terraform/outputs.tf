@@ -1,13 +1,54 @@
 // Что выдаётся человеку после применения: адреса, панель, готовые команды.
 
 locals {
-  // Внешний адрес, на который шлют запросы. В режиме масштабирования это
-  // балансировщик, иначе машина сервиса.
-  balancer_ip = try(yandex_lb_network_load_balancer.app[0].listener[*].external_address_spec[0].address[0], "")
-  entry_ip    = local.balancer_ip != "" ? local.balancer_ip : var.app_static_ip
+  // Точка входа. Состояний не два, а четыре, и выбор должен покрывать все:
+  // одна машина сервиса, сетевой балансировщик, прикладной балансировщик и
+  // балансировщик группы, растущей по показателю сервиса. Раньше здесь
+  // учитывался только сетевой, и при balancer_layer = "application" все адреса
+  // молча показывали на одиночную машину, то есть мимо группы копий.
 
-  // Панель показателей: на отдельной машине наблюдения, если она поднята.
-  panel_ip = var.enable_monitor_vm ? try(yandex_compute_instance.monitor[0].network_interface.0.nat_ip_address, "") : var.app_static_ip
+  // Уровень соединений: адрес выдаёт сам балансировщик, через слушатель.
+  // Условие перед try стоит не для красоты: без него выключенная ветка даёт
+  // не пустую строку, а «известно после применения», и все адреса в выводе
+  // перестают быть видны до применения.
+  entry_ip_lb_network = local.lb_network ? try(yandex_lb_network_load_balancer.app[0].listener[*].external_address_spec[0].address[0], "") : ""
+
+  // Уровень запросов: адрес берётся не с балансировщика, а с зарезервированного
+  // адреса из balancer.tf, на который садится его слушатель. Это тот же
+  // источник, из которого собран вывод balancer_entry_url, поэтому два вывода
+  // не могут разойтись.
+  entry_ip_lb_app = local.lb_app ? try(yandex_vpc_address.balancer[0].external_ipv4_address[0].address, "") : ""
+
+  // Группа с ростом по показателю сервиса (autoscale.tf) заводит собственный
+  // балансировщик со своим адресом, выданным облаком.
+  entry_ip_lb_signal = var.enable_autoscale_signal && var.autoscale_create_balancer ? try(one([
+    for spec in yandex_lb_network_load_balancer.app_signal[0].listener :
+    one([for addr in spec.external_address_spec : addr.address])
+  ]), "") : ""
+
+  // Адрес включённого балансировщика, какого бы уровня он ни был. Пусто
+  // означает, что балансировщика нет вовсе.
+  balancer_ip = try(coalesce(
+    local.entry_ip_lb_network,
+    local.entry_ip_lb_app,
+    local.entry_ip_lb_signal,
+  ), "")
+
+  // Через что стенд принимает запросы. Строка нужна не для красоты: по ней
+  // видно, какое из четырёх состояний собрано на самом деле.
+  entry_kind = local.entry_ip_lb_network != "" ? "сетевой балансировщик" : (
+    local.entry_ip_lb_app != "" ? "прикладной балансировщик" : (
+      local.entry_ip_lb_signal != "" ? "балансировщик группы по показателю сервиса" : "машина сервиса"
+    )
+  )
+
+  entry_ip = local.balancer_ip != "" ? local.balancer_ip : var.app_static_ip
+
+  // Панель показателей: на отдельной машине наблюдения, если она поднята, иначе
+  // на машине сервиса и только когда наблюдение там действительно разворачивается.
+  panel_ip = var.enable_monitor_vm ? try(yandex_compute_instance.monitor[0].network_interface.0.nat_ip_address, "") : (
+    local.monitoring_on_app ? var.app_static_ip : ""
+  )
 }
 
 output "app_url_http" {
@@ -72,7 +113,7 @@ output "shared_store_endpoint" {
 
 output "balancer_url" {
   description = "Адрес балансировщика перед группой машин, если масштабирование включено"
-  value       = local.balancer_ip == "" ? "масштабирование выключено" : "http://${local.balancer_ip}/process"
+  value       = local.balancer_ip == "" ? "масштабирование выключено" : "http://${local.balancer_ip}/process, ${local.entry_kind}"
 }
 
 output "loadgen_command" {
@@ -101,6 +142,7 @@ output "stand_summary" {
   description = "Состав стенда одной строкой на каждый включённый кусок"
   value = {
     entry_point   = "http://${local.entry_ip}"
+    entry_via     = local.entry_kind
     panel         = local.panel_ip == "" ? "нет" : "http://${local.panel_ip}:${var.grafana_port}"
     shared_store  = local.shared_store_enabled ? var.shared_store_kind : "выключено"
     scaling       = var.enable_scaling ? "${var.scaling_min}..${var.scaling_max} копий, порог ${var.scaling_cpu_target} процентов" : "выключено"

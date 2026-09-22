@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -14,17 +15,22 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"pii-guard/internal/api"
 	"pii-guard/internal/config"
 	"pii-guard/internal/engine"
+	"pii-guard/internal/logging"
 	"pii-guard/internal/metrics"
 	"pii-guard/internal/pii"
 	"pii-guard/internal/store"
@@ -34,6 +40,7 @@ func main() {
 	configPath := flag.String("config", "configs/config.yaml", "путь к файлу настроек")
 	checkConfig := flag.Bool("check-config", false, "проверить настройки и выйти")
 	healthcheck := flag.Bool("healthcheck", false, "проверить живость сервиса и выйти")
+	pprofAddr := flag.String("pprof", "", "адрес отдельного слушателя профилировщика, например 127.0.0.1:6060; пусто означает выключено")
 	flag.Parse()
 
 	if *healthcheck {
@@ -44,25 +51,213 @@ func main() {
 		return
 	}
 
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	out := newLogWriter(os.Stdout, logBufferBytes)
+	out.flushEvery(logFlushInterval)
+
+	// Журнал запуска собирается по одному окружению: файл настроек ещё не
+	// прочитан, а отказ его чтения надо куда-то записать. Аудит в нём
+	// выключен намеренно — файл аудита открывается ровно один раз, и делает
+	// это окончательный журнал.
+	bootCfg := logging.FromEnv()
+	bootCfg.Output = out
+	bootCfg.Audit.Enabled = false
+	boot, err := logging.New(bootCfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	log := boot.Slog()
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Error("настройки не приняты", slog.String("error", err.Error()))
+		log.Error("настройки не приняты", logging.Event(logging.EventConfigRejected), logging.Err(err))
+		stopLog(boot, out)
 		os.Exit(1)
 	}
 	if *checkConfig {
 		fmt.Println("настройки корректны")
+		stopLog(boot, out)
 		return
 	}
 
-	if err := run(cfg, *configPath, log); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Error("сервис остановлен с ошибкой", slog.String("error", err.Error()))
+	// Окончательный журнал: настройки из файла, поверх них окружение.
+	lg, err := logging.New(logConfig(cfg, out))
+	if err != nil {
+		log.Error("журнал не собран по настройкам", logging.Event(logging.EventConfigRejected), logging.Err(err))
+		stopLog(boot, out)
 		os.Exit(1)
 	}
+	_ = boot.Close()
+	log = lg.Slog()
+
+	startPprof(*pprofAddr, log)
+
+	err = run(cfg, *configPath, lg)
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Error("сервис остановлен с ошибкой", logging.Event(logging.EventServiceStop), logging.Err(err))
+		stopLog(lg, out)
+		os.Exit(1)
+	}
+	stopLog(lg, out)
 }
 
-func run(cfg *config.Config, configPath string, log *slog.Logger) error {
+// stopLog закрывает журнал и выталкивает буфер. Нужен отдельной функцией
+// потому, что os.Exit пропускает отложенные вызовы: у каждого выхода из
+// main закрытие приходится делать явно, а без него последние записи аудита
+// и последние счётчики заглушенных повторов до вывода не дойдут.
+func stopLog(lg *logging.Logger, out *logWriter) {
+	_ = lg.Close()
+	out.Flush()
+}
+
+// logConfig сливает настройки журнала из файла и из окружения.
+//
+// Порядок: значения по умолчанию, поверх них файл, поверх них окружение.
+// Окружение важнее файла, и это привычное правило для секретов и уровней:
+// файл лежит в образе и описывает установку целиком, окружение правится на
+// конкретной машине и описывает её особенности — поднятый на время уровень,
+// свой путь для журнала аудита, имя копии.
+//
+// Что именно задано в окружении, определяется сравнением со значением по
+// умолчанию: FromEnv возвращает готовый набор поверх умолчаний, поэтому
+// отличие поля означает, что переменная задана. Разбирать переменные здесь
+// во второй раз нельзя: их имена перечислены в internal/logging, и второй
+// список — это второе место, где о новой переменной забудут.
+func logConfig(cfg *config.Config, out io.Writer) logging.Config {
+	def := logging.DefaultConfig()
+	env := logging.FromEnv()
+	file := cfg.Logging
+
+	c := def
+	// Файл поверх умолчаний. Незаданные поля файла уже заполнены значениями
+	// по умолчанию при разборе настроек, поэтому проверять их здесь не надо.
+	c.Level = file.Level
+	c.Format = file.Format
+	c.RepeatWindow = file.RepeatWindow
+	c.RepeatMinLevel = file.RepeatLevel
+	c.SampleN = file.SampleN
+	c.Slow = file.Slow
+	if file.Source != nil {
+		c.AddSource = *file.Source
+	}
+	if file.Redact != nil {
+		c.Redact = *file.Redact
+	}
+	if file.Audit.Enabled != nil {
+		c.Audit.Enabled = *file.Audit.Enabled
+	}
+	c.Audit.Path = file.Audit.Path
+	if file.Audit.MaxBytes > 0 {
+		c.Audit.MaxBytes = file.Audit.MaxBytes
+	}
+	if file.Audit.Keep > 0 {
+		c.Audit.Keep = file.Audit.Keep
+	}
+
+	// Окружение поверх файла.
+	if env.Level != def.Level {
+		c.Level = env.Level
+	}
+	if env.Format != def.Format {
+		c.Format = env.Format
+	}
+	if env.AddSource != def.AddSource {
+		c.AddSource = env.AddSource
+	}
+	if env.Redact != def.Redact {
+		c.Redact = env.Redact
+	}
+	if env.RepeatWindow != def.RepeatWindow {
+		c.RepeatWindow = env.RepeatWindow
+	}
+	if env.RepeatMinLevel != def.RepeatMinLevel {
+		c.RepeatMinLevel = env.RepeatMinLevel
+	}
+	if env.SampleN != def.SampleN {
+		c.SampleN = env.SampleN
+	}
+	if env.Slow != def.Slow {
+		c.Slow = env.Slow
+	}
+	if env.Audit.Enabled != def.Audit.Enabled {
+		c.Audit.Enabled = env.Audit.Enabled
+	}
+	if env.Audit.Path != "" {
+		c.Audit.Path = env.Audit.Path
+	}
+	if env.Audit.MaxBytes > 0 {
+		c.Audit.MaxBytes = env.Audit.MaxBytes
+	}
+	if env.Audit.Keep > 0 {
+		c.Audit.Keep = env.Audit.Keep
+	}
+	// Имя копии и версия сборки приходят только из окружения: в файле,
+	// общем для всех копий, им места нет.
+	c.Instance = env.Instance
+	c.Version = env.Version
+
+	// Приёмник журнала буферизован. Без буфера каждая запись — отдельный
+	// системный вызов, и на штатной нагрузке он стоит дороже самого разбора
+	// текста: замер дал сорок процентов процессора сервиса на одном выводе
+	// журнала против 0.94 процента после буферизации.
+	c.Output = out
+	return c
+}
+
+// Параметры буфера журнала. Размер буфера выбран так, чтобы в него помещалось
+// около двухсот записей обычной длины, а шаг сброса — так, чтобы записи
+// появлялись в хранилище журнала практически сразу.
+const (
+	logBufferBytes   = 64 << 10
+	logFlushInterval = 200 * time.Millisecond
+)
+
+// logWriter — буферизованный приёмник журнала. Без буфера каждая запись это
+// отдельный системный вызов записи, и на штатной нагрузке он стоит дороже
+// самого разбора текста: замер профилировщиком дал сорок процентов процессора
+// сервиса на одном только выводе журнала.
+//
+// Записи не теряются и не переставляются: буфер сбрасывается по заполнению,
+// с постоянным шагом и при завершении работы. В худшем случае при жёстком
+// падении процесса теряется то, что накопилось за шаг сброса.
+type logWriter struct {
+	mu  sync.Mutex
+	buf *bufio.Writer
+}
+
+func newLogWriter(w io.Writer, size int) *logWriter {
+	return &logWriter{buf: bufio.NewWriterSize(w, size)}
+}
+
+// Write принимает готовую запись журнала. Замок здесь обязателен: свой замок
+// журнала защищает только сборку записи, а не приёмник.
+func (w *logWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+// Flush выталкивает накопленное.
+func (w *logWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = w.buf.Flush()
+}
+
+// flushEvery выталкивает буфер с постоянным шагом, чтобы редкие записи не
+// залёживались в памяти до заполнения буфера.
+func (w *logWriter) flushEvery(d time.Duration) {
+	go func() {
+		t := time.NewTicker(d)
+		defer t.Stop()
+		for range t.C {
+			w.Flush()
+		}
+	}()
+}
+
+func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
+	log := lg.Slog()
 	key, err := storeKey(cfg.Store.KeyEnv, log)
 	if err != nil {
 		return err
@@ -101,16 +296,13 @@ func run(cfg *config.Config, configPath string, log *slog.Logger) error {
 	}
 
 	m := metrics.New()
-	// Деградация общего хранилища обязана быть видна в показателях: молчаливый
-	// переход на память означает, что копии сервиса перестали видеть записи
-	// друг друга.
-	st.SetDegradedHook(func(op string, degErr error) {
-		m.ObserveDegraded("store")
-		if degErr != nil {
-			log.Warn("общее хранилище недоступно, работаем через память",
-				slog.String("op", op), slog.String("error", degErr.Error()))
-		}
-	})
+	// Показатели самого журнала в общем реестре: по ним видно, срабатывала ли
+	// защита от утечки и сколько записей съели глушитель повторов и
+	// прореживание. Без регистрации они остались бы внутри процесса.
+	if rerr := m.Register(logging.NewCollector(lg)); rerr != nil {
+		log.Warn("показатели журнала не зарегистрированы",
+			logging.Component("metrics"), logging.Err(rerr))
+	}
 	// Сбой отдельного детектора пропускает его тип, но не роняет ответ.
 	reg.OnPanic(func(types []pii.Type, recovered any) {
 		name := "unknown"
@@ -118,23 +310,50 @@ func run(cfg *config.Config, configPath string, log *slog.Logger) error {
 			name = string(types[0])
 		}
 		m.ObservePanic(name)
-		log.Error("сбой детектора", slog.String("type", name), slog.Any("panic", recovered))
+		log.Error("сбой детектора",
+			logging.Event(logging.EventDetectorPanic),
+			logging.Component("engine"),
+			slog.String("type", name), slog.Any("panic", recovered))
 	})
 	eng := engine.New(reg)
+	// Сбой обработки куска длинного текста пропускает кусок, но не роняет
+	// процесс. Без этой привязки перехват работал бы молча.
+	eng.OnPanic(func(chunk int, recovered any) {
+		m.ObservePanic("chunk")
+		log.Error("сбой обработки куска",
+			logging.Event(logging.EventDetectorPanic),
+			logging.Component("engine"),
+			slog.Int("chunk", chunk), slog.Any("panic", recovered))
+	})
 	srv := api.New(cfg, st, eng, m, log)
+	srv.SetLogging(lg)
+	watchStoreDegradation(cfg, st, srv, m, log)
 
+	// Маршруты собираются один раз и отдаются обоим слушателям. Второй вызов
+	// Routes дал бы вторую прослойку журнала со своим счётчиком прореживания,
+	// и коэффициент на деле оказался бы вдвое мягче заданного.
+	handler := srv.Routes()
 	httpSrv := &http.Server{
 		Addr:              cfg.Server.HTTP,
-		Handler:           srv.Routes(),
+		Handler:           handler,
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
 		ReadTimeout:       cfg.Server.ReadTimeout,
 		WriteTimeout:      cfg.Server.WriteTimeout,
 		IdleTimeout:       cfg.Server.IdleTimeout,
 	}
 
+	log.Info("сервис запущен",
+		logging.Event(logging.EventServiceStart),
+		slog.String("log_level", lg.LevelName()),
+		slog.Int("sample_n", cfg.Logging.SampleN),
+		slog.Bool("shared_store", st.Shared()),
+		slog.Bool("audit", lg.Audit().Enabled()))
+
 	errCh := make(chan error, 2)
 	go func() {
-		log.Info("слушаю HTTP", slog.String("addr", cfg.Server.HTTP), slog.Int("detectors", len(reg.Detectors())))
+		log.Info("слушаю HTTP",
+			logging.Event(logging.EventListen), logging.Component("api"),
+			slog.String("addr", cfg.Server.HTTP), slog.Int("detectors", len(reg.Detectors())))
 		errCh <- httpSrv.ListenAndServe()
 	}()
 
@@ -142,11 +361,12 @@ func run(cfg *config.Config, configPath string, log *slog.Logger) error {
 	if cfg.Server.HTTPS != "" {
 		cert, certErr := selfSignedCert()
 		if certErr != nil {
-			log.Warn("не удалось подготовить сертификат, HTTPS выключен", slog.String("error", certErr.Error()))
+			log.Warn("не удалось подготовить сертификат, HTTPS выключен",
+				logging.Component("api"), logging.Err(certErr))
 		} else {
 			httpsSrv = &http.Server{
 				Addr:              cfg.Server.HTTPS,
-				Handler:           srv.Routes(),
+				Handler:           handler,
 				ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
 				ReadTimeout:       cfg.Server.ReadTimeout,
 				WriteTimeout:      cfg.Server.WriteTimeout,
@@ -154,7 +374,9 @@ func run(cfg *config.Config, configPath string, log *slog.Logger) error {
 				TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
 			}
 			go func() {
-				log.Info("слушаю HTTPS", slog.String("addr", cfg.Server.HTTPS))
+				log.Info("слушаю HTTPS",
+					logging.Event(logging.EventListen), logging.Component("api"),
+					slog.String("addr", cfg.Server.HTTPS))
 				errCh <- httpsSrv.ListenAndServeTLS("", "")
 			}()
 		}
@@ -171,16 +393,123 @@ func run(cfg *config.Config, configPath string, log *slog.Logger) error {
 	case err := <-errCh:
 		return err
 	case <-stop:
-		log.Info("получен сигнал остановки, завершаю обработку")
+		log.Info("получен сигнал остановки, снимаю готовность",
+			logging.Event(logging.EventServiceStop), logging.Component("api"),
+			slog.String("drain", cfg.Server.DrainTimeout.String()))
 	}
 
 	srv.SetReady(false)
+	drain(cfg.Server.DrainTimeout, stop, log)
+
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
 	if httpsSrv != nil {
 		_ = httpsSrv.Shutdown(ctx)
 	}
 	return httpSrv.Shutdown(ctx)
+}
+
+// drain держит приём открытым после снятия готовности.
+//
+// Балансировщик узнаёт о снятии готовности не сразу: при периоде проверки в
+// две секунды и пороге в две неудачи на это уходит до пяти секунд, и ещё две
+// заложены запасом на разброс проверок. Всё это время он продолжает слать
+// запросы на копию. Закрыть слушатель в ту же миллисекунду, в которую снята
+// готовность, значит отказать по каждому такому запросу: при контрактной
+// тысяче запросов в секунду это оценочно до 2 500 потерянных запросов на
+// каждую остановку, то есть 0.8 процента пятиминутного прогона.
+//
+// Пауза прерывается вторым сигналом остановки: администратор, нажавший
+// остановку дважды, хочет немедленно, и спорить с ним неправильно. Подробный
+// расчёт — в docs/BALANCING.md, раздел о мягком выводе копии из обслуживания.
+func drain(d time.Duration, stop <-chan os.Signal, log *slog.Logger) {
+	if d <= 0 {
+		return
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		log.Info("окно вывода из обслуживания выдержано, закрываю приём",
+			logging.Event(logging.EventServiceStop), logging.Component("api"),
+			logging.Took(d))
+	case <-stop:
+		log.Warn("второй сигнал остановки, закрываю приём немедленно",
+			logging.Event(logging.EventServiceStop), logging.Component("api"))
+	}
+}
+
+// watchStoreDegradation связывает деградацию общего хранилища с показателями,
+// журналом и готовностью копии.
+//
+// Деградация обязана быть видна в показателях: молчаливый переход на память
+// процесса означает, что копии сервиса перестали видеть записи друг друга.
+//
+// Снимать ли при этом готовность, решает настройка. Разбор того, почему по
+// умолчанию выбрано щадящее поведение, — в комментарии к полю
+// config.Store.UnreadyOnDegraded. Коротко: на одной копии память процесса это
+// полноценный запасной путь и работать лучше, чем не работать, а в группе
+// копий ответы становятся тихо неверными, и тогда копии место вне
+// обслуживания.
+//
+// Обратно готовность сама не возвращается. Хранилище сообщает об отказах, но
+// не о восстановлении, а возвращать копию в строй по догадке хуже, чем
+// оставить решение человеку: копия жива, отвечает на проверку живости и
+// пересоздана не будет.
+func watchStoreDegradation(cfg *config.Config, st *store.Store, srv *api.Server, m *metrics.Metrics, log *slog.Logger) {
+	var withdrawn atomic.Bool
+	st.SetDegradedHook(func(op string, degErr error) {
+		m.ObserveDegraded("store")
+		if !cfg.Store.UnreadyOnDegraded {
+			if degErr != nil {
+				log.Warn("общее хранилище недоступно, работаем через память процесса",
+					logging.Event(logging.EventStoreDegraded), logging.Component("store"),
+					slog.String(logging.FieldOp, op), logging.Err(degErr))
+			}
+			return
+		}
+		if withdrawn.Swap(true) {
+			return
+		}
+		srv.SetReady(false)
+		log.Error("общее хранилище недоступно, копия уходит из обслуживания",
+			logging.Event(logging.EventStoreDegraded), logging.Component("store"),
+			slog.String(logging.FieldOp, op), logging.Err(degErr))
+	})
+}
+
+// startPprof поднимает отдельный слушатель встроенного профилировщика Go.
+// Профилировщик живёт на своём адресе, а не на рабочем порту: его ручки отдают
+// дамп памяти и состояние горутин, и посторонним их видеть нельзя. По умолчанию
+// он выключен, включается ключом и адресом на петлевом интерфейсе, куда ходят
+// через туннель.
+func startPprof(addr string, log *slog.Logger) {
+	if addr == "" {
+		return
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		// Снятие профиля длится десятки секунд, поэтому срок записи ответа
+		// здесь заведомо длиннее рабочего.
+		WriteTimeout: 5 * time.Minute,
+	}
+	go func() {
+		log.Info("слушаю профилировщик",
+			logging.Event(logging.EventListen), logging.Component("pprof"),
+			slog.String("addr", addr))
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Warn("слушатель профилировщика остановлен",
+				logging.Component("pprof"), logging.Err(err))
+		}
+	}()
 }
 
 // watchConfig применяет новые настройки по сигналу SIGHUP и при изменении
@@ -197,12 +526,16 @@ func watchConfig(path string, srv *api.Server, eng *engine.Engine, log *slog.Log
 	apply := func(reason string) {
 		cfg, err := config.Load(path)
 		if err != nil {
-			log.Warn("новые настройки отклонены", slog.String("reason", reason), slog.String("error", err.Error()))
+			log.Warn("новые настройки отклонены",
+				logging.Event(logging.EventConfigRejected), logging.Component("config"),
+				slog.String("reason", reason), logging.Err(err))
 			return
 		}
 		srv.SetConfig(cfg)
 		eng.ResetFilters()
-		log.Info("настройки применены", slog.String("reason", reason), slog.Int("systems", len(cfg.Systems)))
+		log.Info("настройки применены",
+			logging.Event(logging.EventConfigApplied), logging.Component("config"),
+			slog.String("reason", reason), slog.Int("systems", len(cfg.Systems)))
 	}
 
 	for {
@@ -245,7 +578,7 @@ func storeKey(envName string, log *slog.Logger) ([]byte, error) {
 	raw := os.Getenv(envName)
 	if raw == "" {
 		log.Warn("ключ шифрования не задан, создан временный на время работы процесса",
-			slog.String("env", envName))
+			logging.Component("store"), slog.String("env", envName))
 		return nil, nil
 	}
 	key, err := base64.StdEncoding.DecodeString(raw)

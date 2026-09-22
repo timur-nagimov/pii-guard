@@ -56,10 +56,26 @@ func (r Result) Meta() []store.SpanMeta {
 type Engine struct {
 	registry *pii.Registry
 	filters  sync.Map
+	onPanic  PanicHandler
+
+	// chunkHook — точка вмешательства перед разбором куска. В рабочем режиме
+	// она пустая и стоит ровно ноль: поле нужно тесту, которому иначе нечем
+	// уронить панику именно внутри рабочей горутины, не подкладывая в рабочий
+	// код детектор-диверсант.
+	chunkHook func(chunk int)
 }
+
+// PanicHandler вызывается, когда обработка куска длинного текста завершилась
+// сбоем. Форма повторяет pii.PanicHandler: движок сообщает о событии наружу и
+// не зависит ни от пакета показателей, ни от журнала.
+type PanicHandler func(chunk int, recovered any)
 
 // New создаёт конвейер поверх набора детекторов.
 func New(reg *pii.Registry) *Engine { return &Engine{registry: reg} }
+
+// OnPanic задаёт обработчик сбоя обработки куска. Задаётся один раз при сборке
+// сервиса, до первого запроса, как и такой же обработчик у набора детекторов.
+func (e *Engine) OnPanic(h PanicHandler) { e.onPanic = h }
 
 // contextFilter возвращает готовый фильтр для системы, собирая его при первом
 // обращении.
@@ -106,8 +122,12 @@ func (e *Engine) Registry() *pii.Registry { return e.registry }
 
 // Mask находит персональные данные и накладывает маски по правилам системы.
 func (e *Engine) Mask(text string, sys config.System, defs config.Defaults) Result {
+	// Разбор текста делается один раз и переиспользуется всеми этапами:
+	// и детекторами, и контекстными правилами. Разбор строит копию текста в
+	// нижнем регистре, срез токенов и индекс рун, и на коротких текстах это
+	// самая дорогая по памяти часть запроса.
 	doc := pii.NewDoc(text)
-	spans := e.detect(text)
+	spans := e.detectDoc(doc)
 	spans = filterByTypes(spans, sys)
 	spans = filterDatesByMode(spans, sys.DateMode(defs))
 	spans = applyContextRules(spans, sys, defs)
@@ -134,10 +154,17 @@ func (e *Engine) Mask(text string, sys config.System, defs config.Defaults) Resu
 	}
 }
 
-// detect прогоняет детекторы по тексту, при необходимости кусками параллельно.
+// detect прогоняет детекторы по тексту, разбирая его самостоятельно.
 func (e *Engine) detect(text string) []pii.Span {
+	return e.detectDoc(pii.NewDoc(text))
+}
+
+// detectDoc прогоняет детекторы по уже разобранному документу, при
+// необходимости кусками параллельно.
+func (e *Engine) detectDoc(doc *pii.Doc) []pii.Span {
+	text := doc.Text
 	if len(text) <= chunkThreshold {
-		return e.registry.Detect(pii.NewDoc(text))
+		return e.registry.Detect(doc)
 	}
 
 	bounds := splitBounds(text)
@@ -154,14 +181,7 @@ func (e *Engine) detect(text string) []pii.Span {
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
-				lo, hi := bounds[i][0], bounds[i][1]
-				doc := pii.NewDoc(text[lo:hi])
-				found := e.registry.Detect(doc)
-				for j := range found {
-					found[j].Start += lo
-					found[j].End += lo
-				}
-				results[i] = found
+				results[i] = e.detectChunk(text, bounds[i], i)
 			}
 		}()
 	}
@@ -172,6 +192,40 @@ func (e *Engine) detect(text string) []pii.Span {
 	wg.Wait()
 
 	return dedupSpans(results)
+}
+
+// detectChunk разбирает один кусок длинного текста, перехватывая сбой.
+//
+// Набор детекторов ловит панику самого детектора, но остальной код рабочей
+// горутины не защищён ничем, а паника в горутине роняет процесс целиком:
+// предохранитель обработчика живёт в другой горутине и дочернюю панику поймать
+// не может. Обещание никогда не отвечать пятисотым кодом без этого перехвата
+// не выполняется на текстах длиннее порога разбиения.
+//
+// Поведение при сбое такое же, как принято для сбоя детектора в pii.Registry:
+// кусок пропускается, ответ отдаётся по остальным кускам, событие уходит
+// наружу через обработчик. Перехват стоит на одном куске, а не на всей рабочей
+// горутине, намеренно: горутина обязана вернуться к очереди заданий, иначе
+// оставшиеся куски некому забрать и отправитель заданий встанет навсегда.
+func (e *Engine) detectChunk(text string, bound [2]int, chunk int) (found []pii.Span) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			found = nil
+			if e.onPanic != nil {
+				e.onPanic(chunk, rec)
+			}
+		}
+	}()
+	if e.chunkHook != nil {
+		e.chunkHook(chunk)
+	}
+	lo, hi := bound[0], bound[1]
+	found = e.registry.Detect(pii.NewDoc(text[lo:hi]))
+	for j := range found {
+		found[j].Start += lo
+		found[j].End += lo
+	}
+	return found
 }
 
 // splitBounds режет текст на куски по границам абзацев и предложений.

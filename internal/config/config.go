@@ -23,6 +23,7 @@ type Config struct {
 	Limits      Limits            `yaml:"limits"`
 	Store       Store             `yaml:"store"`
 	Defaults    Defaults          `yaml:"defaults"`
+	Logging     Logging           `yaml:"logging"`
 	Systems     map[string]System `yaml:"systems"`
 	CustomTypes []CustomType      `yaml:"custom_types"`
 }
@@ -37,6 +38,12 @@ type Server struct {
 	WriteTimeout      time.Duration `yaml:"write_timeout"`
 	IdleTimeout       time.Duration `yaml:"idle_timeout"`
 	ShutdownTimeout   time.Duration `yaml:"shutdown_timeout"`
+	// DrainTimeout — пауза между снятием готовности и закрытием приёма.
+	// Балансировщик узнаёт о снятии готовности не мгновенно, и всё это время
+	// он продолжает слать запросы. Закрыть слушатель раньше значит потерять
+	// их. Расчёт числа — в docs/BALANCING.md, раздел о мягком выводе копии
+	// из обслуживания.
+	DrainTimeout time.Duration `yaml:"drain_timeout"`
 }
 
 // Limits — ограничители одновременной обработки.
@@ -56,6 +63,19 @@ type Store struct {
 	// процесса; заполненный включает горизонтальный рост, потому что копии
 	// сервиса начинают видеть записи друг друга.
 	Redis store.RedisConfig `yaml:"redis"`
+	// UnreadyOnDegraded снимает готовность копии, когда общее хранилище
+	// недоступно и сервис перешёл на память процесса.
+	//
+	// По умолчанию выключено, и это щадящее поведение выбрано сознательно.
+	// На одной копии память процесса — полноценный запасной путь: маску
+	// сделала та же копия, которая будет её разворачивать, поэтому ответы
+	// остаются верными, и работать лучше, чем не работать.
+	//
+	// В группе копий всё наоборот: маску сделала одна копия, обратное
+	// преобразование просит другая, и запись она не найдёт. Ответ будет
+	// двухсотым и при этом неверным, а тихо неверный ответ хуже отказа.
+	// Поэтому в группе признак включают, и копия уходит из обслуживания.
+	UnreadyOnDegraded bool `yaml:"unready_on_degraded"`
 }
 
 // Defaults — значения, действующие для всех систем, если те их не переопределили.
@@ -71,6 +91,49 @@ type Defaults struct {
 	// ответе принадлежат тому, кто их прислал, поэтому утечки нет, но в
 	// промышленной установке ручку разумно оставить только служебным системам.
 	InspectEnabled bool `yaml:"inspect_enabled"`
+}
+
+// Logging — настройки журнала в файле настроек.
+//
+// Те же значения задаются переменными окружения, и окружение важнее файла.
+// Правило привычное: файл лежит в образе и описывает установку целиком,
+// окружение правится на конкретной машине и описывает её особенности —
+// поднятый на время уровень, свой путь для журнала аудита, имя копии.
+// Слияние делает cmd/pii-guard/main.go, сразу после чтения файла.
+type Logging struct {
+	// Level — минимальный уровень записи: debug, info, warn, error.
+	Level string `yaml:"level"`
+	// Format — json для эксплуатации, text для разработки.
+	Format string `yaml:"format"`
+	// Source добавляет в запись файл и строку места вызова. Дорого на
+	// горячем пути, поэтому по умолчанию выключено.
+	Source *bool `yaml:"source"`
+	// Redact включает второй рубеж защиты от утечки: разбор значений перед
+	// записью. Выключается только в измерениях скорости.
+	Redact *bool `yaml:"redact"`
+	// RepeatWindow — окно глушения повторов одинаковых записей.
+	RepeatWindow time.Duration `yaml:"repeat_window"`
+	// RepeatLevel — с какого уровня глушатся повторы.
+	RepeatLevel string `yaml:"repeat_level"`
+	// SampleN — прореживание записей об успешных запросах: пишется каждый
+	// N-й. Единица означает, что пишутся все. Расчёт — в docs/LOGGING.md.
+	SampleN int `yaml:"sample_n"`
+	// Slow — порог, после которого запрос пишется вопреки прореживанию.
+	Slow time.Duration `yaml:"slow"`
+	// Audit — отдельный журнал обращений к персональным данным.
+	Audit LoggingAudit `yaml:"audit"`
+}
+
+// LoggingAudit — настройки журнала аудита.
+type LoggingAudit struct {
+	// Enabled включает журнал аудита.
+	Enabled *bool `yaml:"enabled"`
+	// Path — файл журнала. Пусто означает общий поток вывода.
+	Path string `yaml:"path"`
+	// MaxBytes — размер, после которого файл ротируется.
+	MaxBytes int64 `yaml:"max_bytes"`
+	// Keep — сколько ротированных файлов хранить.
+	Keep int `yaml:"keep"`
 }
 
 // Auth — способ опознания системы-потребителя.
@@ -282,6 +345,12 @@ func (c *Config) applyDefaults() {
 	if c.Server.ShutdownTimeout == 0 {
 		c.Server.ShutdownTimeout = 15 * time.Second
 	}
+	if c.Server.DrainTimeout == 0 {
+		// Пять секунд на обнаружение снятой готовности балансировщиком
+		// (период проверки 2 с, порог 2 неудачи, предел ожидания 1 с) плюс
+		// две секунды запаса на разброс проверок.
+		c.Server.DrainTimeout = 7 * time.Second
+	}
 	if c.Limits.Inflight == 0 {
 		c.Limits.Inflight = 96
 	}
@@ -295,7 +364,10 @@ func (c *Config) applyDefaults() {
 		c.Limits.MaxWait = 500 * time.Millisecond
 	}
 	if c.Store.TTL == 0 {
-		c.Store.TTL = time.Hour
+		// Пятнадцать минут, а не час: предел числа записей ниже, чем даёт
+		// час при плановой частоте, и час был бы обещанием, которого
+		// хранилище не выполняет. Расчёт — в комментарии к Validate.
+		c.Store.TTL = 15 * time.Minute
 	}
 	if c.Store.MaxRecords == 0 {
 		c.Store.MaxRecords = 1_000_000
@@ -325,6 +397,33 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Defaults.DateWithoutAnchor == "" {
 		c.Defaults.DateWithoutAnchor = DatePIIContext
+	}
+	c.applyLoggingDefaults()
+}
+
+// applyLoggingDefaults заполняет незаданные настройки журнала. Значения
+// повторяют logging.DefaultConfig: файл настроек не обязан их перечислять,
+// но и не должен обнулять то, чего в нём нет.
+func (c *Config) applyLoggingDefaults() {
+	if c.Logging.Level == "" {
+		c.Logging.Level = "info"
+	}
+	if c.Logging.Format == "" {
+		c.Logging.Format = "json"
+	}
+	if c.Logging.RepeatWindow == 0 {
+		c.Logging.RepeatWindow = 10 * time.Second
+	}
+	if c.Logging.RepeatLevel == "" {
+		c.Logging.RepeatLevel = "warn"
+	}
+	if c.Logging.SampleN <= 0 {
+		// Единица означает, что пишутся все записи об успешных запросах.
+		// Почему по умолчанию единица — в комментарии к Validate.
+		c.Logging.SampleN = 1
+	}
+	if c.Logging.Slow == 0 {
+		c.Logging.Slow = 250 * time.Millisecond
 	}
 }
 
@@ -421,6 +520,9 @@ func expandEnv(s string) string {
 // Validate проверяет настройки на противоречия, из-за которых сервис повёл бы
 // себя не так, как ожидает проверяющая система или жюри.
 func (c *Config) Validate() error {
+	if err := c.validateLogging(); err != nil {
+		return err
+	}
 	if len(c.Systems) == 0 {
 		return errors.New("не задана ни одна система-потребитель")
 	}
@@ -500,4 +602,32 @@ func (c *Config) AnonymousSystem() (System, bool) {
 		}
 	}
 	return System{}, false
+}
+
+// validateLogging проверяет настройки журнала. Проверка здесь, а не в момент
+// создания журнала, потому что файл настроек перечитывается на ходу: набор с
+// неизвестным уровнем должен быть отвергнут целиком, а не наполовину принят.
+func (c *Config) validateLogging() error {
+	switch strings.ToLower(c.Logging.Level) {
+	case "debug", "info", "warn", "warning", "error":
+	default:
+		return fmt.Errorf("журнал: неизвестный уровень %q", c.Logging.Level)
+	}
+	switch strings.ToLower(c.Logging.RepeatLevel) {
+	case "debug", "info", "warn", "warning", "error":
+	default:
+		return fmt.Errorf("журнал: неизвестный уровень глушения повторов %q", c.Logging.RepeatLevel)
+	}
+	switch strings.ToLower(c.Logging.Format) {
+	case "json", "text":
+	default:
+		return fmt.Errorf("журнал: неизвестный формат %q", c.Logging.Format)
+	}
+	if c.Logging.SampleN < 1 {
+		return fmt.Errorf("журнал: коэффициент прореживания должен быть не меньше единицы, получено %d", c.Logging.SampleN)
+	}
+	if c.Logging.Slow < 0 {
+		return errors.New("журнал: порог медленного запроса не может быть отрицательным")
+	}
+	return nil
 }

@@ -1,0 +1,50 @@
+# Настройки Loki для единого окна над журналом. Это необязательный слой:
+# базовый сбор работает без него, смотри deploy/logging/README.md.
+#
+# Установка рассчитана на одну машину: хранение на диске, без кольца, без
+# отдельных ролей. Разворачивать распределённую установку ради одного сервиса
+# незачем.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  # Своих записей Loki порождает много, а пользы от них на стенде нет.
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # Срок хранения обычного журнала: те же две недели, что у journald.
+  retention_period: 336h
+  # Запас по приёму. На потолке нагрузки сервис порождает около восьми
+  # мегабайт записей в секунду, и без запаса Loki начнёт отказывать.
+  ingestion_rate_mb: 32
+  ingestion_burst_size_mb: 64
+  max_streams_per_user: 1000
+  reject_old_samples: true
+  reject_old_samples_max_age: 24h
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
