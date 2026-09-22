@@ -1,0 +1,6 @@
+go test fuzz v1
+string("Звонить на 8 906 384 74 32;")
+int(0)
+int(0)
+int(0)
+int(0)

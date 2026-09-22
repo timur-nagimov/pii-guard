@@ -1,0 +1,4 @@
+go test fuzz v1
+string("код безопасности 834;")
+int(0)
+int(0)

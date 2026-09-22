@@ -1,0 +1,6 @@
+go test fuzz v1
+string("СоР: I-МЮ № 707946;")
+int(0)
+int(0)
+int(0)
+int(0)

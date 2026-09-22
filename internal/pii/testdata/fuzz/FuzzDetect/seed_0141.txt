@@ -1,0 +1,2 @@
+go test fuzz v1
+string("ВНЖ: 5521 108184;")

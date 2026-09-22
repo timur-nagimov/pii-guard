@@ -1,0 +1,2 @@
+go test fuzz v1
+string("Address: Yaroslavl, Svobody str., 23, zip 905487, e-mail aleksandra.kuzmin@bk.ru.")

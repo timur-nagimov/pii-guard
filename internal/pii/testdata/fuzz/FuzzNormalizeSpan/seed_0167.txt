@@ -1,0 +1,4 @@
+go test fuzz v1
+string("cvv2: 946.")
+int(0)
+int(0)
