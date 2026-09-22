@@ -1,9 +1,11 @@
 package pii
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Режимы детектора дат. Режим задаёт, что делать с правдоподобной датой, у
@@ -25,12 +27,12 @@ const (
 
 // Якорные слова детектора дат. Все записаны в нижнем регистре, поиск идёт по
 // Doc.Lower. Вместо полных словоформ используются основы, поэтому «родился»,
-// «родилась», «родившийся», «рождения» и «рождена» покрываются тремя записями.
+// «родилась», «родившийся», «рождения» и «рождена» покрываются двумя записями.
 var (
 	dateAnchorsBirth = []string{
-		"родил", "родивш", "рожден", "рождён", "рожда", "урожен",
+		"родил", "родивш", "рожд", "урожен",
 		"г.р.", "г. р.", "г/р", "д.р.", "д. р.", "д/р", "др.", "др ", "др:",
-		"birth", "born",
+		"birth", "born", "dob",
 	}
 	// dateAnchorsBirthYear — более узкий набор для записи одного года без дня
 	// и месяца. Широкие основы сюда не входят: любое четырёхзначное число
@@ -39,7 +41,9 @@ var (
 		"г.р.", "г. р.", "г/р", "года рождения", "год рождения",
 		"году рождения", "рождения", "род.", "родил", "рожден", "рождён",
 	}
-	dateAnchorsIssue = []string{"выдан", "выдач", "выдал", "issued"}
+	// dateAnchorsIssue — основа «выда» покрывает «выдан», «выдана», «выдал»,
+	// «выдачи» и опечатку «выдаан», которая встречается в текстах жюри.
+	dateAnchorsIssue = []string{"выда", "issued"}
 	// dateAnchorsDoc — упоминание документа или органа, который его выдал.
 	// Дата после такого упоминания почти всегда дата выдачи.
 	dateAnchorsDoc = []string{
@@ -84,6 +88,14 @@ const (
 	dateNegWindow = 40
 	// dateMinYear — нижняя граница правдоподобного года.
 	dateMinYear = 1900
+	// dateNeighbourDigitsMin — сколько цифр рядом с датой означают документ
+	// человека. Десять цифр это серия с номером паспорта, карта, телефон
+	// или ИНН, то есть анкета, а не деловая запись.
+	dateNeighbourDigitsMin = 10
+	// dateMaxDay — наибольший возможный день месяца.
+	dateMaxDay = 31
+	// dateCompactLen — длина даты, записанной одной группой цифр: «12031985».
+	dateCompactLen = 8
 )
 
 // dateSeparators — знаки, которыми разделяют части числовой даты.
@@ -125,67 +137,138 @@ func (dd dateDetector) Detect(d *Doc) []Span {
 	return out
 }
 
+// dateGroup — одна группа цифр внутри числовой последовательности вместе с её
+// границами в тексте документа.
+type dateGroup struct {
+	start int
+	end   int
+}
+
 // numericDates разбирает числовые кандидаты документа. Отдельного прохода по
 // тексту нет: числовые последовательности уже посчитаны один раз для всех
 // детекторов.
 func (dd dateDetector) numericDates(d *Doc) []Span {
 	var out []Span
 	for _, run := range d.NumRuns() {
-		parts, ok := dateParts(run)
-		if !ok || !datePlausibleParts(parts) {
+		// Ведущий плюс бывает только у телефона в международном формате.
+		if run.HasPlus {
 			continue
 		}
-		start, end := NormalizeSpan(d.Text, run.Start, run.End)
-		if s, ok := dd.classify(d, start, end, "numeric"); ok {
-			out = append(out, s)
-		}
+		out = append(out, dd.runDates(d, run)...)
 	}
 	return out
 }
 
-// dateParts проверяет форму числового кандидата и возвращает три группы цифр.
-// Двух групп недостаточно: запись вида 12/27 и 12/2027 это срок действия
-// карты, а не дата.
-func dateParts(run NumRun) ([]string, bool) {
-	if run.HasPlus || len(run.Groups) != 3 {
-		return nil, false
+// runDates ищет даты внутри одной числовой последовательности.
+//
+// Искать надо именно внутри: в строке «Белова К.А. 1977-12-17 75 52 040112»
+// дата и номер паспорта склеиваются в одну последовательность, и целиком она
+// датой не является. Тройки разбираются слева направо и не перекрываются,
+// иначе хвост даты вместе с началом номера дал бы вторую «дату».
+func (dd dateDetector) runDates(d *Doc, run NumRun) []Span {
+	groups := dateSplitRun(d, run)
+	if len(groups) == 1 {
+		return dd.compactDate(d, groups[0])
 	}
-	if !dateSeps(run.Seps) || !dateGroupLengths(run.Groups) {
-		return nil, false
+	var out []Span
+	for i := 0; i+2 < len(groups); {
+		if !dateTripleShape(d, groups[i:i+3]) {
+			i++
+			continue
+		}
+		start, end := NormalizeSpan(d.Text, groups[i].start, groups[i+2].end)
+		if s, ok := dd.classify(d, start, end, "numeric"); ok {
+			out = append(out, s)
+		}
+		i += 3
 	}
-	parts := make([]string, 0, 3)
-	off := 0
-	for _, g := range run.Groups {
-		parts = append(parts, run.Digits[off:off+g])
-		off += g
-	}
-	return parts, true
+	return out
 }
 
-// dateSeps требует, чтобы группы разделяла точка, дробь или дефис. Запись
-// через один пробел датой не считается: так пишут серию и номер документа.
-func dateSeps(seps string) bool {
-	hasReal := false
-	for _, r := range seps {
+// dateSplitRun разбирает числовую последовательность на группы цифр с их
+// границами в тексте.
+func dateSplitRun(d *Doc, run NumRun) []dateGroup {
+	out := make([]dateGroup, 0, len(run.Groups))
+	for i := run.Start; i < run.End; {
+		if !dateIsDigit(d.Text[i]) {
+			i++
+			continue
+		}
+		j := i
+		for j < run.End && dateIsDigit(d.Text[j]) {
+			j++
+		}
+		out = append(out, dateGroup{start: i, end: j})
+		i = j
+	}
+	return out
+}
+
+// dateIsDigit сообщает, что байт это десятичная цифра.
+func dateIsDigit(b byte) bool { return b >= '0' && b <= '9' }
+
+// dateTripleShape проверяет, что три соседние группы цифр образуют дату:
+// промежутки одного вида, длины групп подходящие, число существует.
+func dateTripleShape(d *Doc, g []dateGroup) bool {
+	left, ok := dateGapKind(d.Text[g[0].end:g[1].start])
+	if !ok {
+		return false
+	}
+	right, ok := dateGapKind(d.Text[g[1].end:g[2].start])
+	if !ok || left != right {
+		return false
+	}
+	parts := []string{
+		d.Text[g[0].start:g[0].end],
+		d.Text[g[1].start:g[1].end],
+		d.Text[g[2].start:g[2].end],
+	}
+	if !dateGroupLengths(parts, left == dateGapSpace) {
+		return false
+	}
+	return datePlausibleParts(parts)
+}
+
+// dateGapSpace — вид промежутка, в котором знака-разделителя нет, только
+// пробел.
+const dateGapSpace = ' '
+
+// dateGapKind определяет вид промежутка между группами цифр: знак-разделитель
+// или только пробел. Вид возвращается наружу, потому что внутри одной даты
+// промежутки не смешиваются: «12.03 1985» это две разные записи рядом.
+func dateGapKind(gap string) (rune, bool) {
+	kind := rune(dateGapSpace)
+	for _, r := range gap {
 		switch {
 		case strings.ContainsRune(dateSeparators, r):
-			hasReal = true
+			if kind != dateGapSpace && kind != r {
+				return 0, false
+			}
+			kind = r
 		case r == ' ' || r == '\t' || r == '\u00a0':
 		default:
-			return false
+			return 0, false
 		}
 	}
-	return hasReal
+	return kind, true
 }
 
 // dateGroupLengths допускает четыре цифры года в начале или в конце, две
 // цифры года в конце и одну или две цифры для дня и месяца.
-func dateGroupLengths(g []int) bool {
-	shortPair := g[0] >= 1 && g[0] <= 2 && g[1] >= 1 && g[1] <= 2
+//
+// Для записи через один пробел требования строже: день и месяц с ведущим
+// нулём, год из четырёх цифр. Иначе датой стала бы любая тройка коротких
+// чисел в перечислении, а таких в банковских текстах много.
+func dateGroupLengths(parts []string, spaced bool) bool {
+	a, b, c := len(parts[0]), len(parts[1]), len(parts[2])
+	if spaced {
+		return a == 2 && b == 2 && c == 4 || a == 4 && b == 2 && c == 2
+	}
+	shortPair := a >= 1 && a <= 2 && b >= 1 && b <= 2
 	switch {
-	case g[0] == 4:
-		return g[1] >= 1 && g[1] <= 2 && g[2] >= 1 && g[2] <= 2
-	case g[2] == 4 || g[2] == 2:
+	case a == 4:
+		return b >= 1 && b <= 2 && c >= 1 && c <= 2
+	case c == 4 || c == 2:
 		return shortPair
 	default:
 		return false
@@ -210,6 +293,34 @@ func datePlausibleParts(parts []string) bool {
 	return dateValidDayMonth(parts[0], parts[1], year) || dateValidDayMonth(parts[1], parts[0], year)
 }
 
+// compactDate разбирает дату, записанную одной группой из восьми цифр:
+// «12031985». От номера документа такая запись ничем не отличается, кроме
+// соседнего слова, поэтому нужен явный якорь рождения или выдачи; упоминания
+// документа рядом здесь недостаточно.
+func (dd dateDetector) compactDate(d *Doc, g dateGroup) []Span {
+	digits := d.Text[g.start:g.end]
+	if len(digits) != dateCompactLen || !dateCompactPlausible(digits) {
+		return nil
+	}
+	start, end := NormalizeSpan(d.Text, g.start, g.end)
+	if start >= end || !dateWithinLine(d, start, end) {
+		return nil
+	}
+	t, conf, rule, ok := dateExplicitAnchor(d, start, end)
+	if !ok {
+		return nil
+	}
+	return []Span{{Start: start, End: end, Type: t, Conf: conf, Reason: "date:compact+" + rule}}
+}
+
+// dateCompactPlausible проверяет восемь цифр в порядке «день месяц год» и в
+// порядке «год месяц день».
+func dateCompactPlausible(digits string) bool {
+	dayFirst := []string{digits[0:2], digits[2:4], digits[4:8]}
+	yearFirst := []string{digits[0:4], digits[4:6], digits[6:8]}
+	return datePlausibleParts(dayFirst) || datePlausibleParts(yearFirst)
+}
+
 // dateYearValue разбирает год из двух или четырёх цифр и проверяет его
 // правдоподобие. Двузначный год относим к прошлому веку, если в текущем веке
 // он ещё не наступил.
@@ -218,18 +329,23 @@ func dateYearValue(s string) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	now := time.Now().Year()
 	if len(s) == 2 {
-		if v <= now%100 {
+		if v <= time.Now().Year()%100 {
 			v += 2000
 		} else {
 			v += 1900
 		}
 	}
-	if v < dateMinYear || v > now {
+	if !dateYearPlausible(v) {
 		return 0, false
 	}
 	return v, true
+}
+
+// dateYearPlausible проверяет, что год лежит между началом двадцатого века и
+// текущим годом.
+func dateYearPlausible(year int) bool {
+	return year >= dateMinYear && year <= time.Now().Year()
 }
 
 // dateValidDayMonth проверяет пару «день и месяц» с учётом длины месяца:
@@ -243,6 +359,11 @@ func dateValidDayMonth(dayStr, monthStr string, year int) bool {
 	if err != nil {
 		return false
 	}
+	return dateValidDayMonthNum(day, month, year)
+}
+
+// dateValidDayMonthNum проверяет уже разобранные день и месяц.
+func dateValidDayMonthNum(day, month, year int) bool {
 	if month < 1 || month > 12 {
 		return false
 	}
@@ -294,6 +415,144 @@ var dateMonthWords = map[string]int{
 	"aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
 }
 
+// Разбор месяца с опечаткой. Префикс нужен как дешёвый отбор кандидатов:
+// перебирать весь словарь месяцев на каждом слове документа нельзя.
+const (
+	// dateMonthPrefixRunes — сколько первых букв месяца должны совпасть.
+	dateMonthPrefixRunes = 3
+	// dateMonthFuzzyMin — минимальная длина слова, которое разрешено считать
+	// месяцем с опечаткой. Короткие слова вроде «март» слишком близки к
+	// именам и к сокращениям, поэтому разбираются только точным совпадением.
+	dateMonthFuzzyMin = 5
+)
+
+// dateMonthByPrefix — месяцы, сгруппированные по первым трём буквам. Списки
+// отсортированы, поэтому при нескольких одинаково близких кандидатах выбор
+// не зависит от порядка обхода карты.
+var dateMonthByPrefix = dateBuildMonthPrefixes()
+
+// dateBuildMonthPrefixes строит индекс месяцев по префиксу один раз при
+// загрузке пакета. Дальше индекс только читается.
+func dateBuildMonthPrefixes() map[string][]string {
+	out := make(map[string][]string, len(dateMonthWords))
+	for w := range dateMonthWords {
+		if utf8.RuneCountInString(w) < dateMonthFuzzyMin {
+			continue
+		}
+		p, ok := dateWordPrefix(w)
+		if !ok {
+			continue
+		}
+		out[p] = append(out[p], w)
+	}
+	for _, list := range out {
+		sort.Strings(list)
+	}
+	return out
+}
+
+// dateWordPrefix возвращает первые буквы слова без выделения памяти.
+func dateWordPrefix(w string) (string, bool) {
+	n, i := 0, 0
+	for i < len(w) && n < dateMonthPrefixRunes {
+		_, size := utf8.DecodeRuneInString(w[i:])
+		i += size
+		n++
+	}
+	if n < dateMonthPrefixRunes {
+		return "", false
+	}
+	return w[:i], true
+}
+
+// dateMonthFuzzy ищет месяц с одной опечаткой: перестановкой соседних букв,
+// пропущенной, лишней или другой буквой. Тексты пишут люди, и «сентбяря» в
+// анкете означает ровно тот же сентябрь.
+func dateMonthFuzzy(word string) (int, bool) {
+	if utf8.RuneCountInString(word) < dateMonthFuzzyMin {
+		return 0, false
+	}
+	prefix, ok := dateWordPrefix(word)
+	if !ok {
+		return 0, false
+	}
+	for _, cand := range dateMonthByPrefix[prefix] {
+		if dateNearWord(word, cand) {
+			return dateMonthWords[cand], true
+		}
+	}
+	return 0, false
+}
+
+// dateNearWord сообщает, что слова отличаются не больше чем на одну опечатку.
+func dateNearWord(a, b string) bool {
+	ra, rb := []rune(a), []rune(b)
+	switch len(ra) - len(rb) {
+	case 0:
+		return dateOneReplace(ra, rb) || dateOneSwap(ra, rb)
+	case 1:
+		return dateOneSkip(ra, rb)
+	case -1:
+		return dateOneSkip(rb, ra)
+	default:
+		return false
+	}
+}
+
+// dateOneReplace сообщает, что слова одной длины отличаются в одной букве.
+func dateOneReplace(a, b []rune) bool {
+	diff := 0
+	for i := range a {
+		if a[i] != b[i] {
+			diff++
+		}
+	}
+	return diff <= 1
+}
+
+// dateOneSwap сообщает, что слова отличаются перестановкой соседних букв.
+func dateOneSwap(a, b []rune) bool {
+	i := dateFirstDiff(a, b)
+	if i < 0 || i+1 >= len(a) {
+		return false
+	}
+	if a[i] != b[i+1] || a[i+1] != b[i] {
+		return false
+	}
+	return dateOneReplace(a[i+2:], b[i+2:])
+}
+
+// dateOneSkip сообщает, что длинное слово превращается в короткое удалением
+// одной буквы.
+func dateOneSkip(long, short []rune) bool {
+	i := dateFirstDiff(long[:len(short)], short)
+	if i < 0 {
+		return true
+	}
+	return dateSameRunes(long[i+1:], short[i:])
+}
+
+// dateFirstDiff возвращает позицию первой различающейся буквы или минус один.
+func dateFirstDiff(a, b []rune) int {
+	for i := range a {
+		if i >= len(b) {
+			return i
+		}
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return -1
+}
+
+// dateSameRunes сравнивает две последовательности букв.
+func dateSameRunes(a, b []rune) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return dateFirstDiff(a, b) < 0
+}
+
 // wordDates ищет даты, записанные словами. Опорой служит слово-месяц: оно
 // однозначно, а числа вокруг него проверяются на правдоподобие.
 func (dd dateDetector) wordDates(d *Doc) []Span {
@@ -302,7 +561,7 @@ func (dd dateDetector) wordDates(d *Doc) []Span {
 		if tok.Kind != KindCyr && tok.Kind != KindLat {
 			continue
 		}
-		month, ok := dateMonthWords[d.Lower[tok.Start:tok.End]]
+		month, ok := dateMonth(d.Lower[tok.Start:tok.End])
 		if !ok {
 			continue
 		}
@@ -317,39 +576,49 @@ func (dd dateDetector) wordDates(d *Doc) []Span {
 	return out
 }
 
-// dayFirstDate разбирает запись «12 марта 1985» и «5-го марта 1990».
+// dateMonth определяет номер месяца по слову: сначала точно, потом с
+// допуском на одну опечатку.
+func dateMonth(word string) (int, bool) {
+	if m, ok := dateMonthWords[word]; ok {
+		return m, true
+	}
+	return dateMonthFuzzy(word)
+}
+
+// dayFirstDate разбирает запись «12 марта 1985», «5-го марта 1990» и
+// «двенадцатое марта тысяча девятьсот восемьдесят пятого года».
 func (dd dateDetector) dayFirstDate(d *Doc, monthTok, month int) (Span, bool) {
-	day, ok := dateDayTokenBefore(d, monthTok)
+	start, day, ok := dateDayBefore(d, monthTok)
 	if !ok {
 		return Span{}, false
 	}
-	year, ok := dateYearTokenAfter(d, monthTok)
+	end, year, ok := dateYearAfter(d, monthTok)
 	if !ok {
 		return Span{}, false
 	}
-	return dd.wordDateSpan(d, d.Tokens[day].Start, d.Tokens[year].End, day, month, year)
+	return dd.wordDateSpan(d, start, end, day, month, year)
 }
 
 // monthFirstDate разбирает английскую запись «March 12, 1985».
 func (dd dateDetector) monthFirstDate(d *Doc, monthTok, month int) (Span, bool) {
-	day, ok := dateDayTokenAfter(d, monthTok)
+	dayTok, ok := dateDayTokenAfter(d, monthTok)
 	if !ok {
 		return Span{}, false
 	}
-	year, ok := dateYearTokenAfter(d, day)
+	day, err := strconv.Atoi(dateTokenText(d, dayTok))
+	if err != nil {
+		return Span{}, false
+	}
+	end, year, ok := dateYearAfter(d, dayTok)
 	if !ok {
 		return Span{}, false
 	}
-	return dd.wordDateSpan(d, d.Tokens[monthTok].Start, d.Tokens[year].End, day, month, year)
+	return dd.wordDateSpan(d, d.Tokens[monthTok].Start, end, day, month, year)
 }
 
 // wordDateSpan проверяет правдоподобие даты словами и определяет её тип.
-func (dd dateDetector) wordDateSpan(d *Doc, start, end, dayTok, month, yearTok int) (Span, bool) {
-	year, ok := dateYearValue(dateTokenText(d, yearTok))
-	if !ok {
-		return Span{}, false
-	}
-	if !dateValidDayMonth(dateTokenText(d, dayTok), strconv.Itoa(month), year) {
+func (dd dateDetector) wordDateSpan(d *Doc, start, end, day, month, year int) (Span, bool) {
+	if !dateValidDayMonthNum(day, month, year) {
 		return Span{}, false
 	}
 	s, e := NormalizeSpan(d.Text, start, end)
@@ -364,6 +633,44 @@ func dateTokenText(d *Doc, i int) string {
 // dateDaySuffixes — окончания порядкового числительного перед месяцем:
 // «5-го марта», «1-е мая».
 var dateDaySuffixes = []string{"го", "ое", "ый", "е"}
+
+// dateDayBefore определяет день слева от месяца: число «12», порядковое
+// «5-го» или слово «двенадцатое». Возвращает начало фрагмента и день.
+func dateDayBefore(d *Doc, monthTok int) (int, int, bool) {
+	if j, ok := dateDayTokenBefore(d, monthTok); ok {
+		if day, err := strconv.Atoi(dateTokenText(d, j)); err == nil {
+			return d.Tokens[j].Start, day, true
+		}
+	}
+	words, start, ok := dateWordsBefore(d, monthTok, dateDayWordsMax)
+	if !ok {
+		return 0, 0, false
+	}
+	day, ok := dateWordNumber(words)
+	if !ok || day < 1 || day > dateMaxDay {
+		return 0, 0, false
+	}
+	return start, day, true
+}
+
+// dateYearAfter определяет год справа от токена: число «1985» или слова
+// «тысяча девятьсот восемьдесят пятого». Возвращает конец фрагмента и год.
+func dateYearAfter(d *Doc, from int) (int, int, bool) {
+	if j, ok := dateYearTokenAfter(d, from); ok {
+		if year, ok := dateYearValue(dateTokenText(d, j)); ok {
+			return d.Tokens[j].End, year, true
+		}
+	}
+	words, end, ok := dateWordsAfter(d, from, dateYearWordsMax)
+	if !ok {
+		return 0, 0, false
+	}
+	year, ok := dateWordNumber(words)
+	if !ok || !dateYearPlausible(year) {
+		return 0, 0, false
+	}
+	return end, year, true
+}
 
 // dateDayTokenBefore ищет число дня слева от месяца.
 func dateDayTokenBefore(d *Doc, monthTok int) (int, bool) {
@@ -449,6 +756,149 @@ func dateOnlySpacers(s string) bool {
 	return true
 }
 
+// Сколько слов-числительных подряд разбирается для дня и для года.
+// «двадцать первое» это два слова, «тысяча девятьсот восемьдесят пятого» —
+// четыре, «две тысячи двадцать четвёртого» — тоже четыре.
+const (
+	dateDayWordsMax  = 2
+	dateYearWordsMax = 4
+)
+
+// dateNumberWords — числительные, которыми записывают день и год: и
+// количественные, и порядковые формы. Карта только читается.
+var dateNumberWords = map[string]int{
+	"первое": 1, "первого": 1, "первый": 1, "первая": 1, "первом": 1,
+	"второе": 2, "второго": 2, "второй": 2, "вторая": 2,
+	"третье": 3, "третьего": 3, "третий": 3, "третья": 3,
+	"четвёртое": 4, "четвертое": 4, "четвёртого": 4, "четвертого": 4, "четвёртый": 4, "четвертый": 4,
+	"пятое": 5, "пятого": 5, "пятый": 5, "пятая": 5,
+	"шестое": 6, "шестого": 6, "шестой": 6,
+	"седьмое": 7, "седьмого": 7, "седьмой": 7,
+	"восьмое": 8, "восьмого": 8, "восьмой": 8,
+	"девятое": 9, "девятого": 9, "девятый": 9,
+	"десятое": 10, "десятого": 10, "десятый": 10,
+	"одиннадцатое": 11, "одиннадцатого": 11,
+	"двенадцатое": 12, "двенадцатого": 12,
+	"тринадцатое": 13, "тринадцатого": 13,
+	"четырнадцатое": 14, "четырнадцатого": 14,
+	"пятнадцатое": 15, "пятнадцатого": 15,
+	"шестнадцатое": 16, "шестнадцатого": 16,
+	"семнадцатое": 17, "семнадцатого": 17,
+	"восемнадцатое": 18, "восемнадцатого": 18,
+	"девятнадцатое": 19, "девятнадцатого": 19,
+	"двадцатое": 20, "двадцатого": 20, "двадцать": 20,
+	"тридцатое": 30, "тридцатого": 30, "тридцать": 30,
+
+	"сорок": 40, "сорокового": 40, "пятьдесят": 50, "пятидесятого": 50,
+	"шестьдесят": 60, "шестидесятого": 60, "семьдесят": 70, "семидесятого": 70,
+	"восемьдесят": 80, "восьмидесятого": 80, "девяносто": 90, "девяностого": 90,
+	"сто": 100, "двести": 200, "триста": 300, "четыреста": 400, "пятьсот": 500,
+	"шестьсот": 600, "семьсот": 700, "восемьсот": 800, "девятьсот": 900,
+	"два": 2, "две": 2,
+}
+
+// dateThousandWords — слова-тысячи: они умножают накопленное слева число.
+var dateThousandWords = map[string]bool{
+	"тысяча": true, "тысячи": true, "тысяч": true, "тысячного": true,
+}
+
+// dateWordNumber складывает числительные в одно число: «тысяча девятьсот
+// восемьдесят пятого» это 1985, «двадцать первого» это 21.
+func dateWordNumber(words []string) (int, bool) {
+	if len(words) == 0 {
+		return 0, false
+	}
+	total, pending := 0, 0
+	for _, w := range words {
+		if dateThousandWords[w] {
+			if pending == 0 {
+				pending = 1
+			}
+			total += pending * 1000
+			pending = 0
+			continue
+		}
+		v, ok := dateNumberWords[w]
+		if !ok {
+			return 0, false
+		}
+		pending += v
+	}
+	return total + pending, true
+}
+
+// dateIsNumberWord сообщает, что слово входит в запись числа словами.
+func dateIsNumberWord(w string) bool {
+	if dateThousandWords[w] {
+		return true
+	}
+	_, ok := dateNumberWords[w]
+	return ok
+}
+
+// dateWordsBefore собирает подряд идущие слова-числительные слева от токена и
+// возвращает их вместе с началом первого слова.
+func dateWordsBefore(d *Doc, tok, maxWords int) ([]string, int, bool) {
+	words := make([]string, 0, maxWords)
+	start := 0
+	for j := tok - 1; j >= 0 && len(words) < maxWords; j-- {
+		w, ok := dateNumberWordAt(d, j)
+		if !ok {
+			break
+		}
+		if w == "" {
+			continue
+		}
+		words = append(words, w)
+		start = d.Tokens[j].Start
+	}
+	dateReverse(words)
+	return words, start, len(words) > 0
+}
+
+// dateWordsAfter собирает подряд идущие слова-числительные справа от токена и
+// возвращает их вместе с концом последнего слова.
+func dateWordsAfter(d *Doc, tok, maxWords int) ([]string, int, bool) {
+	words := make([]string, 0, maxWords)
+	end := 0
+	for j := tok + 1; j < len(d.Tokens) && len(words) < maxWords; j++ {
+		w, ok := dateNumberWordAt(d, j)
+		if !ok {
+			break
+		}
+		if w == "" {
+			continue
+		}
+		words = append(words, w)
+		end = d.Tokens[j].End
+	}
+	return words, end, len(words) > 0
+}
+
+// dateNumberWordAt читает токен как часть числа словами. Пустая строка при
+// истине означает разделитель, который можно пропустить.
+func dateNumberWordAt(d *Doc, j int) (string, bool) {
+	tok := d.Tokens[j]
+	text := d.Lower[tok.Start:tok.End]
+	if tok.Kind == KindSpace || tok.Kind == KindPunct {
+		if !dateIsSpacerGap(text) {
+			return "", false
+		}
+		return "", true
+	}
+	if tok.Kind != KindCyr || !dateIsNumberWord(text) {
+		return "", false
+	}
+	return text, true
+}
+
+// dateReverse переворачивает список слов, собранный справа налево.
+func dateReverse(words []string) {
+	for i, j := 0, len(words)-1; i < j; i, j = i+1, j-1 {
+		words[i], words[j] = words[j], words[i]
+	}
+}
+
 // birthYears находит запись года рождения без дня и месяца: «1985 г.р.»,
 // «1985 года рождения», «род. 1985». Года, уже вошедшие в полную дату,
 // пропускаются.
@@ -509,17 +959,11 @@ func (dd dateDetector) classify(d *Doc, start, end int, shape string) (Span, boo
 	return Span{Start: start, End: end, Type: t, Conf: conf, Reason: "date:" + shape + "+" + rule}, true
 }
 
-// dateByAnchor разбирает дату по явному якорю. Из двух якорей побеждает тот,
-// что стоит ближе: в анкете «паспорт выдан ..., 05.03.1990 г.р.» оба якоря
-// попадают в одно окно, и решает расстояние.
+// dateByAnchor разбирает дату по явному якорю, а при его отсутствии — по
+// упоминанию документа неподалёку.
 func dateByAnchor(d *Doc, start, end int) (Type, float64, string, bool) {
-	birth, hasBirth := dateAnchorDistance(d, start, end, dateAnchorsBirth, dateAnchorWindow, dateSuffixWindow)
-	issue, hasIssue := dateAnchorDistance(d, start, end, dateAnchorsIssue, dateAnchorWindow, dateSuffixWindow)
-	switch {
-	case hasBirth && (!hasIssue || birth <= issue):
-		return TypeDOB, ConfHigh, "birth_anchor", true
-	case hasIssue:
-		return TypeIssueDate, ConfHigh, "issue_anchor", true
+	if t, conf, rule, ok := dateExplicitAnchor(d, start, end); ok {
+		return t, conf, rule, true
 	}
 	// Дата вскоре после упоминания документа или органа выдачи: между словом
 	// «паспорт» и датой помещаются серия, номер и название органа.
@@ -527,6 +971,22 @@ func dateByAnchor(d *Doc, start, end int) (Type, float64, string, bool) {
 		return TypeIssueDate, ConfAnchored, "document_context", true
 	}
 	return "", 0, "", false
+}
+
+// dateExplicitAnchor выбирает между якорем рождения и якорем выдачи. Из двух
+// побеждает тот, что стоит ближе: в анкете «паспорт выдан ..., 05.03.1990
+// г.р.» оба якоря попадают в одно окно, и решает расстояние.
+func dateExplicitAnchor(d *Doc, start, end int) (Type, float64, string, bool) {
+	birth, hasBirth := dateAnchorDistance(d, start, end, dateAnchorsBirth, dateAnchorWindow, dateSuffixWindow)
+	issue, hasIssue := dateAnchorDistance(d, start, end, dateAnchorsIssue, dateAnchorWindow, dateSuffixWindow)
+	switch {
+	case hasBirth && (!hasIssue || birth <= issue):
+		return TypeDOB, ConfHigh, "birth_anchor", true
+	case hasIssue:
+		return TypeIssueDate, ConfHigh, "issue_anchor", true
+	default:
+		return "", 0, "", false
+	}
 }
 
 // byContext решает судьбу даты без якоря по режиму детектора.
@@ -582,7 +1042,7 @@ func dateHasNegative(d *Doc, start, end int) bool {
 }
 
 // dateHasPIIContext сообщает, что рядом с датой есть другие персональные
-// данные: банковский якорь, отчество или длинный номер документа.
+// данные: банковский якорь, отчество или цифры документа.
 func dateHasPIIContext(d *Doc, start, end int) bool {
 	lo, hi := d.WindowRunes(start, end, datePIIWindow, datePIIWindow)
 	window := d.Lower[lo:hi]
@@ -592,24 +1052,35 @@ func dateHasPIIContext(d *Doc, start, end int) bool {
 	if _, ok := ContainsAnyLower(window, datePatronymics); ok {
 		return true
 	}
-	return dateHasLongNumber(d, start, end, lo, hi)
+	return dateNeighbourDigits(d, start, end, lo, hi) >= dateNeighbourDigitsMin
 }
 
-// dateHasLongNumber ищет в окне длинный номер: паспорт, карту, телефон, ИНН.
-// Сама дата в расчёт не берётся.
-func dateHasLongNumber(d *Doc, start, end, lo, hi int) bool {
+// dateNeighbourDigits считает цифры соседних чисел в окне, не считая цифры
+// самой даты. Серия и номер документа рядом с датой это анкета человека, и не
+// важно, разорваны они словом «номер» или нет.
+func dateNeighbourDigits(d *Doc, start, end, lo, hi int) int {
+	total := 0
 	for _, run := range d.NumRuns() {
 		if run.End <= lo || run.Start >= hi {
 			continue
 		}
-		if run.Start >= start && run.End <= end {
+		total += dateDigitsOutside(d, run, start, end)
+	}
+	return total
+}
+
+// dateDigitsOutside считает цифры последовательности за пределами фрагмента.
+// Отбрасывать последовательность целиком нельзя: в записи «195.12.1.20» дата
+// и остаток адреса лежат в одной последовательности.
+func dateDigitsOutside(d *Doc, run NumRun, start, end int) int {
+	n := 0
+	for i := run.Start; i < run.End; i++ {
+		if !dateIsDigit(d.Text[i]) || (i >= start && i < end) {
 			continue
 		}
-		if len(run.Digits) >= 10 {
-			return true
-		}
+		n++
 	}
-	return false
+	return n
 }
 
 // dateWithinLine требует, чтобы фрагмент не пересекал перевод строки.

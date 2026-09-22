@@ -97,6 +97,12 @@ func TestCardHolderDetector(t *testing.T) {
 		{"цифры внутри слова рвут имя", "Карта 4111111111111111 IVAN2 IVANOV3", "", TypeCardHolder, 0},
 		{"служебная английская фраза", "Card 4111111111111111 please check your account limit", "", TypeCardHolder, 0},
 		{"пин без имени", "PIN 1234", "", TypeCardHolder, 0},
+		{"строчное имя латиницей после русского якоря", "держатель карты kristina dolgikh", "kristina dolgikh", TypeCardHolder, ConfHigh},
+		{"строчное имя после якоря на карте указано", "на карте указано darya davydov;", "darya davydov", TypeCardHolder, ConfHigh},
+		{"строчное имя после якоря cardholder", "cardholder: natalya sorokin", "natalya sorokin", TypeCardHolder, ConfHigh},
+		{"имя из трёх слов после якоря", "Cardholder: IVAN PETROVICH SIDOROV", "IVAN PETROVICH SIDOROV", TypeCardHolder, ConfHigh},
+		{"двойная фамилия через дефис", "Держатель карты: IVAN PETROV-SIDOROV", "IVAN PETROV-SIDOROV", TypeCardHolder, ConfHigh},
+		{"служебная фраза за якорем не имя", "Cardholder name is not printed on virtual cards", "", TypeCardHolder, 0},
 		{"строчные слова рядом с картой", "Card 4111111111111111 money transfer", "", TypeCardHolder, 0},
 		{"имя строчными без якоря не берём", "4111 1111 1111 1111 ivan ivanov", "", TypeCardHolder, 0},
 		{"пустой текст", "", "", TypeCardHolder, 0},
@@ -144,9 +150,51 @@ func TestExtraDocumentsDetector(t *testing.T) {
 		{"билет на поезд", "Билет на поезд 1234567", "", TypeMilitaryID, 0},
 		{"номер заказа не военный билет", "Заказ 1234567 оплачен", "", TypeMilitaryID, 0},
 		{"военный билет строчными", "военный билет аб 1234567", "аб 1234567", TypeMilitaryID, ConfHigh},
+		{"паспорт для выезда за границу", "Паспорт для выезда за границу 12 1713110", "12 1713110", TypeForeignPassport, ConfHigh},
+		{"загранпаспорт со знаком номера слитно", "Загранпаспорт: 51№7900456", "51№7900456", TypeForeignPassport, ConfHigh},
+		{"загранпаспорт со сбитой разбивкой цифр", "Паспорт для выезда за границу 97560 1589", "97560 1589", TypeForeignPassport, ConfHigh},
+		{"загранпаспорт с опечаткой в слове паспорт", "Па спорт для выезда за границу 511802520", "511802520", TypeForeignPassport, ConfHigh},
+
+		{"разрешение на проживание", "Разрешение на проживание 31 3099094", "31 3099094", TypeResidencePermit, ConfAnchored},
+		{"вид на жительство со знаком номера", "Документ: вид на жительство № 6740 736812", "6740 736812", TypeResidencePermit, ConfAnchored},
+		{"адрес проживания не вид на жительство", "Адрес проживания 123456, город Москва", "", TypeResidencePermit, 0},
+
+		{"свидетельство сокращением сор", "СоР: VI-ТО № 674684", "VI-ТО № 674684", TypeBirthCert, ConfHigh},
+		{"свидетельство с серией через пробел", "Свидетельство о рождении II МЮ № 123456", "II МЮ № 123456", TypeBirthCert, ConfHigh},
+		{"свидетельство с опечаткой в слове рождении", "Свидетельство о орждении VI-МЮ № 565358", "VI-МЮ № 565358", TypeBirthCert, ConfHigh},
+		{"фамилия сорокин не якорь свидетельства", "Сорокин Михаил, номер 123456 в очереди", "", TypeBirthCert, 0},
+		{"слово сорок не якорь свидетельства", "Начислено сорок баллов, всего 123456 баллов", "", TypeBirthCert, 0},
+
+		{"воинский документ", "Воинский документ: АН № 5477600", "АН № 5477600", TypeMilitaryID, ConfHigh},
+		{"военный билет со словом серии", "Военный билет серии АС номер 7812345", "АС номер 7812345", TypeMilitaryID, ConfHigh},
+		{"военник с потерянной цифрой номера", "Военник ЕС № 246370", "ЕС № 246370", TypeMilitaryID, ConfHigh},
+		{"билет на поезд с серией не военный", "Билет на поезд АБ 1234567", "", TypeMilitaryID, 0},
+
 		{"снилс на новой строке от якоря", "СНИЛС\n789-012-345 00", "789-012-345 00", TypeSNILS, ConfHigh},
 		{"загранпаспорт и внж рядом", "Загранпаспорт 75 1234567, ВНЖ 821234567", "821234567", TypeResidencePermit, ConfAnchored},
 		{"пустой текст", "", "", "", 0},
 	}
 	runCardHolderCases(t, det, cases)
+}
+
+// TestDetectorsOnBrokenTail проверяет, что детекторы этого файла не падают на
+// тексте, оборванном посреди многобайтовой руны. Движок режет длинный текст на
+// куски по байтовому смещению, и конец куска попадает внутрь кириллической
+// буквы. Паника детектора движком заглушается, поэтому тип молча пропадал бы
+// из ответа на всех длинных текстах.
+func TestDetectorsOnBrokenTail(t *testing.T) {
+	broken := "Держатель карты IVAN IVANOV. Военный билет АБ 1234567. Обращение приня\xd1"
+	d := NewDoc(broken)
+	found := map[Type]string{}
+	for _, det := range []Detector{NewCardHolderDetector(), NewExtraDocumentsDetector()} {
+		for _, s := range det.Detect(d) {
+			found[s.Type] = d.Text[s.Start:s.End]
+		}
+	}
+	if found[TypeCardHolder] != "IVAN IVANOV" {
+		t.Fatalf("имя держателя не найдено на оборванном тексте: %q", found[TypeCardHolder])
+	}
+	if found[TypeMilitaryID] != "АБ 1234567" {
+		t.Fatalf("военный билет не найден на оборванном тексте: %q", found[TypeMilitaryID])
+	}
 }

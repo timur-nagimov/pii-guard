@@ -2,7 +2,12 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -95,11 +100,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		masked[i] = chatMessage{Role: msg.Role, Content: encoded}
 	}
 	raw["messages"] = masked
-	if req.Stream {
-		// Потоковый режим у модели не запрашиваем: ответ нужно целиком, чтобы
-		// вернуть в нём исходные значения.
-		raw["stream"] = false
-	}
+	// Потоковый режим у модели не запрашиваем никогда: ответ нужен целиком,
+	// чтобы вернуть в нём исходные значения. Поле задаётся явно и всегда,
+	// потому что платформа отвергает запрос без него четырёхсотым кодом
+	// с пустым телом [проверено на живом обращении].
+	raw["stream"] = false
 	if sys.Upstream.Model != "" {
 		raw["model"] = sys.Upstream.Model
 	}
@@ -154,8 +159,92 @@ func (s *Server) callUpstream(r *http.Request, sys config.System, body []byte) (
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
+	return s.upstreamClient(sys, timeout).Do(req)
+}
+
+// upstreamClient возвращает клиента для обращения к языковой модели, при
+// необходимости с дополнительным корневым сертификатом. Клиенты кешируются по
+// имени системы: создавать транспорт на каждый запрос дорого и мешает
+// переиспользованию соединений.
+func (s *Server) upstreamClient(sys config.System, timeout time.Duration) *http.Client {
+	if v, ok := s.upstreams.Load(sys.Name); ok {
+		if c, valid := v.(*http.Client); valid {
+			return c
+		}
+	}
 	client := &http.Client{Timeout: timeout}
-	return client.Do(req)
+	if sys.Upstream.PinSHA256 != "" {
+		client.Transport = &http.Transport{
+			TLSClientConfig:     pinnedTLSConfig(sys.Upstream.PinSHA256),
+			MaxIdleConnsPerHost: 64,
+		}
+		s.upstreams.Store(sys.Name, client)
+		return client
+	}
+	if sys.Upstream.CAFile != "" {
+		pool, err := caPool(sys.Upstream.CAFile)
+		if err != nil {
+			s.log.Warn("не удалось прочитать корневой сертификат, используется системное хранилище",
+				"system", sys.Name, "error", err.Error())
+		} else {
+			client.Transport = &http.Transport{
+				TLSClientConfig:     &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+				MaxIdleConnsPerHost: 64,
+			}
+		}
+	}
+	s.upstreams.Store(sys.Name, client)
+	return client
+}
+
+// pinnedTLSConfig строит настройки соединения, где подлинность сервера
+// проверяется закреплённым отпечатком открытого ключа, а не цепочкой доверия.
+//
+// Так сделано потому, что внутренние ресурсы банка подписаны удостоверяющим
+// центром, которого нет ни в системном хранилище, ни в открытом доступе с
+// машины разработчика. Отпечаток снимается один раз и кладётся в настройки:
+// это строже проверки по цепочке, поскольку принимается ровно один ключ.
+func pinnedTLSConfig(pin string) *tls.Config {
+	return &tls.Config{
+		// Штатная проверка отключена намеренно: вместо неё ниже сравнивается
+		// отпечаток ключа, и соединение с чужим сервером будет отвергнуто.
+		InsecureSkipVerify: true, //nolint:gosec // подлинность проверяется закреплённым отпечатком
+		MinVersion:         tls.VersionTLS12,
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			for _, raw := range rawCerts {
+				cert, err := x509.ParseCertificate(raw)
+				if err != nil {
+					continue
+				}
+				spki, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+				if err != nil {
+					continue
+				}
+				sum := sha256.Sum256(spki)
+				if base64.StdEncoding.EncodeToString(sum[:]) == pin {
+					return nil
+				}
+			}
+			return errors.New("отпечаток ключа сервера не совпал с закреплённым")
+		},
+	}
+}
+
+// caPool читает файл с сертификатами и собирает из них хранилище доверия,
+// дополняя системное.
+func caPool(path string) (*x509.CertPool, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // путь задаёт оператор сервиса
+	if err != nil {
+		return nil, err
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(raw) {
+		return nil, errors.New("в файле нет ни одного сертификата")
+	}
+	return pool, nil
 }
 
 // decodeContent достаёт текст сообщения, если он задан строкой.

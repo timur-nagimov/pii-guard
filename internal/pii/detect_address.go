@@ -67,6 +67,7 @@ var addrStreetTypes = map[string]string{
 	"lane": "street", "blvd": "street", "boulevard": "street",
 	"dr": "street", "drive": "street", "sq": "street", "square": "street",
 	"hwy": "street", "highway": "street",
+	"str": "street", "strasse": "street",
 	"ul": "street", "ulitsa": "street", "prospekt": "street",
 	"pereulok": "street", "naberezhnaya": "street", "shosse": "street",
 	"proezd": "street", "bulvar": "street",
@@ -153,8 +154,53 @@ func (addressDetector) Types() []Type { return []Type{TypeAddress} }
 func (addressDetector) Detect(d *Doc) []Span {
 	ws := addrWords(d)
 	comps := addrScan(d, ws)
+	comps = addrWithLatinCity(d, ws, comps)
 	comps = addrWithPostcodes(d, comps)
 	return addrSpans(d, comps)
+}
+
+// addrWithLatinCity расширяет уличный компонент влево на название населённого
+// пункта, записанного латиницей: «Kemerovo, Druzhby str., 50». Латинских
+// названий в словаре нет, поэтому пункт опознаётся по положению: отдельное
+// слово с заглавной буквы, отделённое от улицы запятой.
+func addrWithLatinCity(d *Doc, ws []addrWord, comps []addrComp) []addrComp {
+	for i := range comps {
+		p, ok := addrLatinCityBefore(d, ws, comps[i])
+		if !ok || addrOverlaps(comps, ws[p].start, ws[p].end) {
+			continue
+		}
+		comps[i].start = ws[p].start
+		comps[i].kinds = append([]string{"city"}, comps[i].kinds...)
+	}
+	return comps
+}
+
+// addrLatinCityBefore ищет слово-название пункта перед уличным компонентом.
+// Слово должно стоять само по себе: в записи «John Smith, Druzhby str.»
+// фамилия отделена от имени пробелом, и населённым пунктом не считается.
+func addrLatinCityBefore(d *Doc, ws []addrWord, c addrComp) (int, bool) {
+	if !addrHasKind(c, "street") || addrHasKind(c, "city") {
+		return 0, false
+	}
+	p := -1
+	for i := range ws {
+		if ws[i].end <= c.start {
+			p = i
+		}
+	}
+	if p < 0 || ws[p].kind != KindLat || !ws[p].title {
+		return 0, false
+	}
+	if len([]rune(ws[p].lower)) < 3 || addrIsTypeWord(ws[p].lower) {
+		return 0, false
+	}
+	if d.Text[ws[p].end:c.start] != ", " {
+		return 0, false
+	}
+	if p > 0 && addrGap(d, ws, p-1) != "" && strings.TrimSpace(addrGap(d, ws, p-1)) == "" {
+		return 0, false
+	}
+	return p, true
 }
 
 // addrWithPostcodes добавляет к компонентам почтовый индекс, стоящий сразу за
@@ -364,10 +410,47 @@ func addrNameWord(ws []addrWord, i int) bool {
 		return false
 	}
 	single := len([]rune(w.lower)) == 1
-	if addrIsTypeWord(w.lower) && !(single && w.title) {
+	if addrIsTypeWord(w.lower) && (!single || !w.title) {
 		return false
 	}
 	return !single || w.title
+}
+
+// addrNameHead проверяет слово в роли начала названия рядом с типом. В
+// отличие от addrNameWord здесь допускается слово, совпадающее с типом
+// другого компонента: в записях «бульвар Набережная» и «Naberezhnaya str.»
+// слово «Набережная» это имя улицы, а не её тип. Различает их заглавная
+// буква, поэтому одиночные буквы и слова со строчной сюда не проходят.
+func addrNameHead(d *Doc, ws []addrWord, i int) bool {
+	if i < 0 || i >= len(ws) {
+		return false
+	}
+	return addrNameWord(ws, i) || addrNameTypeWord(d, ws, i)
+}
+
+// addrNameTypeWord допускает в роли названия слово, которое само служит типом.
+// Заглавная буква снимает сомнения сразу. В тексте одним регистром признаком
+// служит то, что собственного названия у слова нет: дальше стоит запятая или
+// номер, как в записи «переулок набережная, д. 15». Типы адресных номеров
+// сюда не пускаются: за ними всегда идёт число, а не название.
+func addrNameTypeWord(d *Doc, ws []addrWord, i int) bool {
+	w := ws[i]
+	if w.kind != KindCyr && w.kind != KindLat {
+		return false
+	}
+	if addrStopNames[w.lower] || addrGlueWords[w.lower] {
+		return false
+	}
+	if len([]rune(w.lower)) < 2 || !addrIsTypeWord(w.lower) {
+		return false
+	}
+	if w.title {
+		return true
+	}
+	if _, house := addrHouseTypes[w.lower]; house {
+		return false
+	}
+	return addrGap(d, ws, i) != " "
 }
 
 // addrName собирает название после типа и возвращает его конец и индекс
@@ -382,7 +465,7 @@ func addrName(d *Doc, ws []addrWord, i int) (int, int, bool) {
 	if ws[i].kind == KindDigit {
 		return addrNumericName(d, ws, i)
 	}
-	if !addrNameWord(ws, i) {
+	if !addrNameHead(d, ws, i) {
 		return 0, 0, false
 	}
 	end, last := ws[i].end, i
@@ -413,6 +496,9 @@ func addrNameContinues(d *Doc, ws []addrWord, j int) bool {
 	if gap != " " && gap != "-" {
 		return false
 	}
+	if gap == "-" {
+		return addrHyphenPart(ws, j)
+	}
 	if !addrNameWord(ws, j) {
 		return false
 	}
@@ -425,6 +511,19 @@ func addrNameContinues(d *Doc, ws []addrWord, j int) bool {
 	return true
 }
 
+// addrHyphenPart сообщает, что слово продолжает составное название через
+// дефис: «Ростов-на-Дону», «Комсомольск-на-Амуре». Через дефис допустимы и
+// служебные слова, поэтому проверяется только то, что это буквенное слово и не
+// якорь другого типа. Без этого название обрывалось на первой части, а адрес
+// распадался на две группы и переставал опознаваться как один.
+func addrHyphenPart(ws []addrWord, j int) bool {
+	w := ws[j]
+	if w.kind != KindCyr && w.kind != KindLat {
+		return false
+	}
+	return !addrStopNames[w.lower]
+}
+
 // addrMatchTyped опознаёт компонент вида «тип плюс название» в любом порядке:
 // и «ул. Ленина», и «Ленинская ул.», и «Baker Street».
 func addrMatchTyped(d *Doc, ws []addrWord, i int, types map[string]string) (addrComp, int, bool) {
@@ -432,11 +531,12 @@ func addrMatchTyped(d *Doc, ws []addrWord, i int, types map[string]string) (addr
 		return addrComp{}, 0, false
 	}
 	if kind, next, ok := addrLookupType(d, ws, i, types); ok {
-		end, after, named := addrName(d, ws, next)
-		if !named {
-			return addrComp{}, 0, false
+		// Название после типа отсутствует — слово само может оказаться
+		// названием при обратном порядке: в записи «Naberezhnaya str.» это
+		// имя улицы, хотя оно же служит типом в записи «наб. Мира».
+		if end, after, named := addrName(d, ws, next); named {
+			return addrComp{start: ws[i].start, end: end, kinds: []string{kind}}, after, true
 		}
-		return addrComp{start: ws[i].start, end: end, kinds: []string{kind}}, after, true
 	}
 	return addrMatchNameFirst(d, ws, i, types)
 }
@@ -445,14 +545,25 @@ func addrMatchTyped(d *Doc, ws []addrWord, i int, types map[string]string) (addr
 // из словаря сюда не пускается: в записи «Москва ул. Ленина» город не является
 // названием улицы.
 func addrMatchNameFirst(d *Doc, ws []addrWord, i int, types map[string]string) (addrComp, int, bool) {
-	if !addrNameWord(ws, i) || addrGap(d, ws, i) != " " {
-		return addrComp{}, 0, false
-	}
-	if _, known := dict.Place(ws[i].lower); known {
+	if !addrNameHead(d, ws, i) || addrGap(d, ws, i) != " " {
 		return addrComp{}, 0, false
 	}
 	kind, next, ok := addrLookupType(d, ws, i+1, types)
 	if !ok {
+		return addrComp{}, 0, false
+	}
+	// Название из словаря не может быть именем улицы или пункта: в записи
+	// «Москва ул. Ленина» город относится к себе. Для региона оговорка не
+	// действует, иначе опечатка «Свердловска область» теряла бы слово
+	// «область» и разрывала адрес.
+	if _, known := dict.Place(ws[i].lower); known && kind != "region" {
+		return addrComp{}, 0, false
+	}
+	// За типом стоит собственное название — значит тип относится к нему, а не
+	// к предыдущему слову. Без этой проверки запись «адрес ул. Центральная»
+	// разбиралась как улица «адрес», а настоящее название выпадало из
+	// фрагмента вместе с номером дома.
+	if _, _, named := addrName(d, ws, next); named {
 		return addrComp{}, 0, false
 	}
 	return addrComp{start: ws[i].start, end: ws[next-1].end, kinds: []string{kind}}, next, true
@@ -471,20 +582,29 @@ func addrMatchHouse(d *Doc, ws []addrWord, i int) (addrComp, int, bool) {
 	return addrComp{start: ws[i].start, end: end, kinds: []string{kind}}, last + 1, true
 }
 
-// addrNumberEnd расширяет номер дома на приклеенную литеру и на дробную часть:
-// «5а», «12/1», «12-45».
+// addrNumberEnd расширяет номер дома на приклеенную литеру, на приклеенный
+// номер корпуса и на дробную часть: «5а», «40к4», «12/1», «12-45».
 func addrNumberEnd(d *Doc, ws []addrWord, i int) (int, int) {
 	end, last := ws[i].end, i
 	for j := last + 1; j < len(ws); j++ {
-		gap := d.Text[ws[j-1].end:ws[j].start]
-		letter := gap == "" && ws[j].kind != KindDigit && len([]rune(ws[j].lower)) == 1
-		fraction := (gap == "/" || gap == "-") && ws[j].kind == KindDigit
-		if !letter && !fraction {
+		if !addrNumberTail(d.Text[ws[j-1].end:ws[j].start], ws[j]) {
 			break
 		}
 		end, last = ws[j].end, j
 	}
 	return end, last
+}
+
+// addrNumberTail сообщает, что слово продолжает номер дома. Приклеенная цифра
+// после литеры это номер корпуса: запись «д. 40к4» одно число, и без неё
+// хвостовая цифра оставалась снаружи фрагмента и рвала адрес надвое.
+func addrNumberTail(gap string, w addrWord) bool {
+	glued := gap == ""
+	single := len([]rune(w.lower)) == 1
+	letter := glued && w.kind != KindDigit && single
+	corp := glued && w.kind == KindDigit
+	fraction := (gap == "/" || gap == "-") && w.kind == KindDigit
+	return letter || corp || fraction
 }
 
 // addrMatchBareStreet опознаёт слитную запись «Тверская 12-45»: название с
@@ -729,8 +849,17 @@ func addrPunctGap(gap string) bool {
 // само по себе название города персональными данными не является.
 var birthAnchors = []string{
 	"место рождения", "место рожд", "места рождения", "мест. рожд",
-	"м.р.", "м. р.", "родился в", "родилась в", "родился", "родилась",
+	"м.р.", "м. р.", "мр", "родился в", "родилась в", "родился", "родилась",
 	"уроженец", "уроженка", "уроженцем", "уроженки", "родом из",
+	"place of birth", "birth place", "born in",
+}
+
+// birthQualifiers — уточнения источника сведений между якорем и значением:
+// «место рождения по паспорту: г. Курск». Само уточнение во фрагмент не
+// входит, иначе маска съедала бы слова «по паспорту».
+var birthQualifiers = []string{
+	"по паспорту", "по документу", "по документам", "по анкете",
+	"по данным паспорта", "согласно паспорту", "в паспорте",
 }
 
 // birthMaxRunes — наибольшая длина места рождения в рунах.
@@ -760,6 +889,10 @@ var birthStopWords = map[string]bool{
 	"неизвестно": true, "указано": true, "отсутствует": true, "нет": true,
 }
 
+// birthBreakRunes — знаки, которые обрывают место рождения: за ними идёт
+// служебный хвост записи, а не продолжение названия.
+const birthBreakRunes = "—–()[]{}«»\"|/"
+
 // birthAbbrev — сокращения, после которых точка не заканчивает предложение.
 var birthAbbrev = map[string]bool{
 	"г": true, "гор": true, "с": true, "п": true, "пос": true, "пгт": true,
@@ -780,7 +913,7 @@ func (birthPlaceDetector) Types() []Type { return []Type{TypeBirthPlace} }
 // Detect обходит все вхождения якорей и забирает значение после каждого.
 func (birthPlaceDetector) Detect(d *Doc) []Span {
 	ws := addrWords(d)
-	var out []Span
+	out := make([]Span, 0, len(birthAnchors))
 	for _, a := range birthAnchors {
 		out = append(out, birthByAnchor(d, ws, a)...)
 	}
@@ -827,6 +960,7 @@ func birthBoundary(s string, start, end int) bool {
 
 // birthValue собирает значение места рождения, начиная с позиции за якорем.
 func birthValue(d *Doc, ws []addrWord, from int) (Span, bool) {
+	from = birthSkipQualifier(d.Lower, from)
 	_, lineHi := d.LineBounds(from)
 	first := birthFirstWord(ws, from)
 	if first < 0 || ws[first].start >= lineHi {
@@ -857,6 +991,26 @@ func birthValue(d *Doc, ws []addrWord, from int) (Span, bool) {
 		Conf:   ConfHigh,
 		Reason: "birth_place:anchor",
 	}, true
+}
+
+// birthSkipQualifier сдвигает позицию за уточнение источника, если оно стоит
+// сразу за якорем. Уточнение должно кончаться на границе слова, иначе «по
+// анкете» совпало бы с началом другого слова.
+func birthSkipQualifier(low string, from int) int {
+	rest := low[from:]
+	trimmed := strings.TrimLeft(rest, " \t:,-")
+	off := from + len(rest) - len(trimmed)
+	for _, q := range birthQualifiers {
+		if !strings.HasPrefix(trimmed, q) {
+			continue
+		}
+		end := off + len(q)
+		if r, _ := firstRune(low[end:]); end < len(low) && unicode.IsLetter(r) {
+			continue
+		}
+		return end
+	}
+	return from
 }
 
 // birthFirstWord возвращает индекс первого значимого слова за позицией.
@@ -917,6 +1071,11 @@ func birthContinues(d *Doc, ws []addrWord, j, start int) bool {
 	}
 	gap := d.Text[ws[j-1].end:ws[j].start]
 	if strings.ContainsAny(gap, "\n\r;:") || len([]rune(gap)) > 3 {
+		return false
+	}
+	// Тире и скобка отделяют от места рождения служебный хвост записи:
+	// «г. Пенза — данные взяты из анкеты», «г. Оренбург (заявка принята)».
+	if strings.ContainsAny(gap, birthBreakRunes) || strings.Contains(gap, " - ") {
 		return false
 	}
 	if strings.Contains(gap, ".") && !birthAbbrev[ws[j-1].lower] {

@@ -76,6 +76,14 @@ type Upstream struct {
 	TokenEnv string        `yaml:"token_env"`
 	Model    string        `yaml:"model"`
 	Timeout  time.Duration `yaml:"timeout"`
+	// CAFile — файл с корневым сертификатом, которым подписан сертификат
+	// модели. Внутренние ресурсы банка подписаны собственным удостоверяющим
+	// центром, которого нет в системном хранилище.
+	CAFile string `yaml:"ca_file"`
+	// PinSHA256 — отпечаток открытого ключа сервера в кодировке base64.
+	// Применяется, когда корневого сертификата нет под рукой: подлинность
+	// сервера проверяется сравнением отпечатка, а не цепочкой доверия.
+	PinSHA256 string `yaml:"pin_sha256"`
 }
 
 // ContextRule — правило, по которому тип маскируется только вместе с другими.
@@ -314,6 +322,10 @@ func (c *Config) prepare() error {
 			return fmt.Errorf("система %q: %w", name, err)
 		}
 		s.Auth = auth
+		s.Upstream.URL = expandEnv(s.Upstream.URL)
+		s.Upstream.Model = expandEnv(s.Upstream.Model)
+		s.Upstream.CAFile = expandEnv(s.Upstream.CAFile)
+		s.Upstream.PinSHA256 = expandEnv(s.Upstream.PinSHA256)
 		if s.Exclusions.AllowAddressesFile != "" {
 			extra, ferr := readLines(s.Exclusions.AllowAddressesFile)
 			if ferr != nil {

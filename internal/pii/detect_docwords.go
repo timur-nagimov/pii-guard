@@ -338,6 +338,15 @@ var issuerStopWords = []string{
 // заканчивает предложение: «по Респ. Татарстан».
 var issuerAbbrev = []string{"респ", "терр", "адм", "упр", "авт"}
 
+// issuerGeoWords — слова, с которых начинается уточнение места внутри
+// названия органа. После них запятая не заканчивает название: запись
+// «по г. Тюмень, район Заводской» — один орган, а не два сведения.
+var issuerGeoWords = []string{
+	"район", "района", "районе", "районам", "г", "гор", "город", "города",
+	"обл", "область", "области", "край", "крае", "края", "респ", "республика",
+	"республике", "округ", "округе",
+}
+
 // issuerMaxRunes ограничивает длину названия органа. Без ограничения ошибка
 // поиска стоп-признака утащила бы в маску весь абзац.
 const issuerMaxRunes = 120
@@ -452,16 +461,11 @@ func issuerValueEnd(d *Doc, start, lineEnd int) int {
 	return lineEnd
 }
 
-// issuerStopsAt сообщает, что в данном смещении начинается стоп-признак.
-// Запятая обрывает название: за ней в анкете обычно идут другие сведения.
+// issuerStopsAt сообщает, что в данном смещении начинается стоп-признак:
+// знак препинания или слово, после которого идут уже другие сведения.
 func issuerStopsAt(low string, i, lineEnd int) bool {
-	switch {
-	case low[i] == ';' || low[i] == ',':
-		return true
-	case low[i] == '.':
-		return issuerSentenceEnd(low, i)
-	case low[i] >= '0' && low[i] <= '9':
-		return issuerDigitStops(low, i, lineEnd)
+	if stop, decided := issuerPunctStops(low, i, lineEnd); decided {
+		return stop
 	}
 	if dwIsWordRune(dwRuneBefore(low, i)) {
 		return false
@@ -472,6 +476,62 @@ func issuerStopsAt(low string, i, lineEnd int) bool {
 		}
 	}
 	return false
+}
+
+// issuerPunctStops разбирает знак в текущем смещении. Второе значение
+// сообщает, что знак разобран и проверять стоп-слова уже не нужно.
+//
+// Скобка и тире с пробелом слева заканчивают название: за ними идёт
+// пояснение вида «(заявка принята)» или продолжение предложения.
+func issuerPunctStops(low string, i, lineEnd int) (bool, bool) {
+	r, _ := firstRune(low[i:])
+	switch r {
+	case ';', '(', ')':
+		return true, true
+	case ',':
+		return !issuerGeoContinues(low, i, lineEnd), true
+	case '.':
+		return issuerSentenceEnd(low, i), true
+	case '-', '–', '—':
+		return unicode.IsSpace(dwRuneBefore(low, i)), true
+	}
+	if r >= '0' && r <= '9' {
+		return issuerDigitStops(low, i, lineEnd), true
+	}
+	return false, false
+}
+
+// issuerGeoContinues сообщает, что после запятой идёт уточнение места, а не
+// новые сведения. Без этого название обрывалось на запятой и район города в
+// маску не попадал.
+//
+// Проверяются два слова: уточнение бывает как с признаком впереди («район
+// Заводской»), так и с признаком позади («Московская область»).
+func issuerGeoContinues(low string, comma, lineEnd int) bool {
+	pos := comma + 1
+	for n := 0; n < 2; n++ {
+		ws, we, ok := dwNextWord(low, pos, lineEnd)
+		if !ok {
+			return false
+		}
+		if issuerIsGeoWord(low, ws, we) {
+			return true
+		}
+		pos = we
+	}
+	return false
+}
+
+// issuerIsGeoWord сообщает, что слово обозначает единицу административного
+// деления.
+func issuerIsGeoWord(low string, ws, we int) bool {
+	word := low[ws:we]
+	// Сокращение «р-н» распадается при разборе на слово из одной буквы,
+	// поэтому хвост проверяется отдельно.
+	if word == "р" {
+		return strings.HasPrefix(low[we:], "-н")
+	}
+	return dwInList(word, issuerGeoWords)
 }
 
 // issuerDigitStops сообщает, что число похоже на дату, год или код, а не на
@@ -530,15 +590,31 @@ var citizenshipAnchors = []string{
 	"citizenship", "nationality",
 }
 
-// citizenshipQualifiers — слова, которые входят в название страны, но сами
-// гражданством не являются: «Республика», «Федерация», «Штаты».
+// citizenshipQualifiers — слова, которые входят в значение гражданства, но
+// сами гражданством не являются: «Республика», «Федерация», «Штаты». Сюда же
+// отнесены «гражданин» и «подданный»: в записи «гражданство: гражданин
+// России» эталонное значение начинается именно с этого слова.
 var citizenshipQualifiers = []string{
 	"республика", "республики", "республику", "республике", "респ",
 	"федерация", "федерации", "федерацию", "народная", "народной",
 	"демократическая", "исламская", "королевство", "королевства",
 	"соединенные", "соединённые", "штаты", "южная", "северная", "новая",
+	"гражданин", "гражданина", "гражданка", "гражданки", "подданный",
+	"подданная", "подданного", "citizen", "national",
 	"republic", "federation", "united", "states",
 }
+
+// citizenshipFillerWords — служебные слова между якорем и значением:
+// «гражданство по паспорту», «гражданство клиента». В маску они не попадают,
+// но и значение за ними терять нельзя.
+var citizenshipFillerWords = []string{
+	"по", "паспорту", "паспорта", "документу", "документам", "клиента",
+	"клиенту", "заявителя", "заявителю", "страна", "страны", "of",
+}
+
+// citizenshipMaxFillers — сколько служебных слов допускается между якорем и
+// значением. Двух хватает на запись «гражданство по паспорту».
+const citizenshipMaxFillers = 2
 
 // citizenshipStems — основы названий стран и прилагательных-демонимов.
 // Основа покрывает все падежные формы, а ограничение хвоста не даёт ей
@@ -562,9 +638,9 @@ var citizenshipStems = []string{
 	"georgia", "germany", "turkey", "china", "india", "usa",
 }
 
-// citizenshipMaxWords — сколько слов может занимать название гражданства:
-// «Соединённые Штаты Америки» — самый длинный ожидаемый случай.
-const citizenshipMaxWords = 3
+// citizenshipMaxWords — сколько слов может занимать значение гражданства:
+// «гражданин Соединённых Штатов Америки» — самый длинный ожидаемый случай.
+const citizenshipMaxWords = 4
 
 // citizenshipMaxRunes ограничивает длину значения гражданства.
 const citizenshipMaxRunes = 60
@@ -609,6 +685,7 @@ func citizenshipValue(d *Doc, from int) (int, int, bool) {
 		return 0, 0, false
 	}
 	_, lineEnd := d.LineBounds(start)
+	start = citizenshipSkipFillers(d.Lower, start, lineEnd)
 	if _, hi := d.WindowRunes(start, start, 0, citizenshipMaxRunes); hi < lineEnd {
 		lineEnd = hi
 	}
@@ -621,6 +698,25 @@ func citizenshipValue(d *Doc, from int) (int, int, bool) {
 		return 0, 0, false
 	}
 	return start, end, true
+}
+
+// citizenshipSkipFillers пропускает служебные слова между якорем и значением.
+// Без этого запись «гражданство по паспорту: Россия» терялась целиком: сразу
+// за якорем стоит предлог, а не название страны.
+func citizenshipSkipFillers(low string, start, lineEnd int) int {
+	pos := start
+	for n := 0; n < citizenshipMaxFillers; n++ {
+		ws, we, ok := dwNextWord(low, pos, lineEnd)
+		if !ok || ws != pos || !dwInList(low[ws:we], citizenshipFillerWords) {
+			return pos
+		}
+		next, ok := dwSkipSeparators(low, we)
+		if !ok {
+			return pos
+		}
+		pos = next
+	}
+	return pos
 }
 
 // citizenshipWordsEnd набирает слова значения, пока они остаются частью
