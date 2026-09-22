@@ -84,6 +84,46 @@ func TestNewDocBasics(t *testing.T) {
 	}
 }
 
+// TestDocParseReuse проверяет, что повторный разбор через Parse даёт тот же
+// результат, что и свежий NewDoc. Пул переиспользует документ между запросами,
+// и ошибка сброса привела бы к тихому искажению данных соседнего запроса —
+// худшему виду сбоя, который не падает, а отдаёт чужое.
+func TestDocParseReuse(t *testing.T) {
+	texts := []string{
+		"",
+		"Иванов Иван Иванович, паспорт 4509 123456",
+		"тел. +7 916 123-45-67, ИНН 500100732259",
+		"эмодзи 😀 и знаки «»№, Türkçe ÄÖÜ ß",
+	}
+	for _, text := range texts {
+		want := NewDoc(text)
+		d := &Doc{}
+		for i := 0; i < 3; i++ {
+			d.Parse(text)
+			if d.Text != want.Text {
+				t.Fatalf("после переиспользования Text = %q, ожидалось %q", d.Text, want.Text)
+			}
+			if d.Lower != want.Lower {
+				t.Fatalf("после переиспользования Lower = %q, ожидалось %q", d.Lower, want.Lower)
+			}
+			if len(d.Tokens) != len(want.Tokens) {
+				t.Fatalf("после переиспользования токенов %d, ожидалось %d", len(d.Tokens), len(want.Tokens))
+			}
+			for j := range want.Tokens {
+				if d.Tokens[j] != want.Tokens[j] {
+					t.Fatalf("токен %d после переиспользования = %+v, ожидался %+v", j, d.Tokens[j], want.Tokens[j])
+				}
+			}
+			if d.RuneLen() != want.RuneLen() {
+				t.Fatalf("после переиспользования RuneLen = %d, ожидалось %d", d.RuneLen(), want.RuneLen())
+			}
+			if got, wantRuns := d.NumRuns(), want.NumRuns(); len(got) != len(wantRuns) {
+				t.Fatalf("после переиспользования числовых последовательностей %d, ожидалось %d", len(got), len(wantRuns))
+			}
+		}
+	}
+}
+
 // TestDocLowerSameByteLength проверяет главное условие движка: Lower побайтово
 // совпадает по длине с Text. Иначе смещения, найденные по нижнему регистру,
 // указывали бы в исходном тексте не туда.

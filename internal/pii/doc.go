@@ -50,10 +50,31 @@ type Doc struct {
 
 // NewDoc разбирает текст: строит нижний регистр, токены и индекс рун.
 func NewDoc(text string) *Doc {
-	d := &Doc{Text: text}
+	d := &Doc{}
+	d.Parse(text)
+	return d
+}
+
+// Parse разбирает новый текст в существующий документ, переиспользуя ёмкость
+// внутренних срезов. Используется пулом, чтобы не выделять срезы токенов и
+// индекса рун заново на каждом запросе.
+func (d *Doc) Parse(text string) {
+	d.Reset()
+	d.Text = text
 	d.Lower = lowerSameWidth(text)
 	d.tokenize()
-	return d
+}
+
+// Reset подготавливает документ к повторному разбору нового текста, сохраняя
+// ёмкость внутренних срезов. Вызывается только из пула, когда документ больше
+// не используется ни одним запросом: после ответа он нигде не сохраняется,
+// поэтому переиспользование безопасно по сроку жизни.
+func (d *Doc) Reset() {
+	d.Text = ""
+	d.Lower = ""
+	d.Tokens = d.Tokens[:0]
+	d.runeStarts = d.runeStarts[:0]
+	d.runs = nil
 }
 
 // lowerSameWidth приводит строку к нижнему регистру, сохраняя байтовую длину.
@@ -90,10 +111,20 @@ func classify(r rune) Kind {
 }
 
 // tokenize проходит по тексту один раз и заполняет Tokens и runeStarts.
+// Срезы переиспользуются между разборами: ёмкость, накопленная на прошлых
+// текстах, сохраняется, и на горячем пути не тратится на повторное выделение.
 func (d *Doc) tokenize() {
 	n := len(d.Text)
-	d.Tokens = make([]Token, 0, n/4+1)
-	d.runeStarts = make([]int32, 0, n/2+1)
+	if d.Tokens == nil {
+		d.Tokens = make([]Token, 0, n/4+1)
+	} else {
+		d.Tokens = d.Tokens[:0]
+	}
+	if d.runeStarts == nil {
+		d.runeStarts = make([]int32, 0, n/2+1)
+	} else {
+		d.runeStarts = d.runeStarts[:0]
+	}
 
 	cur := Token{Start: 0, End: 0, Kind: KindOther}
 	started := false
