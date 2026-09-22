@@ -1,0 +1,2 @@
+go test fuzz v1
+string("ҧВ\xc60A0000")
