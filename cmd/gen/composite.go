@@ -172,23 +172,6 @@ func genLatinMixed(g *Generator) []frag {
 	}
 }
 
-// phoneIntl возвращает телефон в международной записи: с кодом страны и без
-// скобок, как его пишут в международных формах.
-func (g *Generator) phoneIntl() string {
-	code := g.pick(phoneCodes)
-	a, b, c := g.digits(3), g.digits(2), g.digits(2)
-	switch g.r.IntN(4) {
-	case 0:
-		return "+7" + code + a + b + c
-	case 1:
-		return "+7 " + code + " " + a + " " + b + " " + c
-	case 2:
-		return "+7-" + code + "-" + a + "-" + b + "-" + c
-	default:
-		return "+7 (" + code + ") " + a + "-" + b + "-" + c
-	}
-}
-
 // genInvalidChecksum порождает значения с якорем, но с заведомо неверной
 // контрольной суммой. Такие фрагменты обязаны маскироваться: жюри печатает
 // выдуманные номера, и отказ по контрольной сумме означал бы пропуск.
@@ -408,4 +391,127 @@ func genLong64k(g *Generator) []frag {
 		size++
 	}
 	return out
+}
+
+// latinInitial возвращает первую букву транслитерированного слова заглавной:
+// так получаются инициалы в латинской записи имени.
+func latinInitial(s string) string {
+	t := translit(s)
+	if t == "" {
+		return ""
+	}
+	return strings.ToUpper(t[:1])
+}
+
+// genLatinNames порождает имена в латинском написании в разных формах:
+// фамилия с именем, фамилия с инициалами, полное имя, капсом. Отдельная
+// категория нужна, потому что латинские имена с инициалами и одиночные
+// фамилии с якорем распознаются иначе, чем полные пары.
+func genLatinNames(g *Generator) []frag {
+	p := g.person()
+	name := titleLatin(p.name)
+	surname := titleLatin(p.surname)
+	ni, pi := latinInitial(p.name), latinInitial(p.patronymic)
+	anchors := []string{"Client ", "Customer ", "Applicant ", "Cardholder ", "Name: ", "FIO: "}
+	head := g.pick(anchors)
+	switch g.r.IntN(6) {
+	case 0:
+		return frags(lit(head), val(pii.TypeFIO, surname+space+name))
+	case 1:
+		return frags(lit(head), val(pii.TypeFIO, name+space+surname))
+	case 2:
+		return frags(lit(head), val(pii.TypeFIO, surname+space+ni+"."+space+pi+"."))
+	case 3:
+		return frags(lit(head), val(pii.TypeFIO, surname+space+ni+"."+pi+"."))
+	case 4:
+		return frags(lit(head), val(pii.TypeFIO, strings.ToUpper(surname+space+name)))
+	default:
+		return frags(lit(head), val(pii.TypeFIO, surname+space+name+space+titleLatin(p.patronymic)))
+	}
+}
+
+// genIntlPhone порождает номера телефонов в международной записи: код страны,
+// код города или оператора. Такие номера приходят из анкет для переводов за
+// рубеж и из международных форм.
+func genIntlPhone(g *Generator) []frag {
+	anchors := []string{"Phone: ", "tel. ", "phone ", "Телефон: ", "тел. ", "Контактный телефон: "}
+	head := g.pick(anchors)
+	return frags(lit(head), val(pii.TypePhone, g.phoneIntl()))
+}
+
+// genEnglishAnchor порождает паспорта и карты рядом с английскими якорями:
+// passport, card number, phone. Значения латиницей или цифрами, якорь
+// английский.
+func genEnglishAnchor(g *Generator) []frag {
+	switch g.r.IntN(4) {
+	case 0:
+		return frags(
+			lit("passport "), val(pii.TypePassport, g.digitsNonZero(4)+space+g.digits(6)),
+			lit(", issued by "), val(pii.TypeIssuer, g.issuer()), lit("."),
+		)
+	case 1:
+		return frags(
+			lit("card number "), val(pii.TypeCard, g.cardNumber(true)),
+			lit(", phone "), val(pii.TypePhone, g.phoneIntl()), lit("."),
+		)
+	case 2:
+		return frags(
+			lit("passport "), val(pii.TypePassport, g.digitsNonZero(4)+space+g.digits(6)),
+			lit(", card "), val(pii.TypeCard, g.cardNumber(true)), lit("."),
+		)
+	default:
+		return frags(
+			lit("phone "), val(pii.TypePhone, g.phoneIntl()),
+			lit(", card number "), val(pii.TypeCard, g.cardNumber(true)), lit("."),
+		)
+	}
+}
+
+// genMixedAnchor порождает смешанные тексты, где якорь русский, а значение
+// латинское, и наоборот: якорь английский, а значение русское.
+func genMixedAnchor(g *Generator) []frag {
+	p := g.person()
+	latinName := titleLatin(p.name) + space + titleLatin(p.surname)
+	cyrName := p.full(caseNom)
+	switch g.r.IntN(4) {
+	case 0:
+		// Русский якорь, латинское значение.
+		return frags(
+			lit(g.pick([]string{"Клиент ", "Заявитель ", "Держатель карты "})),
+			val(pii.TypeFIO, latinName), lit("."),
+		)
+	case 1:
+		// Английский якорь, русское значение.
+		return frags(
+			lit(g.pick([]string{"Client ", "Customer ", "Applicant "})),
+			val(pii.TypeFIO, cyrName), lit("."),
+		)
+	case 2:
+		// Русский якорь, латинское значение паспорта.
+		return frags(
+			lit("Паспорт "), val(pii.TypePassport, g.digitsNonZero(4)+space+g.digits(6)), lit("."),
+		)
+	default:
+		// Английский якорь, русское значение паспорта.
+		return frags(
+			lit("passport "), val(pii.TypePassport, g.digitsNonZero(4)+space+g.digits(6)), lit("."),
+		)
+	}
+}
+
+// phoneIntl возвращает телефон в международной записи: с кодом страны и без
+// скобок, как его пишут в международных формах.
+func (g *Generator) phoneIntl() string {
+	code := g.pick(phoneCodes)
+	a, b, c := g.digits(3), g.digits(2), g.digits(2)
+	switch g.r.IntN(4) {
+	case 0:
+		return "+7" + code + a + b + c
+	case 1:
+		return "+7 " + code + " " + a + " " + b + " " + c
+	case 2:
+		return "+7-" + code + "-" + a + "-" + b + "-" + c
+	default:
+		return "+7 (" + code + ") " + a + "-" + b + "-" + c
+	}
 }
