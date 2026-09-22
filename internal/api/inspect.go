@@ -17,6 +17,10 @@ type inspectRequest struct {
 	// Preset переопределяет вид маскирования только для этого запроса.
 	// Пустое значение означает вид, заданный системе в настройках.
 	Preset string `json:"preset,omitempty"`
+	// System выбирает профиль системы-потребителя по имени. Пустое значение
+	// означает систему, опознанную по ключу доступа. Поле нужно странице
+	// проверки, которая переключает профили, не зная ключей.
+	System string `json:"system,omitempty"`
 }
 
 // inspectSpan — один найденный фрагмент со всеми подробностями решения.
@@ -93,15 +97,6 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := s.Config()
-	sys, ok := s.resolveSystem(r, cfg)
-	if !ok {
-		s.writeError(w, r, http.StatusForbidden, "system_not_allowed", "система не опознана или отключена")
-		return
-	}
-	if !sys.InspectOn(cfg.Defaults) {
-		s.writeError(w, r, http.StatusForbidden, "inspect_disabled", "разбор текста для этой системы выключен настройкой")
-		return
-	}
 
 	var req inspectRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, cfg.Server.MaxBodyBytes))
@@ -111,6 +106,19 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Text == "" {
 		s.writeValidation(w, r, "missing", []string{"body", "text"}, "поле text обязательно и не может быть пустым")
+		return
+	}
+
+	// Страница проверки выбирает профиль системы по имени; ключ доступа ей не
+	// нужен. Имя задано — подменяем систему, имени нет — остаёмся на системе,
+	// опознанной по ключу.
+	sys, ok := s.resolveRequestSystem(r, cfg, req.System)
+	if !ok {
+		s.writeError(w, r, http.StatusForbidden, "system_not_allowed", "система не опознана или отключена")
+		return
+	}
+	if !sys.InspectOn(cfg.Defaults) {
+		s.writeError(w, r, http.StatusForbidden, "inspect_disabled", "разбор текста для этой системы выключен настройкой")
 		return
 	}
 

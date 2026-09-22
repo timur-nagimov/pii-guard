@@ -22,9 +22,13 @@ import (
 // chatRequest — часть запроса к языковой модели, которая нас интересует.
 // Остальные поля сохраняются без изменений и уходят к модели как есть.
 type chatRequest struct {
-	Messages []chatMessage  `json:"messages"`
-	Stream   bool           `json:"stream,omitempty"`
-	rest     map[string]any `json:"-"`
+	Messages []chatMessage `json:"messages"`
+	Stream   bool          `json:"stream,omitempty"`
+	// System выбирает профиль системы-потребителя по имени. Поле нужно странице
+	// проверки, которая переключает профили, не зная ключей; модели оно не
+	// передаётся.
+	System string         `json:"system,omitempty"`
+	rest   map[string]any `json:"-"`
 }
 
 type chatMessage struct {
@@ -48,16 +52,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := s.Config()
-	sys, ok := s.resolveSystem(r, cfg)
-	if !ok {
-		s.writeError(w, r, http.StatusForbidden, "system_not_allowed", "система не опознана или отключена")
-		return
-	}
-	if sys.Upstream.URL == "" {
-		s.writeError(w, r, http.StatusNotImplemented, "upstream_not_configured", "для системы не задан адрес языковой модели")
-		return
-	}
-	s.extendWriteDeadline(w, r, sys)
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, cfg.Server.MaxBodyBytes))
 	if err != nil {
@@ -75,6 +69,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.writeValidation(w, r, "json_invalid", []string{"body", "messages"}, "не удалось разобрать список сообщений")
 		return
 	}
+	// Поле system — выбор профиля для страницы проверки, модели оно не нужно.
+	delete(raw, "system")
+
+	// Страница проверки выбирает профиль системы по имени; ключ доступа ей не
+	// нужен. Имя задано — подменяем систему, имени нет — остаёмся на системе,
+	// опознанной по ключу.
+	sys, ok := s.resolveRequestSystem(r, cfg, req.System)
+	if !ok {
+		s.writeError(w, r, http.StatusForbidden, "system_not_allowed", "система не опознана или отключена")
+		return
+	}
+	if sys.Upstream.URL == "" {
+		s.writeError(w, r, http.StatusNotImplemented, "upstream_not_configured", "для системы не задан адрес языковой модели")
+		return
+	}
+	s.extendWriteDeadline(w, r, sys)
 
 	// Маскируем текст каждого сообщения и запоминаем подстановки.
 	opts := sys.MaskOptions(cfg.Defaults)
