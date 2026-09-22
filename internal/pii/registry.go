@@ -10,6 +10,7 @@ import "sort"
 // или записью в раздел custom_types конфигурации — ядро при этом не меняется.
 type Registry struct {
 	detectors []Detector
+	onPanic   PanicHandler
 }
 
 // NewRegistry создаёт пустой набор детекторов.
@@ -38,16 +39,40 @@ func (r *Registry) Types() []Type {
 	return out
 }
 
+// PanicHandler вызывается, когда детектор завершился сбоем. Нужен, чтобы
+// сервис мог посчитать такие случаи, не завися от пакета показателей.
+type PanicHandler func(types []Type, recovered any)
+
+// OnPanic задаёт обработчик сбоя детектора.
+func (r *Registry) OnPanic(h PanicHandler) { r.onPanic = h }
+
 // Detect прогоняет все детекторы по документу и возвращает объединённый список
 // фрагментов, отсортированный по началу, без разрешения пересечений.
 // Пересечения снимает Resolve.
+//
+// Сбой одного детектора не роняет обработку целиком: его тип просто
+// пропускается. Для проверяющей системы это принципиально, потому что пять
+// подряд невалидных ответов останавливают весь прогон.
 func (r *Registry) Detect(d *Doc) []Span {
 	var spans []Span
 	for _, det := range r.detectors {
-		spans = append(spans, det.Detect(d)...)
+		spans = append(spans, r.detectOne(det, d)...)
 	}
 	SortSpans(spans)
 	return spans
+}
+
+// detectOne вызывает один детектор, перехватывая его сбой.
+func (r *Registry) detectOne(det Detector, d *Doc) (found []Span) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			found = nil
+			if r.onPanic != nil {
+				r.onPanic(det.Types(), rec)
+			}
+		}
+	}()
+	return det.Detect(d)
 }
 
 // SortSpans упорядочивает фрагменты по началу, затем по убыванию длины,

@@ -77,10 +77,36 @@ func run(cfg *config.Config, configPath string, log *slog.Logger) error {
 	reg.Register(
 		pii.NewNumericDetector(),
 		pii.NewEmailDetector(),
+		pii.NewFIODetector(),
+		pii.NewDateDetector(cfg.Defaults.DateWithoutAnchor),
+		pii.NewAddressDetector(),
+		pii.NewBirthPlaceDetector(),
+		pii.NewIssuerDetector(),
+		pii.NewCitizenshipDetector(),
+		pii.NewDriverLicenseLettersDetector(),
+		pii.NewCardHolderDetector(),
+		pii.NewExtraDocumentsDetector(),
 	)
+	if len(cfg.CustomTypes) > 0 {
+		custom, cerr := pii.NewCustomDetector(customRules(cfg))
+		if cerr != nil {
+			return fmt.Errorf("правила custom_types: %w", cerr)
+		}
+		reg.Register(custom)
+	}
 
 	m := metrics.New()
-	srv := api.New(cfg, st, engine.New(reg), m, log)
+	// Сбой отдельного детектора пропускает его тип, но не роняет ответ.
+	reg.OnPanic(func(types []pii.Type, recovered any) {
+		name := "unknown"
+		if len(types) > 0 {
+			name = string(types[0])
+		}
+		m.ObservePanic(name)
+		log.Error("сбой детектора", slog.String("type", name), slog.Any("panic", recovered))
+	})
+	eng := engine.New(reg)
+	srv := api.New(cfg, st, eng, m, log)
 
 	httpSrv := &http.Server{
 		Addr:              cfg.Server.HTTP,
@@ -124,7 +150,7 @@ func run(cfg *config.Config, configPath string, log *slog.Logger) error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
-	go watchConfig(configPath, srv, log, reload)
+	go watchConfig(configPath, srv, eng, log, reload)
 
 	select {
 	case err := <-errCh:
@@ -145,7 +171,7 @@ func run(cfg *config.Config, configPath string, log *slog.Logger) error {
 // watchConfig применяет новые настройки по сигналу SIGHUP и при изменении
 // файла на диске. Настройки, не прошедшие проверку, отбрасываются: сервис
 // продолжает работать со старыми.
-func watchConfig(path string, srv *api.Server, log *slog.Logger, sig <-chan os.Signal) {
+func watchConfig(path string, srv *api.Server, eng *engine.Engine, log *slog.Logger, sig <-chan os.Signal) {
 	var lastMod time.Time
 	if st, err := os.Stat(path); err == nil {
 		lastMod = st.ModTime()
@@ -160,6 +186,7 @@ func watchConfig(path string, srv *api.Server, log *slog.Logger, sig <-chan os.S
 			return
 		}
 		srv.SetConfig(cfg)
+		eng.ResetFilters()
 		log.Info("настройки применены", slog.String("reason", reason), slog.Int("systems", len(cfg.Systems)))
 	}
 
@@ -178,6 +205,23 @@ func watchConfig(path string, srv *api.Server, log *slog.Logger, sig <-chan os.S
 			}
 		}
 	}
+}
+
+// customRules переводит описания типов из настроек в правила детектора.
+func customRules(cfg *config.Config) []pii.CustomRule {
+	rules := make([]pii.CustomRule, 0, len(cfg.CustomTypes))
+	for _, ct := range cfg.CustomTypes {
+		rules = append(rules, pii.CustomRule{
+			Name:          ct.Name,
+			Pattern:       ct.Pattern,
+			Group:         ct.Group,
+			Validator:     ct.Validator,
+			Anchors:       ct.Anchors,
+			RequireAnchor: ct.RequireAnchor,
+			AnchorWindow:  ct.AnchorWindow,
+		})
+	}
+	return rules
 }
 
 // storeKey читает ключ шифрования хранилища из переменной окружения.

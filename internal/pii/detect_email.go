@@ -95,9 +95,20 @@ func scanDomain(text string, from int) (int, bool) {
 	if dots == 0 || lastDot < 0 {
 		return 0, false
 	}
-	// Хвостовая точка в конец адреса не входит.
+	// Хвостовая точка в конец адреса не входит: в предложении «почта a@b.ru.»
+	// последняя точка принадлежит предложению, а не адресу.
 	for end > from && text[end-1] == '.' {
 		end--
+	}
+	// После обрезки последняя точка домена могла оказаться за границей, тогда
+	// её нужно найти заново внутри укороченного диапазона.
+	lastDot = strings.LastIndexByte(text[from:end], '.')
+	if lastDot < 0 {
+		return 0, false
+	}
+	lastDot += from
+	if lastDot+1 >= end {
+		return 0, false
 	}
 	zone := text[lastDot+1 : end]
 	if len([]rune(zone)) < 2 {

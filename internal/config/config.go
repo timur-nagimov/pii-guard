@@ -86,11 +86,12 @@ type ContextRule struct {
 
 // Exclusions — списки, которые выводят значения из-под маскирования.
 type Exclusions struct {
-	PublicFigures     bool     `yaml:"public_figures"`
-	OrgAddresses      bool     `yaml:"org_addresses"`
-	AllowPersons      []string `yaml:"allow_persons"`
-	AllowAddressesFile string  `yaml:"allow_addresses_file"`
-	AllowValues       []string `yaml:"allow_values"`
+	PublicFigures      bool     `yaml:"public_figures"`
+	OrgAddresses       bool     `yaml:"org_addresses"`
+	AllowPersons       []string `yaml:"allow_persons"`
+	AllowAddresses     []string `yaml:"allow_addresses"`
+	AllowAddressesFile string   `yaml:"allow_addresses_file"`
+	AllowValues        []string `yaml:"allow_values"`
 }
 
 // System — настройки одной системы-потребителя.
@@ -111,10 +112,10 @@ type System struct {
 	Upstream            Upstream                 `yaml:"upstream"`
 
 	// Заполняются при разборе.
-	Name     string          `yaml:"-"`
-	Auth     Auth            `yaml:"-"`
+	Name     string            `yaml:"-"`
+	Auth     Auth              `yaml:"-"`
 	TypeSet  map[pii.Type]bool `yaml:"-"`
-	AllTypes bool            `yaml:"-"`
+	AllTypes bool              `yaml:"-"`
 }
 
 // CustomType — тип персональных данных, добавленный настройкой, без правки ядра.
@@ -130,13 +131,13 @@ type CustomType struct {
 
 // Значения полей on_error и on_unknown_id.
 const (
-	OnErrorOpen        = "open"
-	OnErrorClosed      = "closed"
+	OnErrorOpen          = "open"
+	OnErrorClosed        = "closed"
 	OnUnknownPassthrough = "passthrough"
-	OnUnknown404       = "404"
-	DateAnchorOnly     = "anchor_only"
-	DatePIIContext     = "pii_context"
-	DateAny            = "any"
+	OnUnknown404         = "404"
+	DateAnchorOnly       = "anchor_only"
+	DatePIIContext       = "pii_context"
+	DateAny              = "any"
 )
 
 // Enabled сообщает, действуют ли контекстные правила для системы.
@@ -313,9 +314,35 @@ func (c *Config) prepare() error {
 			return fmt.Errorf("система %q: %w", name, err)
 		}
 		s.Auth = auth
+		if s.Exclusions.AllowAddressesFile != "" {
+			extra, ferr := readLines(s.Exclusions.AllowAddressesFile)
+			if ferr != nil {
+				return fmt.Errorf("система %q: список адресов: %w", name, ferr)
+			}
+			s.Exclusions.AllowAddresses = append(s.Exclusions.AllowAddresses, extra...)
+		}
 		c.Systems[name] = s
 	}
 	return nil
+}
+
+// readLines читает непустые строки файла, пропуская строки-комментарии.
+// Используется для списков, которые удобнее держать отдельным файлом:
+// например, адреса отделений банка.
+func readLines(path string) ([]string, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // путь задаёт оператор сервиса
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out, nil
 }
 
 // parseAuth принимает две записи: строку «none» и объект с заголовком и хешем ключа.

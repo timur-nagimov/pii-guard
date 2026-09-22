@@ -4,6 +4,7 @@ package engine
 
 import (
 	"runtime"
+	"strings"
 	"sync"
 	"unicode/utf8"
 
@@ -49,24 +50,75 @@ func (r Result) Meta() []store.SpanMeta {
 	return out
 }
 
-// Engine — конвейер обработки. Не хранит состояния между запросами.
+// Engine — конвейер обработки. Между запросами хранит только готовые
+// контекстные фильтры систем: их сборка разбирает словарь известных людей,
+// и повторять её на каждом запросе незачем.
 type Engine struct {
 	registry *pii.Registry
+	filters  sync.Map
 }
 
 // New создаёт конвейер поверх набора детекторов.
 func New(reg *pii.Registry) *Engine { return &Engine{registry: reg} }
+
+// contextFilter возвращает готовый фильтр для системы, собирая его при первом
+// обращении.
+func (e *Engine) contextFilter(sys config.System) *pii.ContextFilter {
+	if v, ok := e.filters.Load(sys.Name); ok {
+		if f, valid := v.(*pii.ContextFilter); valid {
+			return f
+		}
+	}
+	f := pii.NewContextFilter(pii.ContextOptions{
+		PublicFigures:  sys.Exclusions.PublicFigures,
+		OrgAddresses:   sys.Exclusions.OrgAddresses,
+		AllowPersons:   sys.Exclusions.AllowPersons,
+		AllowAddresses: sys.Exclusions.AllowAddresses,
+		AllowValues:    sys.Exclusions.AllowValues,
+	})
+	e.filters.Store(sys.Name, f)
+	return f
+}
+
+// ResetFilters сбрасывает собранные фильтры. Вызывается после применения
+// новых настроек, иначе система работала бы по прежним спискам исключений.
+func (e *Engine) ResetFilters() { e.filters = sync.Map{} }
+
+// filterDatesByMode убирает даты, найденные по контексту, если система
+// требует только явный якорь.
+func filterDatesByMode(spans []pii.Span, mode string) []pii.Span {
+	if mode != config.DateAnchorOnly {
+		return spans
+	}
+	out := spans[:0]
+	for _, s := range spans {
+		isDate := s.Type == pii.TypeDOB || s.Type == pii.TypeIssueDate
+		if isDate && !strings.Contains(s.Reason, "_anchor") {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
 
 // Registry возвращает набор детекторов.
 func (e *Engine) Registry() *pii.Registry { return e.registry }
 
 // Mask находит персональные данные и накладывает маски по правилам системы.
 func (e *Engine) Mask(text string, sys config.System, defs config.Defaults) Result {
+	doc := pii.NewDoc(text)
 	spans := e.detect(text)
 	spans = filterByTypes(spans, sys)
+	spans = filterDatesByMode(spans, sys.DateMode(defs))
 	spans = applyContextRules(spans, sys, defs)
 
+	// Контекстные правила снимают то, что формально похоже на персональные
+	// данные, но ими не является: исторических лиц, адреса отделений, улицы,
+	// названные в честь людей, и значения из списков разрешённых.
+	spans, excluded := e.contextFilter(sys).Apply(doc, spans)
+
 	kept, dropped := pii.Resolve(spans, sys.MinConf(defs))
+	dropped = append(dropped, excluded...)
 	applied := mask.Apply(text, kept, sys.MaskOptions(defs))
 
 	counts := make(map[pii.Type]int, len(kept))

@@ -50,6 +50,10 @@ systems:
     on_error: open
     on_unknown_id: passthrough
     min_confidence: 0.5
+    exclusions:
+      # Исторические лица и адреса организаций персональными данными не являются.
+      public_figures: true
+      org_addresses: true
 
   # Цепочка «среда разработки — модуль — языковая модель».
   kilo:
@@ -61,6 +65,10 @@ systems:
     demask: true
     # Плейсхолдер переживает ответ модели, звёздочки и инициалы — нет.
     preset: token
+    exclusions:
+      # Исторические лица и адреса организаций персональными данными не являются.
+      public_figures: true
+      org_addresses: true
     upstream:
       url: "${ALFAGEN_URL}"
       token_env: ALFAGEN_TOKEN
@@ -79,6 +87,10 @@ systems:
     per_type:
       FIO: initials
       CARDHOLDER: initials
+    exclusions:
+      # Исторические лица и адреса организаций персональными данными не являются.
+      public_figures: true
+      org_addresses: true
 
   # Профиль, которому демаскирование запрещено: показывает, что обратное
   # преобразование доступно только настроенной системе.
@@ -90,6 +102,10 @@ systems:
     types: [all]
     demask: false
     preset: partial
+    exclusions:
+      # Исторические лица и адреса организаций персональными данными не являются.
+      public_figures: true
+      org_addresses: true
 
 # Новый тип персональных данных добавляется здесь, без правки кода.
 custom_types:

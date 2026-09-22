@@ -32,7 +32,7 @@ const (
 // Дополнительные типы: документы, удостоверяющие личность, кроме паспорта РФ.
 // Закрывают пункт 6 технического задания про расширенные сценарии.
 const (
-	TypeSNILS          Type = "SNILS"
+	TypeSNILS           Type = "SNILS"
 	TypeForeignPassport Type = "FOREIGN_PASSPORT"
 	TypeResidencePermit Type = "RESIDENCE_PERMIT"
 	TypeBirthCert       Type = "BIRTH_CERT"
