@@ -139,6 +139,59 @@ def full_article(fetcher, pageid):
     return pages[0] if pages else None
 
 
+# Каноническая категория, которой в русской Википедии помечена почти любая
+# биография. Спрашиваем только её: при запросе всех категорий разом лимит
+# cllimit расходуется на первые страницы пачки, и остальные приходят пустыми.
+BIO_CATEGORIES = "|".join(
+    [
+        "Категория:Персоналии по алфавиту",
+        "Категория:Википедия:Биографии современников",
+    ]
+)
+
+
+def mark_biographies(fetcher, pages, chunk=50):
+    """Проставляет статьям признак биографии отдельным запросом по категориям.
+
+    Без этого прохода статья вида «Филиппа-Кристина де Лален» считается обычной
+    и её первая фраза попадает в отрицательные примеры вместе с настоящим именем.
+    Такое имя маскировщик найдёт правильно, а мера ложных срабатываний вырастет
+    на пустом месте.
+    """
+    unknown = [p for p in pages if "person" not in p and not p.get("categories")]
+    print("статей без категорий: %d, уточняем признак биографии" % len(unknown))
+    by_id = {p["pageid"]: p for p in unknown}
+    ids = list(by_id)
+    for start in range(0, len(ids), chunk):
+        part = ids[start:start + chunk]
+        data = fetcher.get(
+            {
+                "action": "query",
+                "pageids": "|".join(str(i) for i in part),
+                "prop": "categories",
+                "clcategories": BIO_CATEGORIES,
+                "cllimit": "max",
+            }
+        )
+        if not data:
+            continue
+        for page in data.get("query", {}).get("pages", []) or []:
+            target = by_id.get(page.get("pageid"))
+            if target is None:
+                continue
+            target["person"] = bool(page.get("categories"))
+        if (start // chunk + 1) % 20 == 0:
+            print("  уточнено %d из %d" % (min(start + chunk, len(ids)), len(ids)))
+    return pages
+
+
+def rewrite_cache(path, pages):
+    with open(path, "w", encoding="utf-8") as fh:
+        for page in pages:
+            fh.write(json.dumps(page, ensure_ascii=False) + "\n")
+    print("кэш пересохранён: %d статей" % len(pages))
+
+
 def _pages(data):
     if not data:
         return []
@@ -341,6 +394,8 @@ def negative_reason(sentence):
 
 def is_person_article(page):
     """Статья о человеке: из неё отрицательные примеры не берём совсем."""
+    if page.get("person"):
+        return True
     for cat in page.get("categories", []):
         if PERSON_CAT_RE.search(cat):
             return True
@@ -657,6 +712,8 @@ def main():
     parser.add_argument("--seed", type=int, default=20260922)
     parser.add_argument("--build-only", action="store_true",
                         help="не ходить в сеть, собрать набор из кэша")
+    parser.add_argument("--mark-bio", action="store_true",
+                        help="уточнить признак биографии у статей без категорий")
     parser.add_argument("--analyze", action="store_true",
                         help="после сборки разобрать ложные срабатывания через cmd/score")
     parser.add_argument("--analyze-limit", type=int, default=6000)
@@ -667,6 +724,10 @@ def main():
         print("из кэша прочитано %d статей" % len(pages))
     else:
         pages = harvest(args)
+
+    if args.mark_bio:
+        mark_biographies(Fetcher(pause=args.pause), pages)
+        rewrite_cache(CACHE_PATH, pages)
 
     neg_items, car_items = build(pages, args)
 
