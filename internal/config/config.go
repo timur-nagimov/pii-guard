@@ -66,6 +66,11 @@ type Defaults struct {
 	MinConfidence       float64     `yaml:"min_confidence"`
 	ContextRulesEnabled bool        `yaml:"context_rules_enabled"`
 	DateWithoutAnchor   string      `yaml:"date_without_anchor"`
+	// InspectEnabled открывает ручку разбора текста. Она показывает, какое
+	// правило сработало и почему, и нужна для проверки и отладки. Значения в
+	// ответе принадлежат тому, кто их прислал, поэтому утечки нет, но в
+	// промышленной установке ручку разумно оставить только служебным системам.
+	InspectEnabled bool `yaml:"inspect_enabled"`
 }
 
 // Auth — способ опознания системы-потребителя.
@@ -120,6 +125,7 @@ type System struct {
 	MinConfidence       *float64                 `yaml:"min_confidence"`
 	DateWithoutAnchor   string                   `yaml:"date_without_anchor"`
 	ContextRulesEnabled *bool                    `yaml:"context_rules_enabled"`
+	InspectEnabled      *bool                    `yaml:"inspect_enabled"`
 	ContextRules        []ContextRule            `yaml:"context_rules"`
 	Exclusions          Exclusions               `yaml:"exclusions"`
 	Upstream            Upstream                 `yaml:"upstream"`
@@ -159,6 +165,14 @@ func (s System) ContextRulesOn(d Defaults) bool {
 		return *s.ContextRulesEnabled
 	}
 	return d.ContextRulesEnabled
+}
+
+// InspectOn сообщает, доступен ли системе разбор текста.
+func (s System) InspectOn(d Defaults) bool {
+	if s.InspectEnabled != nil {
+		return *s.InspectEnabled
+	}
+	return d.InspectEnabled
 }
 
 // MinConf возвращает порог уверенности для системы.
