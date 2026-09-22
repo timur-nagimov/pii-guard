@@ -159,15 +159,54 @@ fi
 say "8-10. Живой сервис"
 
 SERVICE_PID=""
+GATE_PORT="$(printf '%s' "$URL" | sed 's#.*:##')"
 if curl -s -m 3 -o /dev/null "$URL/healthz" 2>/dev/null; then
   STARTED_HERE=0
 else
   go build -o /tmp/gate-pii-guard ./cmd/pii-guard 2>/dev/null
-  PII_STORE_KEY="$(head -c 32 /dev/urandom | base64)" \
-    /tmp/gate-pii-guard -config configs/config.yaml >/tmp/gate-service.log 2>&1 &
+
+  # Свой файл настроек на время прогона. Две причины, и обе стоили ворот
+  # молчаливого пропуска самых важных проверок.
+  #
+  # Первая: порт. Рабочие настройки слушают тот же порт, что и запущенный
+  # вручную сервис, и ворота либо не поднялись бы, либо опросили чужую копию
+  # и проверили не тот код. Такое уже случалось.
+  #
+  # Вторая: обязательные переменные. Настройки требуют хеши ключей доступа
+  # для каждой системы, и без них служба честно отказывается стартовать.
+  # Ворота при этом печатали «сервис не поднялся» и шли дальше, то есть
+  # проверка контракта, сценариев жюри и поиска утечки не выполнялась вовсе.
+  sed -e "s#^  http: .*#  http: \":$GATE_PORT\"#" \
+      -e "s#^  https: .*#  https: \"\"#" \
+      configs/config.yaml > /tmp/gate-config.yaml
+
+  # Одноразовые значения: ворота проверяют поведение, а не секреты. Хеши
+  # берутся от заведомо известной строки, чтобы при надобности можно было
+  # постучаться в службу и ключом тоже.
+  GATE_KEY="${GATE_SYSTEM_KEY:-gate-probe-key}"
+  GATE_HASH="$(printf '%s' "$GATE_KEY" | shasum -a 256 | cut -d' ' -f1)"
+  export GATE_SYSTEM_KEY="$GATE_KEY"
+
+  # Имена переменных берём из самих настроек, а не списком: список устарел бы
+  # при добавлении новой системы, и ворота снова начали бы молча пропускать.
+  GATE_ENV=(
+    "PII_STORE_KEY=$(head -c 32 /dev/urandom | base64)"
+    "ALFAGEN_URL=https://example.invalid/v1/chat/completions"
+    "ALFAGEN_TOKEN=gate-probe"
+  )
+  for name in $(grep -oE '\$\{[A-Z_][A-Z0-9_]*\}' configs/config.yaml | tr -d '${}' | sort -u); do
+    case "$name" in
+      *_SHA256) GATE_ENV+=("$name=$GATE_HASH") ;;
+      PII_STORE_KEY|ALFAGEN_URL|ALFAGEN_TOKEN) ;;
+      *) GATE_ENV+=("$name=$GATE_KEY") ;;
+    esac
+  done
+
+  env "${GATE_ENV[@]}" /tmp/gate-pii-guard -config /tmp/gate-config.yaml \
+    >/tmp/gate-service.log 2>&1 &
   SERVICE_PID=$!
   STARTED_HERE=1
-  for _ in $(seq 1 20); do
+  for _ in $(seq 1 30); do
     curl -s -m 2 -o /dev/null "$URL/healthz" 2>/dev/null && break
     sleep 0.5
   done
