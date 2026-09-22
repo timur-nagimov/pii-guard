@@ -1010,25 +1010,53 @@ func (dd dateDetector) byContext(d *Doc, start, end int) (Type, float64, string,
 func dateAnchorDistance(d *Doc, start, end int, anchors []string, before, after int) (int, bool) {
 	best := -1
 	lo, _ := d.WindowRunes(start, start, before, 0)
-	left := d.Lower[lo:start]
+	left := FoldHomoglyphs(d.Lower[lo:start])
 	for _, a := range anchors {
-		pos := strings.LastIndex(left, a)
+		na := FoldHomoglyphs(a)
+		pos := strings.LastIndex(left, na)
 		if pos < 0 {
 			continue
 		}
-		if dist := len(left) - (pos + len(a)); best < 0 || dist < best {
+		if dist := len(left) - (pos + len(na)); best < 0 || dist < best {
 			best = dist
 		}
 	}
 	_, hi := d.WindowRunes(end, end, 0, after)
-	right := d.Lower[end:hi]
+	right := FoldHomoglyphs(d.Lower[end:hi])
 	for _, a := range anchors {
-		pos := strings.Index(right, a)
+		na := FoldHomoglyphs(a)
+		pos := strings.Index(right, na)
 		if pos < 0 {
 			continue
 		}
 		if best < 0 || pos < best {
 			best = pos
+		}
+	}
+	// Пробел, вставленный внутрь якоря, разрывает слово: «ро жд» вместо
+	// «рожд». Пробуем окно без пробелов. Короткие якоря вроде «др» не берём:
+	// они совпадают внутри чужих слов («адреса» содержит «др»).
+	if best < 0 {
+		compact := strings.Map(func(r rune) rune {
+			if r == ' ' || r == '\t' || r == '\u00a0' {
+				return -1
+			}
+			return r
+		}, left)
+		for _, a := range anchors {
+			if utf8.RuneCountInString(a) < 4 {
+				continue
+			}
+			na := FoldHomoglyphs(a)
+			naCompact := strings.Map(func(r rune) rune {
+				if r == ' ' || r == '\t' || r == '\u00a0' {
+					return -1
+				}
+				return r
+			}, na)
+			if strings.Contains(compact, naCompact) {
+				return 0, true
+			}
 		}
 	}
 	return best, best >= 0
