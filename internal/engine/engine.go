@@ -38,6 +38,12 @@ type Result struct {
 	Placeholders []mask.Placeholder
 	// Counts — сколько фрагментов каждого типа найдено.
 	Counts map[pii.Type]int
+	// Subjects — разбиение фрагментов на субъектов: какие фрагменты относятся
+	// к одному человеку. Строятся поверх найденных фрагментов, детекторы не
+	// меняются. Рёбра — основание для правила сочетаний, а не само правило.
+	Subjects []Subject
+	// Edges — основания считать пары фрагментов относящимися к одному человеку.
+	Edges []Edge
 }
 
 // Meta возвращает метаданные фрагментов без самих значений — их безопасно
@@ -156,7 +162,20 @@ func (e *Engine) Mask(text string, sys config.System, defs config.Defaults) Resu
 	spans := e.detectDoc(doc)
 	spans = filterByTypes(spans, sys)
 	spans = filterDatesByMode(spans, sys.DateMode(defs))
-	spans = applyContextRules(spans, sys, defs)
+
+	// Связи строятся поверх найденных фрагментов и дают основание для правила
+	// сочетаний: «маскировать пин-код, только если у того же субъекта есть
+	// номер карты». Рёбра сами по себе ничего не маскируют.
+	//
+	// Связи строятся только при включённом правиле сочетаний: замер показал,
+	// что они стоят больше пяти процентов запроса, а без правила сочетаний
+	// они не влияют на решение и нужны только для разбора. Поэтому на горячем
+	// пути без правила сочетаний они не строятся вовсе.
+	links := linkResult{}
+	if sys.ContextRulesOn(defs) {
+		links = linkSubjects(doc, spans)
+		spans = applyContextRules(spans, links.Subjects, sys, defs)
+	}
 
 	// Контекстные правила снимают то, что формально похоже на персональные
 	// данные, но ими не является: исторических лиц, адреса отделений, улицы,
@@ -171,12 +190,23 @@ func (e *Engine) Mask(text string, sys config.System, defs config.Defaults) Resu
 	for _, s := range kept {
 		counts[s.Type]++
 	}
+	// Связи для ответа строятся на принятых фрагментах: их индексы должны
+	// совпадать с индексами в Result.Spans, иначе по ответу не сопоставить
+	// ребро с фрагментом. Для правила сочетаний связи уже построены выше на
+	// фрагментах до разрешения пересечений. Как и выше, связи строятся только
+	// при включённом правиле сочетаний.
+	keptLinks := linkResult{}
+	if sys.ContextRulesOn(defs) {
+		keptLinks = linkSubjects(doc, kept)
+	}
 	return Result{
 		Text:         applied.Text,
 		Spans:        kept,
 		Skipped:      dropped,
 		Placeholders: applied.Placeholders,
 		Counts:       counts,
+		Subjects:     keptLinks.Subjects,
+		Edges:        keptLinks.Edges,
 	}
 }
 
@@ -330,38 +360,78 @@ func filterByTypes(spans []pii.Span, sys config.System) []pii.Span {
 // applyContextRules реализует правило «маскировать только в сочетании»:
 // например, пин-код сам по себе не маскируется, а вместе с номером карты —
 // маскируется. Правила включаются одним признаком в настройках.
-func applyContextRules(spans []pii.Span, sys config.System, defs config.Defaults) []pii.Span {
+//
+// Правило выражается через связи фрагментов в субъектов: тип маскируется,
+// только если у того же субъекта есть требуемый сосед. Это прямое прочтение
+// требования «маскирование только при наличии нескольких однозначно
+// идентифицированных типов ПД». Рёбра — основание для правила, а не само
+// правило: сами по себе они ничего не маскируют.
+func applyContextRules(spans []pii.Span, subjects []Subject, sys config.System, defs config.Defaults) []pii.Span {
 	if !sys.ContextRulesOn(defs) || len(sys.ContextRules) == 0 {
 		return spans
 	}
-	present := make(map[pii.Type]bool, len(spans))
-	for _, s := range spans {
-		present[s.Type] = true
-	}
-	blocked := make(map[pii.Type]bool)
+	subjectOf, subjectTypes := subjectTypeIndex(spans, subjects)
+
+	blocked := make(map[int]bool)
 	for _, rule := range sys.ContextRules {
-		satisfied := false
-		for _, req := range rule.Requires {
-			if present[req] {
-				satisfied = true
-				break
+		for i, s := range spans {
+			if s.Type != rule.Mask {
+				continue
 			}
-		}
-		if !satisfied {
-			blocked[rule.Mask] = true
+			if !subjectHasAny(subjectOf, subjectTypes, i, rule.Requires) {
+				blocked[i] = true
+			}
 		}
 	}
 	if len(blocked) == 0 {
 		return spans
 	}
 	out := spans[:0]
-	for _, s := range spans {
-		if blocked[s.Type] {
+	for i, s := range spans {
+		if blocked[i] {
 			continue
 		}
 		out = append(out, s)
 	}
 	return out
+}
+
+// subjectTypeIndex строит две карты: «индекс фрагмента → субъект» и
+// «субъект → набор типов». Субъект без рёбер — это субъект из одного
+// фрагмента, поэтому каждый фрагмент попадает в какую-то группу.
+func subjectTypeIndex(spans []pii.Span, subjects []Subject) (map[int]int, []map[pii.Type]bool) {
+	subjectOf := make(map[int]int, len(spans))
+	for si, sub := range subjects {
+		for _, fi := range sub.Fragments {
+			subjectOf[fi] = si
+		}
+	}
+	subjectTypes := make([]map[pii.Type]bool, len(subjects))
+	for si := range subjects {
+		subjectTypes[si] = make(map[pii.Type]bool)
+	}
+	for i, s := range spans {
+		if si, ok := subjectOf[i]; ok {
+			subjectTypes[si][s.Type] = true
+		}
+	}
+	return subjectOf, subjectTypes
+}
+
+// subjectHasAny сообщает, есть ли у субъекта фрагмента i хотя бы один из
+// требуемых типов. Фрагмент без субъекта — одиночка: требуемого соседа у него
+// нет, и тип блокируется.
+func subjectHasAny(subjectOf map[int]int, subjectTypes []map[pii.Type]bool, i int, requires []pii.Type) bool {
+	si, ok := subjectOf[i]
+	if !ok {
+		return false
+	}
+	for _, req := range requires {
+		if subjectTypes[si][req] {
+			return true
+		}
+	}
+	return false
 }
 
 func minInt(a, b int) int {
