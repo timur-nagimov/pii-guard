@@ -68,6 +68,8 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/process", s.handleProcess)
 	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
+	mux.HandleFunc("/v1/inspect", s.handleInspect)
+	mux.HandleFunc("/ui", s.handleUI)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleReady)
 	mux.Handle("/metrics", s.metrics.Handler())

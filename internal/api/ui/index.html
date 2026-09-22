@@ -1,0 +1,735 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PII Guard: страница проверки</title>
+<style>
+/* Страница самодостаточна: ни одного внешнего ресурса, сервис работает
+   в закрытом контуре. Шрифты только системные, картинок нет. */
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --ink: #1f2328;
+  --ink-soft: #5b6470;
+  --line: #d9dde3;
+  --accent: #2f5fd0;
+  --ok: #17703f;
+  --bad: #a52020;
+  /* Десять цветов подсветки, все читаемы с тёмным текстом поверх. */
+  --g1: #ffd8a8;
+  --g2: #ffec99;
+  --g3: #b2f2bb;
+  --g4: #96f2d7;
+  --g5: #a5d8ff;
+  --g6: #d0bfff;
+  --g7: #eebefa;
+  --g8: #fcc2d7;
+  --g9: #ffc9c9;
+  --g10: #99e9f2;
+  --g0: #dee2e6;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  padding: 24px 20px 64px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.wrap { max-width: 1180px; margin: 0 auto; }
+
+header h1 { margin: 0 0 4px; font-size: 22px; font-weight: 650; }
+header p { margin: 0 0 20px; color: var(--ink-soft); font-size: 14px; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+
+.panel h2 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+textarea {
+  width: 100%;
+  min-height: 150px;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfbfc;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+textarea:focus, select:focus, button:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+.controls label { font-size: 14px; color: var(--ink-soft); }
+
+select {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 14px;
+  font-family: inherit;
+}
+
+button {
+  padding: 8px 16px;
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-family: inherit;
+  font-weight: 550;
+  cursor: pointer;
+}
+button:hover { filter: brightness(1.07); }
+button:disabled { opacity: 0.55; cursor: progress; }
+button.secondary { background: #fff; color: var(--accent); }
+
+.hint { margin-left: auto; color: var(--ink-soft); font-size: 13px; }
+
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  padding: 12px 18px;
+  margin-bottom: 16px;
+  background: #eef2fb;
+  border: 1px solid #ccd8f2;
+  border-radius: 10px;
+  font-size: 14px;
+}
+.summary b { font-weight: 650; }
+
+.notice {
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-radius: 10px;
+  border: 1px solid #f0c9a0;
+  background: #fdf3e6;
+  font-size: 14px;
+}
+.notice.error { border-color: #eeb3b3; background: #fdeceb; }
+
+.textview {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfbfc;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 13.5px;
+  line-height: 1.85;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 340px;
+  overflow: auto;
+}
+
+.mark {
+  border-radius: 4px;
+  padding: 1px 2px;
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.18);
+  cursor: default;
+}
+.mark.active { box-shadow: 0 0 0 2px var(--accent); }
+
+.g1 { background: var(--g1); }
+.g2 { background: var(--g2); }
+.g3 { background: var(--g3); }
+.g4 { background: var(--g4); }
+.g5 { background: var(--g5); }
+.g6 { background: var(--g6); }
+.g7 { background: var(--g7); }
+.g8 { background: var(--g8); }
+.g9 { background: var(--g9); }
+.g10 { background: var(--g10); }
+.g0 { background: var(--g0); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 12px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 20px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  font-size: 12.5px;
+  color: #1f2328;
+}
+
+.placeholders { margin-top: 12px; font-size: 13px; color: var(--ink-soft); }
+.placeholders code { color: var(--ink); }
+
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--ink-soft); font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.02em; }
+tbody tr:hover { background: #f0f4fd; }
+tbody tr.active { background: #e6edfc; }
+td.value, td.masked, td.reason { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12.5px; overflow-wrap: anywhere; }
+td.num { text-align: right; white-space: nowrap; }
+.typecell { display: inline-block; padding: 1px 8px; border-radius: 5px; font-weight: 600; font-size: 12.5px; }
+.empty { padding: 10px 0; color: var(--ink-soft); font-size: 13.5px; }
+
+.verdict { font-size: 15px; font-weight: 600; }
+.verdict.ok { color: var(--ok); }
+.verdict.bad { color: var(--bad); }
+.verdict-details { margin-top: 8px; font-size: 13px; color: var(--ink-soft); }
+
+@media (max-width: 720px) {
+  body { padding: 16px 12px 48px; }
+  .hint { margin-left: 0; width: 100%; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>PII Guard: страница проверки</h1>
+  <p>Вставьте текст, выберите вид маскирования и посмотрите, что именно нашлось, где и по какому признаку.</p>
+</header>
+
+<section class="panel">
+  <h2>Исходный текст</h2>
+  <textarea id="text" spellcheck="false" aria-label="Текст для разбора">Клиент Иванов Иван Иванович, дата рождения 12.03.1985, паспорт серия 4509 номер 123456 выдан ОУФМС России по г. Москве, код подразделения 770-001, адрес: 101000, г. Москва, ул. Ленина, д. 5, кв. 12, тел +7 (916) 123-45-67, почта ivanov@mail.ru, ИНН 500100732259, карта 4111 1111 1111 1111, CVV 123. Поэт Александр Пушкин родился в Москве. Отделение банка: ул. Тверская, д. 1.</textarea>
+  <div class="controls">
+    <label for="preset">Вид маскирования</label>
+    <select id="preset">
+      <option value="full" selected>full: все знаки в звёздочки</option>
+      <option value="full_ws">full_ws: звёздочки, пробелы сохранены</option>
+      <option value="partial">partial: видны крайние знаки</option>
+      <option value="initials">initials: инициалы</option>
+      <option value="token">token: плейсхолдеры вида [FIO_1]</option>
+      <option value="synthetic">synthetic: правдоподобная подстановка</option>
+    </select>
+    <button id="run" type="button">Разобрать</button>
+    <button id="roundtrip" class="secondary" type="button">Проверить обратное преобразование</button>
+    <span class="hint">Разбор по Ctrl + Enter или Cmd + Enter</span>
+  </div>
+</section>
+
+<div id="notice" class="notice" hidden></div>
+<div id="summary" class="summary" hidden></div>
+
+<section class="panel" id="panel-highlight" hidden>
+  <h2>Исходный текст с подсветкой</h2>
+  <div id="highlight" class="textview"></div>
+  <div id="legend" class="legend"></div>
+</section>
+
+<section class="panel" id="panel-masked" hidden>
+  <h2>Текст после маскирования</h2>
+  <div id="masked" class="textview"></div>
+  <div id="placeholders" class="placeholders" hidden></div>
+</section>
+
+<section class="panel" id="panel-found" hidden>
+  <h2>Находки</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Тип</th>
+        <th>Значение</th>
+        <th>Во что превратилось</th>
+        <th>Уверенность</th>
+        <th>Причина</th>
+      </tr>
+    </thead>
+    <tbody id="found"></tbody>
+  </table>
+  <div id="found-empty" class="empty" hidden>Ничего не найдено.</div>
+</section>
+
+<section class="panel" id="panel-skipped" hidden>
+  <h2>Снято с маскирования</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Тип</th>
+        <th>Значение</th>
+        <th>Уверенность</th>
+        <th>Причина снятия</th>
+      </tr>
+    </thead>
+    <tbody id="skipped"></tbody>
+  </table>
+  <div id="skipped-empty" class="empty" hidden>Ничего не снято: все кандидаты остались под маской.</div>
+</section>
+
+<section class="panel" id="panel-roundtrip" hidden>
+  <h2>Обратное преобразование</h2>
+  <div id="roundtrip-verdict" class="verdict"></div>
+  <div id="roundtrip-details" class="verdict-details"></div>
+</section>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* Правило страницы: пользовательский текст попадает на экран только через
+     textContent и свойства узлов. Способов вставить готовую разметку строкой
+     здесь нет ни одного, поэтому вставленный текст разметкой стать не может.
+     Отсутствие таких вызовов проверяется тестом ui_test.go. */
+
+  // Группы типов и цвета подсветки. Цветов ровно десять, остальные типы
+  // получают общий серый: больше оттенков глаз уже не различает.
+  var GROUPS = [
+    { cls: 'g1', title: 'Имена', types: ['FIO', 'CARDHOLDER'] },
+    { cls: 'g2', title: 'Даты', types: ['DOB', 'ISSUE_DATE'] },
+    { cls: 'g3', title: 'Почта', types: ['EMAIL'] },
+    { cls: 'g4', title: 'Телефон', types: ['PHONE'] },
+    { cls: 'g5', title: 'Место и адрес', types: ['ADDRESS', 'BIRTH_PLACE', 'POSTCODE', 'CITIZENSHIP'] },
+    { cls: 'g6', title: 'Документы', types: ['PASSPORT', 'DRIVER_LICENSE', 'FOREIGN_PASSPORT', 'RESIDENCE_PERMIT', 'BIRTH_CERT', 'MILITARY_ID'] },
+    { cls: 'g7', title: 'Реквизиты выдачи', types: ['ISSUER', 'DEPT_CODE'] },
+    { cls: 'g8', title: 'Карта', types: ['CARD'] },
+    { cls: 'g9', title: 'Секретные коды', types: ['CVV', 'PIN'] },
+    { cls: 'g10', title: 'Номера учёта', types: ['INN', 'SNILS'] }
+  ];
+
+  var TYPE_CLASS = {};
+  var GROUP_TITLE = { g0: 'Прочие типы' };
+  GROUPS.forEach(function (g) {
+    GROUP_TITLE[g.cls] = g.title;
+    g.types.forEach(function (t) { TYPE_CLASS[t] = g.cls; });
+  });
+
+  var el = function (id) { return document.getElementById(id); };
+  var colorClass = function (type) { return TYPE_CLASS[type] || 'g0'; };
+
+  var nodes = {
+    text: el('text'),
+    preset: el('preset'),
+    run: el('run'),
+    roundtrip: el('roundtrip'),
+    notice: el('notice'),
+    summary: el('summary'),
+    highlight: el('highlight'),
+    legend: el('legend'),
+    masked: el('masked'),
+    placeholders: el('placeholders'),
+    found: el('found'),
+    foundEmpty: el('found-empty'),
+    skipped: el('skipped'),
+    skippedEmpty: el('skipped-empty'),
+    rtVerdict: el('roundtrip-verdict'),
+    rtDetails: el('roundtrip-details')
+  };
+
+  // Связь строки таблицы и подсвеченного фрагмента: по общему номеру находки.
+  var marks = new Map();
+  var rows = new Map();
+
+  function show(id, on) { el(id).hidden = !on; }
+
+  function clear(node) {
+    while (node.firstChild) { node.removeChild(node.firstChild); }
+  }
+
+  function note(message, isError) {
+    nodes.notice.className = isError ? 'notice error' : 'notice';
+    nodes.notice.textContent = message;
+    nodes.notice.hidden = false;
+  }
+
+  function hideNote() { nodes.notice.hidden = true; }
+
+  function num(value, digits) {
+    return typeof value === 'number' && isFinite(value) ? value.toFixed(digits) : '0';
+  }
+
+  // Согласование числительного со словом: строка со сводкой читается людьми,
+  // и "1 фрагментов" в показе жюри выглядит небрежно.
+  function plural(count, one, few, many) {
+    var mod10 = count % 10;
+    var mod100 = count % 100;
+    if (mod10 === 1 && mod100 !== 11) { return one; }
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) { return few; }
+    return many;
+  }
+
+  function counted(count, one, few, many) {
+    return count + ' ' + plural(count, one, few, many);
+  }
+
+  // Превращение строки в массив кодовых точек. Сервис отдаёт границы в рунах,
+  // а обычная индексация строки в браузере считает кодовые единицы, поэтому
+  // разбор на кодовые точки нужен, чтобы подсветка не съезжала.
+  function toRunes(value) { return Array.from(value); }
+
+  function setActive(idx, on) {
+    var mark = marks.get(idx);
+    var row = rows.get(idx);
+    if (mark) { mark.classList.toggle('active', on); }
+    if (row) { row.classList.toggle('active', on); }
+    if (on && mark) { mark.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+  }
+
+  function bindHover(node, idx) {
+    node.addEventListener('mouseenter', function () { setActive(idx, true); });
+    node.addEventListener('mouseleave', function () { setActive(idx, false); });
+  }
+
+  function spanTitle(span) {
+    return 'Тип: ' + span.type +
+      '\nУверенность: ' + num(span.confidence, 2) +
+      '\nПричина: ' + (span.reason || 'не указана') +
+      '\nБайты: ' + span.start + '..' + span.end +
+      ', символы: ' + span.start_rune + '..' + span.end_rune;
+  }
+
+  // Подсветка исходного текста. Фрагменты сортируются по началу, наложения
+  // отбрасываются: один и тот же участок не может быть окрашен дважды.
+  function renderHighlight(text, spans) {
+    clear(nodes.highlight);
+    marks.clear();
+
+    var runes = toRunes(text);
+    var ordered = spans.map(function (span, idx) { return { span: span, idx: idx }; });
+    ordered.sort(function (a, b) {
+      return (a.span.start_rune - b.span.start_rune) || (b.span.end_rune - a.span.end_rune);
+    });
+
+    var cursor = 0;
+    ordered.forEach(function (item) {
+      var from = item.span.start_rune;
+      var to = item.span.end_rune;
+      if (typeof from !== 'number' || typeof to !== 'number') { return; }
+      if (from < cursor) { from = cursor; }
+      if (to > runes.length) { to = runes.length; }
+      if (to <= from) { return; }
+
+      if (from > cursor) {
+        nodes.highlight.appendChild(document.createTextNode(runes.slice(cursor, from).join('')));
+      }
+      var mark = document.createElement('span');
+      mark.className = 'mark ' + colorClass(item.span.type);
+      mark.textContent = runes.slice(from, to).join('');
+      mark.title = spanTitle(item.span);
+      bindHover(mark, item.idx);
+      marks.set(item.idx, mark);
+      nodes.highlight.appendChild(mark);
+      cursor = to;
+    });
+
+    if (cursor < runes.length) {
+      nodes.highlight.appendChild(document.createTextNode(runes.slice(cursor).join('')));
+    }
+  }
+
+  function renderLegend(spans) {
+    clear(nodes.legend);
+    var seen = new Map();
+    spans.forEach(function (span) {
+      var cls = colorClass(span.type);
+      if (!seen.has(cls)) { seen.set(cls, new Set()); }
+      seen.get(cls).add(span.type);
+    });
+    seen.forEach(function (types, cls) {
+      var chip = document.createElement('span');
+      chip.className = 'chip ' + cls;
+      chip.textContent = GROUP_TITLE[cls] + ': ' + Array.from(types).join(', ');
+      nodes.legend.appendChild(chip);
+    });
+  }
+
+  function cell(row, value, cssClass) {
+    var td = document.createElement('td');
+    td.textContent = value;
+    if (cssClass) { td.className = cssClass; }
+    row.appendChild(td);
+    return td;
+  }
+
+  function typeCell(row, type) {
+    var td = document.createElement('td');
+    var badge = document.createElement('span');
+    badge.className = 'typecell ' + colorClass(type);
+    badge.textContent = type;
+    td.appendChild(badge);
+    row.appendChild(td);
+  }
+
+  function renderFound(spans) {
+    clear(nodes.found);
+    rows.clear();
+    nodes.foundEmpty.hidden = spans.length > 0;
+
+    spans.forEach(function (span, idx) {
+      var row = document.createElement('tr');
+      typeCell(row, span.type);
+      cell(row, span.value, 'value');
+      cell(row, span.masked || 'см. текст маски целиком', 'masked');
+      cell(row, num(span.confidence, 2), 'num');
+      cell(row, span.reason || '', 'reason');
+      bindHover(row, idx);
+      rows.set(idx, row);
+      nodes.found.appendChild(row);
+    });
+  }
+
+  function renderSkipped(skipped) {
+    clear(nodes.skipped);
+    nodes.skippedEmpty.hidden = skipped.length > 0;
+
+    skipped.forEach(function (item) {
+      var row = document.createElement('tr');
+      typeCell(row, item.type);
+      cell(row, item.value, 'value');
+      cell(row, num(item.confidence, 2), 'num');
+      cell(row, item.reason || '', 'reason');
+      nodes.skipped.appendChild(row);
+    });
+  }
+
+  function renderPlaceholders(map) {
+    clear(nodes.placeholders);
+    var keys = map ? Object.keys(map) : [];
+    nodes.placeholders.hidden = keys.length === 0;
+    if (keys.length === 0) { return; }
+
+    var head = document.createElement('div');
+    head.textContent = 'Подстановки, по которым сервис восстанавливает ответ модели:';
+    nodes.placeholders.appendChild(head);
+    keys.forEach(function (key) {
+      var line = document.createElement('div');
+      var token = document.createElement('code');
+      token.textContent = key;
+      line.appendChild(token);
+      line.appendChild(document.createTextNode(' равно ' + map[key]));
+      nodes.placeholders.appendChild(line);
+    });
+  }
+
+  function renderSummary(data) {
+    clear(nodes.summary);
+    var typesFound = Object.keys(data.counts || {}).length;
+    var items = [
+      ['Размер текста', counted(data.text_bytes, 'байт', 'байта', 'байт') + ', ' +
+        counted(data.text_runes, 'символ', 'символа', 'символов')],
+      ['Найдено', counted(data.spans.length, 'фрагмент', 'фрагмента', 'фрагментов') + ' в ' +
+        counted(typesFound, 'типе', 'типах', 'типах')],
+      ['Снято с маскирования', counted(data.skipped.length, 'фрагмент', 'фрагмента', 'фрагментов')],
+      ['Разобрано за', num(data.took_ms, 2) + ' мс'],
+      ['Вид маскирования', data.preset + ', система ' + data.system]
+    ];
+    items.forEach(function (pair) {
+      var box = document.createElement('span');
+      var label = document.createElement('b');
+      label.textContent = pair[0] + ': ';
+      box.appendChild(label);
+      box.appendChild(document.createTextNode(pair[1]));
+      nodes.summary.appendChild(box);
+    });
+    nodes.summary.hidden = false;
+  }
+
+  function render(data) {
+    data.spans = data.spans || [];
+    data.skipped = data.skipped || [];
+    renderSummary(data);
+    renderHighlight(nodes.text.value, data.spans);
+    renderLegend(data.spans);
+    nodes.masked.textContent = data.masked || '';
+    renderPlaceholders(data.placeholders);
+    renderFound(data.spans);
+    renderSkipped(data.skipped);
+    show('panel-highlight', true);
+    show('panel-masked', true);
+    show('panel-found', true);
+    show('panel-skipped', true);
+  }
+
+  function hideResults() {
+    show('panel-highlight', false);
+    show('panel-masked', false);
+    show('panel-found', false);
+    show('panel-skipped', false);
+    nodes.summary.hidden = true;
+  }
+
+  async function postJSON(path, body) {
+    var resp = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    var raw = await resp.text();
+    var data = null;
+    if (raw) {
+      try { data = JSON.parse(raw); } catch (err) { data = null; }
+    }
+    return { status: resp.status, ok: resp.ok, data: data };
+  }
+
+  // Разбор отказа сервиса. Отдельно выделен случай выключенного разбора:
+  // это настройка, а не сбой, и человеку надо сказать об этом прямо.
+  function describeFailure(result) {
+    var data = result.data;
+    var code = data && data.error ? data.error.code : '';
+
+    if (result.status === 403 && code === 'inspect_disabled') {
+      return 'Разбор текста выключен настройкой, это не ошибка сети и не сбой страницы. ' +
+        'Сервис сознательно ответил отказом: параметр inspect_enabled выключен для этой системы ' +
+        'или в разделе defaults. Включите его в настройках сервиса и повторите разбор.';
+    }
+    if (result.status === 403) {
+      return 'Сервис не опознал систему или она отключена. Проверьте раздел systems в настройках.';
+    }
+    if (data && Array.isArray(data.detail) && data.detail.length > 0) {
+      return 'Запрос не принят: ' + data.detail.map(function (item) { return item.msg; }).join('; ');
+    }
+    if (data && data.error && data.error.message) {
+      return 'Сервис ответил отказом (' + code + '): ' + data.error.message;
+    }
+    return 'Сервис ответил кодом ' + result.status + '.';
+  }
+
+  async function runInspect() {
+    var text = nodes.text.value;
+    if (text.trim() === '') {
+      hideResults();
+      note('Вставьте текст: пустой разбирать нечего.', true);
+      return;
+    }
+
+    hideNote();
+    nodes.run.disabled = true;
+    try {
+      var result = await postJSON('/v1/inspect', { text: text, preset: nodes.preset.value });
+      if (!result.ok || !result.data) {
+        hideResults();
+        note(describeFailure(result), true);
+        return;
+      }
+      render(result.data);
+    } catch (err) {
+      hideResults();
+      note('Сервис не ответил: ' + (err && err.message ? err.message : 'соединение не установлено') + '.', true);
+    } finally {
+      nodes.run.disabled = false;
+    }
+  }
+
+  function newPayloadID() {
+    var crypto = window.crypto;
+    if (crypto && typeof crypto.randomUUID === 'function') {
+      return 'ui-' + crypto.randomUUID();
+    }
+    if (crypto && typeof crypto.getRandomValues === 'function') {
+      var buf = new Uint8Array(16);
+      crypto.getRandomValues(buf);
+      return 'ui-' + Array.from(buf).map(function (b) {
+        return b.toString(16).padStart(2, '0');
+      }).join('');
+    }
+    return 'ui-' + Date.now().toString(16) + Math.random().toString(16).slice(2);
+  }
+
+  // Побайтовое сравнение: одинаковый вид строк на экране ещё не гарантирует
+  // одинаковые байты, поэтому сравниваем именно их.
+  function compareBytes(left, right) {
+    var encoder = new TextEncoder();
+    var a = encoder.encode(left);
+    var b = encoder.encode(right);
+    var limit = Math.min(a.length, b.length);
+    for (var i = 0; i < limit; i++) {
+      if (a[i] !== b[i]) { return { same: false, at: i, left: a.length, right: b.length }; }
+    }
+    if (a.length !== b.length) {
+      return { same: false, at: limit, left: a.length, right: b.length };
+    }
+    return { same: true, at: -1, left: a.length, right: b.length };
+  }
+
+  function verdict(ok, headline, details) {
+    nodes.rtVerdict.className = ok ? 'verdict ok' : 'verdict bad';
+    nodes.rtVerdict.textContent = headline;
+    nodes.rtDetails.textContent = details;
+    show('panel-roundtrip', true);
+  }
+
+  async function runRoundtrip() {
+    var text = nodes.text.value;
+    if (text.trim() === '') {
+      note('Вставьте текст: проверять обратное преобразование не на чем.', true);
+      return;
+    }
+
+    hideNote();
+    nodes.roundtrip.disabled = true;
+    try {
+      var id = newPayloadID();
+      var masked = await postJSON('/process', { payload: text, payload_id: id });
+      if (!masked.ok || !masked.data) {
+        verdict(false, 'Не совпало', 'Маскирование не выполнено. ' + describeFailure(masked));
+        return;
+      }
+      var restored = await postJSON('/process', { payload: masked.data.result, payload_id: id });
+      if (!restored.ok || !restored.data) {
+        verdict(false, 'Не совпало', 'Обратный вызов не выполнен. ' + describeFailure(restored));
+        return;
+      }
+
+      var cmp = compareBytes(text, restored.data.result);
+      if (cmp.same) {
+        verdict(true, 'Совпало', 'Восстановленный текст побайтово равен исходному, ' +
+          counted(cmp.left, 'байт', 'байта', 'байт') + '. Идентификатор запроса: ' + id + '.');
+      } else {
+        verdict(false, 'Не совпало', 'Первое расхождение в байте ' + cmp.at + '. Исходный текст: ' +
+          counted(cmp.left, 'байт', 'байта', 'байт') + ', восстановленный: ' +
+          counted(cmp.right, 'байт', 'байта', 'байт') + '. Идентификатор запроса: ' + id + '.');
+      }
+    } catch (err) {
+      verdict(false, 'Не совпало', 'Сервис не ответил: ' +
+        (err && err.message ? err.message : 'соединение не установлено') + '.');
+    } finally {
+      nodes.roundtrip.disabled = false;
+    }
+  }
+
+  nodes.run.addEventListener('click', runInspect);
+  nodes.roundtrip.addEventListener('click', runRoundtrip);
+  nodes.text.addEventListener('keydown', function (event) {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault();
+      runInspect();
+    }
+  });
+
+  // Первый разбор сразу при открытии: страницу чаще всего открывают,
+  // чтобы что-то увидеть, а не чтобы нажать кнопку.
+  runInspect();
+})();
+</script>
+</body>
+</html>
