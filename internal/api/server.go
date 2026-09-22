@@ -95,6 +95,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/process", s.handleProcess)
 	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
 	mux.HandleFunc("/v1/inspect", s.handleInspect)
+	mux.HandleFunc("/v1/systems", s.handleSystems)
 	mux.HandleFunc("/ui", s.handleUI)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleReady)
