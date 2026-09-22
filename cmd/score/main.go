@@ -24,6 +24,14 @@ type sample struct {
 	Category string     `json:"category"`
 	Text     string     `json:"text"`
 	Spans    []goldSpan `json:"spans"`
+	// Source — происхождение элемента: собственная генерация или открытый
+	// источник. Нужен, чтобы отчёт различал качество на своих и на чужих данных.
+	Source string `json:"source,omitempty"`
+	// PartialLabels означает, что размечены не все персональные данные текста.
+	// Так помечаются настоящие тексты из открытых источников: в них могут
+	// встретиться неразмеченные имена и адреса, поэтому изменения за пределами
+	// размеченных фрагментов у таких элементов не считаются ошибкой.
+	PartialLabels bool `json:"partial_labels,omitempty"`
 }
 
 type goldSpan struct {
@@ -58,6 +66,7 @@ func main() {
 	eng, sys, defs := buildEngine()
 	byType := map[string]*stat{}
 	byCategory := map[string]*stat{}
+	bySource := map[string]*stat{}
 	shown := 0
 
 	for _, s := range samples {
@@ -78,14 +87,18 @@ func main() {
 				inside[i] = true
 			}
 			st := ensure(byType, g.Type)
+			src := ensure(bySource, s.Source)
 			ratio := changedRatio(origRunes, maskRunes, startRune, endRune)
 			st.fragments++
 			cat.fragments++
+			src.fragments++
 			st.changed += ratio
 			cat.changed += ratio
+			src.changed += ratio
 			if ratio > 0 {
 				st.touched++
 				cat.touched++
+				src.touched++
 			}
 			if ratio < 0.5 && *examples > 0 && shown < *examples &&
 				(*onlyType == "" || *onlyType == g.Type) {
@@ -95,9 +108,16 @@ func main() {
 			}
 		}
 
-		extra, outside := outsideChanges(origRunes, maskRunes, inside)
-		cat.extra += extra
-		cat.outside += outside
+		extra := 0
+		if !s.PartialLabels {
+			var outside int
+			extra, outside = outsideChanges(origRunes, maskRunes, inside)
+			cat.extra += extra
+			cat.outside += outside
+			src := ensure(bySource, s.Source)
+			src.extra += extra
+			src.outside += outside
+		}
 		if extra > 0 && *examples > 0 && shown < *examples && *onlyType == "" && len(s.Spans) == 0 {
 			shown++
 			fmt.Printf("ЛИШНЕЕ  [%s]\n   текст: %s\n   маска: %s\n", s.Category, cut(s.Text), cut(res.Text))
@@ -105,6 +125,7 @@ func main() {
 	}
 
 	report("Типы", byType, *onlyType)
+	report("Источники", bySource, "")
 	report("Категории", byCategory, "")
 }
 
