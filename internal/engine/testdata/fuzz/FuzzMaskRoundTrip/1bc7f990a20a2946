@@ -1,0 +1,2 @@
+go test fuzz v1
+string("\x91Տ\x95\xaaʼ\xda0\x85\x99\xf9Ʈ")
