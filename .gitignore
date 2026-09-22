@@ -9,3 +9,9 @@ deploy/terraform/.terraform/
 deploy/terraform/*.tfstate
 deploy/terraform/*.tfstate.*
 deploy/terraform/.terraform.lock.hcl
+# Скомпилированные файлы: в архив с исходным кодом они попадать не должны.
+*.test
+/gen
+/sonar
+/score
+/pii-guard
