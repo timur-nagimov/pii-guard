@@ -86,6 +86,13 @@ var cardHolderServiceWords = map[string]bool{
 	"may": true, "should": true, "does": true, "did": true, "has": true,
 	"have": true, "her": true, "his": true, "its": true, "here": true,
 	"there": true, "then": true, "than": true, "but": true, "also": true,
+	"on": true, "at": true, "in": true, "of": true, "to": true, "by": true,
+	"or": true, "if": true, "it": true, "as": true, "be": true, "no": true,
+	"do": true, "we": true, "us": true, "me": true, "my": true, "all": true,
+	"any": true, "only": true, "per": true, "via": true, "out": true,
+	"off": true, "up": true, "virtual": true, "physical": true,
+	"plastic": true, "digital": true, "cards": true, "same": true,
+	"other": true, "such": true, "very": true, "more": true, "less": true,
 }
 
 // cardHolderGapRunes — знаки, допустимые между якорем и именем и между словами
@@ -651,9 +658,10 @@ func extraDocAnchorNear(d *Doc, start, end int, anchors []string, before, after 
 
 // extraDocAnchorBefore ищет якорь слева от значения и требует, чтобы между
 // якорем и значением не было других цифр. Без этого требования якорь одного
-// документа в перечислении помечает номер следующего.
-func extraDocAnchorBefore(d *Doc, start int, anchors []string, before int) bool {
-	lo, _ := d.WindowRunes(start, start, before, 0)
+// документа в перечислении помечает номер следующего. Окно всегда равно
+// anchorWindow и задано в рунах: кириллический якорь иначе не достаёт.
+func extraDocAnchorBefore(d *Doc, start int, anchors []string) bool {
+	lo, _ := d.WindowRunes(start, start, anchorWindow, 0)
 	window := extraDocLowerSlice(d, lo, start)
 	best := -1
 	for _, a := range anchors {
@@ -711,7 +719,7 @@ func extraDocForeign(d *Doc, runs []NumRun, i int) (Span, bool) {
 	// Якорь ищем только слева и без чисел между ним и значением: иначе в
 	// перечислении документов якорь заграничного паспорта дотягивается до
 	// номера следующего документа.
-	if !extraDocAnchorBefore(d, start, extraDocAnchorsForeign, anchorWindow) {
+	if !extraDocAnchorBefore(d, start, extraDocAnchorsForeign) {
 		return Span{}, false
 	}
 	return extraDocSpan(d, start, end, TypeForeignPassport, ConfHigh, "foreign_passport:anchor_shape")
@@ -755,7 +763,7 @@ func extraDocBirthCert(d *Doc, run NumRun) (Span, bool) {
 		}
 		return Span{}, false
 	}
-	if !extraDocAnchorBefore(d, run.Start, extraDocAnchorsBirthCert, anchorWindow) {
+	if !extraDocAnchorBefore(d, run.Start, extraDocAnchorsBirthCert) {
 		return Span{}, false
 	}
 	return extraDocSpan(d, run.Start, run.End, TypeBirthCert, ConfAnchored, "birth_cert:anchor")
@@ -776,7 +784,7 @@ func extraDocMilitary(d *Doc, run NumRun) (Span, bool) {
 		}
 		return Span{}, false
 	}
-	if n != 7 || !extraDocAnchorBefore(d, run.Start, extraDocAnchorsMilitary, anchorWindow) {
+	if n != 7 || !extraDocAnchorBefore(d, run.Start, extraDocAnchorsMilitary) {
 		return Span{}, false
 	}
 	return extraDocSpan(d, run.Start, run.End, TypeMilitaryID, ConfAnchored, "military_id:anchor")
@@ -788,7 +796,7 @@ func extraDocPermit(d *Doc, run NumRun) (Span, bool) {
 	if n := len(run.Digits); n < 6 || n > 12 {
 		return Span{}, false
 	}
-	if !extraDocAnchorBefore(d, run.Start, extraDocAnchorsPermit, anchorWindow) {
+	if !extraDocAnchorBefore(d, run.Start, extraDocAnchorsPermit) {
 		return Span{}, false
 	}
 	return extraDocSpan(d, run.Start, run.End, TypeResidencePermit, ConfAnchored, "residence_permit:anchor")

@@ -150,6 +150,7 @@ func (f *ContextFilter) Apply(d *Doc, spans []Span) (kept []Span, dropped []Span
 	if f.orgAddresses {
 		sc.markOrgAddresses()
 	}
+	sc.markFigureBirthPlaces()
 	return sc.split()
 }
 
@@ -932,4 +933,63 @@ func ctxStem(word string) string {
 		}
 	}
 	return word
+}
+
+// markFigureBirthPlaces снимает место рождения, относящееся к исторической
+// личности. В предложении «Поэт Александр Пушкин родился в Москве» имя уже
+// снято как имя известного человека, и город рядом с ним тоже не является
+// персональными данными: он относится к тому же лицу.
+func (sc *ctxScan) markFigureBirthPlaces() {
+	for i := range sc.spans {
+		if sc.spans[i].Type != TypeBirthPlace || sc.reasons[i] != "" {
+			continue
+		}
+		if !sc.hasFigureInSameSentence(i) {
+			continue
+		}
+		sc.reasons[i] = reasonPublicFigure
+	}
+}
+
+// hasFigureInSameSentence сообщает, что в том же предложении есть имя,
+// снятое как имя известного человека.
+func (sc *ctxScan) hasFigureInSameSentence(idx int) bool {
+	lo, hi := sentenceBounds(sc.d.Text, sc.spans[idx].Start)
+	for j := range sc.spans {
+		if j == idx || sc.spans[j].Type != TypeFIO {
+			continue
+		}
+		if sc.reasons[j] != reasonPublicFigure {
+			continue
+		}
+		if sc.spans[j].Start >= lo && sc.spans[j].End <= hi {
+			return true
+		}
+	}
+	return false
+}
+
+// sentenceBounds возвращает границы предложения, в которое попадает смещение.
+func sentenceBounds(text string, off int) (int, int) {
+	if off < 0 {
+		off = 0
+	}
+	if off > len(text) {
+		off = len(text)
+	}
+	lo := 0
+	for i := off - 1; i > 0; i-- {
+		if text[i] == '.' || text[i] == '!' || text[i] == '?' || text[i] == '\n' {
+			lo = i + 1
+			break
+		}
+	}
+	hi := len(text)
+	for i := off; i < len(text); i++ {
+		if text[i] == '.' || text[i] == '!' || text[i] == '?' || text[i] == '\n' {
+			hi = i
+			break
+		}
+	}
+	return lo, hi
 }
