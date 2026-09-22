@@ -1,0 +1,7 @@
+.env
+.keys-plain.txt
+/bin/
+/dist/
+*.out
+coverage.*
+corpus/

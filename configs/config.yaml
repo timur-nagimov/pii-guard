@@ -1,0 +1,101 @@
+# Настройки сервиса маскирования персональных данных.
+# Файл применяется без перезапуска: отправьте сервису сигнал SIGHUP либо
+# просто сохраните файл — сервис заметит изменение в течение пяти секунд.
+# Настройки, не прошедшие проверку, отбрасываются, сервис продолжает работать
+# со старыми.
+
+server:
+  http: ":8080"
+  https: ":8443"
+  max_body_bytes: 4194304
+  read_header_timeout: 5s
+  read_timeout: 15s
+  # Короче клиентского таймаута проверяющей системы в десять секунд.
+  write_timeout: 9s
+  idle_timeout: 90s
+  shutdown_timeout: 15s
+
+limits:
+  # Ограничители — предохранители, а не регуляторы: на штатной нагрузке
+  # до отказа с просьбой повторить доходить не должно.
+  inflight: 96
+  heavy_inflight: 6
+  heavy_threshold_bytes: 65536
+  max_wait: 500ms
+
+store:
+  ttl: 60m
+  max_records: 1000000
+  key_env: PII_STORE_KEY
+
+defaults:
+  preset: full
+  on_error: closed
+  on_unknown_id: "404"
+  min_confidence: 0.6
+  # Контекстные правила по умолчанию выключены: одиночный пин-код должен
+  # маскироваться, иначе он уйдёт в языковую модель открытым текстом.
+  context_rules_enabled: false
+  date_without_anchor: pii_context
+
+systems:
+  # Профиль проверяющей системы: она не передаёт заголовков, поэтому работает
+  # без ключа. Единственная система без ключа, это проверяет валидатор.
+  alfasonar:
+    enabled: true
+    auth: none
+    types: [all]
+    demask: true
+    preset: full
+    on_error: open
+    on_unknown_id: passthrough
+    min_confidence: 0.5
+
+  # Цепочка «среда разработки — модуль — языковая модель».
+  kilo:
+    enabled: true
+    auth:
+      header: X-System-Key
+      key_sha256: "${KILO_KEY_SHA256}"
+    types: [all]
+    demask: true
+    # Плейсхолдер переживает ответ модели, звёздочки и инициалы — нет.
+    preset: token
+    upstream:
+      url: "${ALFAGEN_URL}"
+      token_env: ALFAGEN_TOKEN
+      model: deepseek-ai/DeepSeek-V4-Flash-0731
+      timeout: 60s
+
+  # Профиль для показа жюри: маска читаемая, видно структуру текста.
+  jury_demo:
+    enabled: true
+    auth:
+      header: X-System-Key
+      key_sha256: "${JURY_KEY_SHA256}"
+    types: [all]
+    demask: true
+    preset: partial
+    per_type:
+      FIO: initials
+      CARDHOLDER: initials
+
+  # Профиль, которому демаскирование запрещено: показывает, что обратное
+  # преобразование доступно только настроенной системе.
+  jury_nodemask:
+    enabled: true
+    auth:
+      header: X-System-Key
+      key_sha256: "${JURY2_KEY_SHA256}"
+    types: [all]
+    demask: false
+    preset: partial
+
+# Новый тип персональных данных добавляется здесь, без правки кода.
+custom_types:
+  - name: SNILS
+    pattern: '(\d{3}-\d{3}-\d{3}[ -]?\d{2})'
+    group: 1
+    validator: snils
+    anchors: ["снилс", "страховой номер"]
+    require_anchor: false
