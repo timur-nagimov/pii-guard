@@ -19,14 +19,14 @@ func testKey(fill byte) []byte {
 	return key
 }
 
-// newTestStore создаёт хранилище и закрывает его по окончании теста, чтобы
-// уборщик просроченных записей не пережил тест.
-func newTestStore(t *testing.T, cfg Config) *Store {
+// newTestStore создаёт хранилище в памяти и закрывает его по окончании теста,
+// чтобы уборщик просроченных записей не пережил тест.
+func newTestStore(t *testing.T, cfg Config) *MemoryStore {
 	t.Helper()
 	if cfg.Key == nil {
 		cfg.Key = testKey(1)
 	}
-	s, err := New(cfg)
+	s, err := NewMemory(cfg)
 	if err != nil {
 		t.Fatalf("не удалось создать хранилище: %v", err)
 	}
@@ -434,5 +434,56 @@ func TestHashOf(t *testing.T) {
 	}
 	if HashOf("а") == HashOf("б") {
 		t.Error("разные строки дали одинаковый хеш")
+	}
+}
+
+// TestMemoryDelete проверяет удаление записи из памяти вместе со счётчиком.
+func TestMemoryDelete(t *testing.T) {
+	s := newTestStore(t, Config{TTL: time.Hour})
+	if _, err := s.Put("id-1", "текст", "маска", "sys", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.Delete("id-1")
+	if _, ok := s.Get("id-1"); ok {
+		t.Fatal("запись пережила удаление")
+	}
+	if n := s.Len(); n != 0 {
+		t.Fatalf("после удаления в хранилище %d записей, ожидалось 0", n)
+	}
+	s.Delete("id-1")
+	s.Delete("неизвестный")
+	if n := s.Len(); n != 0 {
+		t.Fatalf("удаление отсутствующей записи изменило счётчик: %d", n)
+	}
+}
+
+// TestMemoryPutOverwriteKeepsCount проверяет, что повторная запись по тому же
+// идентификатору не удваивает счётчик.
+func TestMemoryPutOverwriteKeepsCount(t *testing.T) {
+	s := newTestStore(t, Config{TTL: time.Hour})
+	for i := 0; i < 5; i++ {
+		if _, err := s.Put("id", "текст", "маска", "sys", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := s.Len(); n != 1 {
+		t.Fatalf("в хранилище %d записей, ожидалась одна", n)
+	}
+}
+
+// TestMemorySpansPreserved проверяет, что метаданные фрагментов возвращаются
+// как есть: по ним сервис считает число найденных типов.
+func TestMemorySpansPreserved(t *testing.T) {
+	s := newTestStore(t, Config{TTL: time.Hour})
+	spans := []SpanMeta{{Type: "FIO", Start: 0, End: 5}, {Type: "FIO", Start: 7, End: 9}}
+	if _, err := s.Put("id", "текст", "маска", "sys", spans); err != nil {
+		t.Fatal(err)
+	}
+	e, ok := s.Get("id")
+	if !ok {
+		t.Fatal("запись не найдена")
+	}
+	if len(e.Spans) != 2 || e.Spans[0].Type != "FIO" || e.Spans[1].End != 9 {
+		t.Fatalf("метаданные фрагментов искажены: %+v", e.Spans)
 	}
 }

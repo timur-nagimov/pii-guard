@@ -1,22 +1,18 @@
 // Package store хранит соответствие «идентификатор запроса — исходный текст и
 // его маска». Исходный текст лежит только в зашифрованном виде: ключ берётся
 // из переменной окружения и в образ не попадает.
+//
+// Хранилище описано интерфейсом Interface. Реализаций две: память процесса
+// (выбор по умолчанию) и общий Redis, который позволяет держать несколько
+// копий сервиса за балансировщиком. Тип Store выбирает реализацию по
+// настройкам и остаётся единственной точкой входа для остального кода.
 package store
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"crypto/sha256"
 	"errors"
-	"hash/maphash"
-	"sync"
 	"time"
 )
-
-// shardCount — число независимых сегментов хранилища. Каждый сегмент имеет
-// свою блокировку, поэтому запись не становится узким местом под нагрузкой.
-const shardCount = 256
 
 // Ошибки хранилища.
 var (
@@ -53,214 +49,104 @@ type Entry struct {
 	origCT []byte
 }
 
-type shard struct {
-	mu   sync.RWMutex
-	data map[string]*Entry
-}
-
-// Store — сегментированное хранилище соответствий в памяти.
-type Store struct {
-	shards [shardCount]*shard
-	gcm    cipher.AEAD
-	ttl    time.Duration
-	max    int
-	seed   maphash.Seed
-
-	countMu sync.Mutex
-	count   int
-
-	stopOnce sync.Once
-	stop     chan struct{}
+// Interface — контракт хранилища соответствий. Сервис работает только через
+// него, поэтому реализацию можно менять без правок обработчиков.
+type Interface interface {
+	// Put сохраняет соответствие и возвращает созданную запись.
+	Put(id, original, maskText, system string, spans []SpanMeta) (*Entry, error)
+	// Get отдаёт запись по идентификатору, если она есть и не просрочена.
+	Get(id string) (*Entry, bool)
+	// Original расшифровывает исходный текст записи.
+	Original(e *Entry) (string, error)
+	// Len возвращает число записей, за которые отвечает этот экземпляр.
+	Len() int
+	// Close освобождает ресурсы реализации.
+	Close()
 }
 
 // Config — параметры хранилища.
 type Config struct {
 	// Key — ключ шифрования длиной 32 байта. Пустой ключ означает, что нужно
 	// сгенерировать временный: сервис продолжит работу, но записи не переживут
-	// перезапуск.
+	// перезапуск. Для общего Redis ключ обязан совпадать у всех копий сервиса,
+	// иначе чужую запись не получится расшифровать.
 	Key []byte
 	// TTL — срок жизни записи.
 	TTL time.Duration
-	// MaxRecords — верхняя граница числа записей.
+	// MaxRecords — верхняя граница числа записей в памяти.
 	MaxRecords int
+	// Redis — параметры общего хранилища. Пустой адрес означает работу только
+	// в памяти процесса.
+	Redis RedisConfig
+	// OnDegraded вызывается при каждом переходе на запасной путь: Redis
+	// недоступен, запись ушла в память. Нужен, чтобы деградация была видна в
+	// показателях. Может быть пустым.
+	OnDegraded func(op string, err error)
 }
 
-// New создаёт хранилище и запускает уборку просроченных записей.
+// Store — хранилище, которым пользуется сервис. Тонкая обёртка над выбранной
+// реализацией: она выбирается один раз при запуске и дальше не меняется.
+type Store struct {
+	backend Interface
+	shared  bool
+}
+
+// New создаёт хранилище по настройкам: общее поверх Redis, если задан адрес,
+// иначе в памяти процесса.
 func New(cfg Config) (*Store, error) {
-	key := cfg.Key
-	if len(key) == 0 {
-		key = make([]byte, 32)
-		if _, err := rand.Read(key); err != nil {
+	if cfg.Redis.Addr == "" {
+		mem, err := NewMemory(cfg)
+		if err != nil {
 			return nil, err
 		}
+		return &Store{backend: mem}, nil
 	}
-	if len(key) != 32 {
-		return nil, ErrKeySize
-	}
-	block, err := aes.NewCipher(key)
+	shared, err := NewRedis(cfg)
 	if err != nil {
 		return nil, err
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	ttl := cfg.TTL
-	if ttl <= 0 {
-		ttl = time.Hour
-	}
-	maxRecords := cfg.MaxRecords
-	if maxRecords <= 0 {
-		maxRecords = 1_000_000
-	}
-
-	s := &Store{gcm: gcm, ttl: ttl, max: maxRecords, seed: maphash.MakeSeed(), stop: make(chan struct{})}
-	for i := range s.shards {
-		s.shards[i] = &shard{data: make(map[string]*Entry)}
-	}
-	go s.sweepLoop()
-	return s, nil
+	return &Store{backend: shared, shared: true}, nil
 }
 
-// Close останавливает уборку.
-func (s *Store) Close() {
-	s.stopOnce.Do(func() { close(s.stop) })
-}
+// Backend возвращает выбранную реализацию. Нужен для показателей и тестов.
+func (s *Store) Backend() Interface { return s.backend }
 
-func (s *Store) shardFor(id string) *shard {
-	h := maphash.String(s.seed, id)
-	return s.shards[h%shardCount]
-}
+// Shared сообщает, работает ли сервис с общим хранилищем. Только в этом
+// режиме горизонтальный рост даёт согласованное обратное преобразование.
+func (s *Store) Shared() bool { return s.shared }
 
-// Put сохраняет соответствие. Исходный текст шифруется перед записью.
+// Put сохраняет соответствие.
 func (s *Store) Put(id, original, maskText, system string, spans []SpanMeta) (*Entry, error) {
-	nonce := make([]byte, s.gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-	ct := s.gcm.Seal(nonce, nonce, []byte(original), nil)
-
-	e := &Entry{
-		Mask:      maskText,
-		System:    system,
-		OrigHash:  sha256.Sum256([]byte(original)),
-		MaskHash:  sha256.Sum256([]byte(maskText)),
-		Spans:     spans,
-		ExpiresAt: time.Now().Add(s.ttl),
-		origCT:    ct,
-	}
-
-	sh := s.shardFor(id)
-	sh.mu.Lock()
-	_, existed := sh.data[id]
-	sh.data[id] = e
-	sh.mu.Unlock()
-
-	if !existed {
-		s.countMu.Lock()
-		s.count++
-		over := s.count > s.max
-		s.countMu.Unlock()
-		if over {
-			s.evictOldest()
-		}
-	}
-	return e, nil
+	return s.backend.Put(id, original, maskText, system, spans)
 }
 
-// Get возвращает запись по идентификатору, если она не просрочена.
-func (s *Store) Get(id string) (*Entry, bool) {
-	sh := s.shardFor(id)
-	sh.mu.RLock()
-	e, ok := sh.data[id]
-	sh.mu.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	if time.Now().After(e.ExpiresAt) {
-		return nil, false
-	}
-	return e, true
-}
+// Get возвращает запись по идентификатору.
+func (s *Store) Get(id string) (*Entry, bool) { return s.backend.Get(id) }
 
 // Original расшифровывает исходный текст записи.
-func (s *Store) Original(e *Entry) (string, error) {
-	if e == nil || len(e.origCT) < s.gcm.NonceSize() {
-		return "", ErrNotFound
-	}
-	nonce := e.origCT[:s.gcm.NonceSize()]
-	pt, err := s.gcm.Open(nil, nonce, e.origCT[s.gcm.NonceSize():], nil)
-	if err != nil {
-		return "", ErrCorrupted
-	}
-	return string(pt), nil
-}
+func (s *Store) Original(e *Entry) (string, error) { return s.backend.Original(e) }
 
-// Len возвращает число записей в хранилище.
-func (s *Store) Len() int {
-	s.countMu.Lock()
-	defer s.countMu.Unlock()
-	return s.count
-}
+// Len возвращает число записей, за которые отвечает этот экземпляр.
+func (s *Store) Len() int { return s.backend.Len() }
 
-func (s *Store) sweepLoop() {
-	t := time.NewTicker(time.Minute)
-	defer t.Stop()
-	for {
-		select {
-		case <-s.stop:
-			return
-		case <-t.C:
-			s.sweep()
-		}
+// Close освобождает ресурсы реализации.
+func (s *Store) Close() { s.backend.Close() }
+
+// SetDegradedHook задаёт обработчик деградации уже после создания хранилища.
+// Для памяти вызов ничего не меняет: запасному пути неоткуда деградировать.
+func (s *Store) SetDegradedHook(fn func(op string, err error)) {
+	if r, ok := s.backend.(*RedisStore); ok {
+		r.SetDegradedHook(fn)
 	}
 }
 
-// sweep удаляет просроченные записи.
-func (s *Store) sweep() {
-	now := time.Now()
-	removed := 0
-	for _, sh := range s.shards {
-		sh.mu.Lock()
-		for id, e := range sh.data {
-			if now.After(e.ExpiresAt) {
-				delete(sh.data, id)
-				removed++
-			}
-		}
-		sh.mu.Unlock()
+// Stats возвращает счётчики работы с общим хранилищем. Для памяти счётчики
+// нулевые.
+func (s *Store) Stats() Stats {
+	if r, ok := s.backend.(*RedisStore); ok {
+		return r.Stats()
 	}
-	if removed > 0 {
-		s.countMu.Lock()
-		s.count -= removed
-		if s.count < 0 {
-			s.count = 0
-		}
-		s.countMu.Unlock()
-	}
-}
-
-// evictOldest удаляет самые ранние записи, когда превышен предел их числа.
-func (s *Store) evictOldest() {
-	for _, sh := range s.shards {
-		sh.mu.Lock()
-		var oldestID string
-		var oldest time.Time
-		for id, e := range sh.data {
-			if oldest.IsZero() || e.ExpiresAt.Before(oldest) {
-				oldest, oldestID = e.ExpiresAt, id
-			}
-		}
-		if oldestID != "" {
-			delete(sh.data, oldestID)
-			sh.mu.Unlock()
-			s.countMu.Lock()
-			s.count--
-			s.countMu.Unlock()
-			continue
-		}
-		sh.mu.Unlock()
-	}
+	return Stats{}
 }
 
 // HashOf возвращает хеш строки — тем же способом, что и хеши внутри записи.

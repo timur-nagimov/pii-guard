@@ -1,0 +1,14 @@
+# Провижининг панелей. Путь совпадает с тем, что задаёт deploy/grafana в
+# репозитории: панели лежат рядом с этим файлом и подхватываются при старте.
+apiVersion: 1
+providers:
+  - name: pii-guard
+    orgId: 1
+    folder: PII Guard
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 10
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

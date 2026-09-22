@@ -1,0 +1,27 @@
+# Общее хранилище соответствий: Redis в контейнере.
+#
+# Настройки выбраны под задачу: записи живут час, при нехватке памяти
+# вытесняются самые старые, запись на диск выключена. Терять записи при отказе
+# машины не страшно, срок их жизни и так час, а отказ от диска убирает лишнюю
+# задержку на каждом запросе.
+services:
+  redis:
+    image: redis:7.4-alpine
+    restart: always
+    network_mode: host
+    command:
+      - redis-server
+      - --requirepass
+      - "${password}"
+      - --maxmemory
+      - "${maxmemory_mb}mb"
+      - --maxmemory-policy
+      - allkeys-lru
+      - --appendonly
+      - "no"
+      - --save
+      - ""
+      - --port
+      - "${port}"
+      - --tcp-backlog
+      - "4096"

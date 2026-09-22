@@ -1,7 +1,18 @@
+# Источник данных для панелей. Имя и uid совпадают с тем, что указано в
+# deploy/grafana/dashboards/pii-guard.json: панель не спрашивает источник
+# при первом открытии.
 apiVersion: 1
+
 datasources:
   - name: Prometheus
+    uid: pii-prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
     isDefault: true
+    editable: false
+    jsonData:
+      # Совпадает с интервалом сбора в deploy/prometheus.yml: иначе Grafana
+      # подставляет в $__rate_interval слишком короткое окно.
+      timeInterval: 5s
+      httpMethod: POST

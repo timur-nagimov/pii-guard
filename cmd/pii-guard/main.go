@@ -67,7 +67,12 @@ func run(cfg *config.Config, configPath string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	st, err := store.New(store.Config{Key: key, TTL: cfg.Store.TTL, MaxRecords: cfg.Store.MaxRecords})
+	st, err := store.New(store.Config{
+		Key:        key,
+		TTL:        cfg.Store.TTL,
+		MaxRecords: cfg.Store.MaxRecords,
+		Redis:      cfg.Store.Redis,
+	})
 	if err != nil {
 		return err
 	}
@@ -96,6 +101,16 @@ func run(cfg *config.Config, configPath string, log *slog.Logger) error {
 	}
 
 	m := metrics.New()
+	// Деградация общего хранилища обязана быть видна в показателях: молчаливый
+	// переход на память означает, что копии сервиса перестали видеть записи
+	// друг друга.
+	st.SetDegradedHook(func(op string, degErr error) {
+		m.ObserveDegraded("store")
+		if degErr != nil {
+			log.Warn("общее хранилище недоступно, работаем через память",
+				slog.String("op", op), slog.String("error", degErr.Error()))
+		}
+	})
 	// Сбой отдельного детектора пропускает его тип, но не роняет ответ.
 	reg.OnPanic(func(types []pii.Type, recovered any) {
 		name := "unknown"

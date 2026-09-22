@@ -14,6 +14,7 @@ import (
 
 	"pii-guard/internal/mask"
 	"pii-guard/internal/pii"
+	"pii-guard/internal/store"
 )
 
 // Config — полный набор настроек сервиса.
@@ -51,6 +52,10 @@ type Store struct {
 	TTL        time.Duration `yaml:"ttl"`
 	MaxRecords int           `yaml:"max_records"`
 	KeyEnv     string        `yaml:"key_env"`
+	// Redis — общее хранилище. Пустой адрес означает работу в памяти одного
+	// процесса; заполненный включает горизонтальный рост, потому что копии
+	// сервиса начинают видеть записи друг друга.
+	Redis store.RedisConfig `yaml:"redis"`
 }
 
 // Defaults — значения, действующие для всех систем, если те их не переопределили.
@@ -283,6 +288,14 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Store.KeyEnv == "" {
 		c.Store.KeyEnv = "PII_STORE_KEY"
+	}
+	// Адрес и пароль общего хранилища берутся из окружения: пароль в файле
+	// настроек хранить нельзя, а адрес удобно задавать при развёртывании.
+	if v := os.Getenv("PII_REDIS_ADDR"); v != "" {
+		c.Store.Redis.Addr = v
+	}
+	if v := os.Getenv("PII_REDIS_PASSWORD"); v != "" {
+		c.Store.Redis.Password = v
 	}
 	if !c.Defaults.Preset.Valid() {
 		c.Defaults.Preset = mask.PresetFull

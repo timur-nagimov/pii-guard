@@ -1,0 +1,21 @@
+[Unit]
+Description=Модуль безопасности персональных данных
+Documentation=https://github.com/alfa-hackathon/pii-guard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/pii-guard
+EnvironmentFile=/opt/pii-guard/pii.env
+ExecStart=/opt/pii-guard/pii-guard -config /opt/pii-guard/configs/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+LimitNOFILE=1048576
+# Право занять порты 80 и 443 без запуска от имени суперпользователя.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+User=ubuntu
+
+[Install]
+WantedBy=multi-user.target
