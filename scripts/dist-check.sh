@@ -10,8 +10,20 @@ fail=0
 (( SIZE_KB > 20480 )) && { echo "ПРОВАЛ: архив больше двадцати мегабайт"; fail=1; }
 
 LIST=$(unzip -Z1 "$ZIP")
-for bad in ".git/" "node_modules/" ".venv/" "venv/" "target/" "build/" "dist/" "bin/" "obj/" "__pycache__/" "coverage/" ".idea/" "corpus/" "tools/"; do
+# Каталоги делятся на два разряда, и путать их нельзя.
+#
+# Первый разряд ищется где угодно: такое имя не бывает осмысленным исходником
+# ни на какой глубине.
+for bad in ".git/" "node_modules/" ".venv/" "venv/" "__pycache__/" ".idea/"; do
   if grep -q "^$bad\|/$bad" <<< "$LIST"; then echo "ПРОВАЛ: в архиве есть $bad"; fail=1; fi
+done
+
+# Второй разряд ищется ТОЛЬКО в корне. Эти имена законны глубже: cmd/corpus
+# это инструмент сборки наборов данных из семи исходников, и он обязан ехать
+# в архиве. Прежнее правило искало corpus/ на любой глубине и заворачивало
+# архив из-за собственного исходного кода.
+for bad in "target/" "build/" "dist/" "bin/" "obj/" "coverage/" "corpus/" "tools/"; do
+  if grep -q "^$bad" <<< "$LIST"; then echo "ПРОВАЛ: в архиве есть корневой $bad"; fail=1; fi
 done
 # Файл с ключами не должен попасть, а пример без значений попасть обязан.
 if grep -qE '(^|/)\.env$' <<< "$LIST"; then echo "ПРОВАЛ: в архиве есть файл с ключами .env"; fail=1; fi
