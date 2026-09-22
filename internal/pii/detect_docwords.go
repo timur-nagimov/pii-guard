@@ -50,11 +50,14 @@ func dwRuneAt(s string, i int) rune {
 }
 
 // dwRuneBefore возвращает руну перед смещением или ноль в начале строки.
+// Декодирование идёт с конца, а не проходом с начала: проход делал вызов
+// квадратичным по длине текста и ронял пропускную способность на длинных
+// документах в разы.
 func dwRuneBefore(s string, i int) rune {
 	if i <= 0 || i > len(s) {
 		return 0
 	}
-	r, _ := lastRune(s[:i])
+	r, _ := decodeLastRuneBefore(s, i)
 	return r
 }
 
@@ -213,7 +216,7 @@ func dwNextWord(s string, from, limit int) (int, int, bool) {
 func dwPrevWord(s string, lo, from int) (int, int, bool) {
 	i, gaps := from, 0
 	for i > lo {
-		r, size := lastRune(s[:i])
+		r, size := decodeLastRuneBefore(s, i)
 		if size == 0 || dwIsLetter(r) {
 			break
 		}
@@ -225,7 +228,7 @@ func dwPrevWord(s string, lo, from int) (int, int, bool) {
 	}
 	end := i
 	for i > lo {
-		r, size := lastRune(s[:i])
+		r, size := decodeLastRuneBefore(s, i)
 		if size == 0 || !dwIsLetter(r) {
 			break
 		}
@@ -241,7 +244,7 @@ func dwPrevWord(s string, lo, from int) (int, int, bool) {
 func dwWordBefore(s string, i int) string {
 	end := i
 	for i > 0 {
-		r, size := lastRune(s[:i])
+		r, size := decodeLastRuneBefore(s, i)
 		if size == 0 || !dwIsLetter(r) {
 			break
 		}

@@ -46,7 +46,7 @@ func (emailDetector) Detect(d *Doc) []Span {
 func scanLocalPart(text string, at int) int {
 	start := at
 	for start > 0 {
-		r, size := lastRune(text[:start])
+		r, size := decodeLastRuneBefore(text, start)
 		if size == 0 {
 			break
 		}
@@ -127,16 +127,4 @@ func firstRune(s string) (rune, int) {
 		return r, len(string(r))
 	}
 	return 0, 0
-}
-
-func lastRune(s string) (rune, int) {
-	last := rune(0)
-	idx := -1
-	for i, r := range s {
-		last, idx = r, i
-	}
-	if idx < 0 {
-		return 0, 0
-	}
-	return last, len(s) - idx
 }
