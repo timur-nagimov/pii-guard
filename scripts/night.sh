@@ -715,8 +715,29 @@ run_task() {
     git -C "$ROOT" worktree add -b "$branch" "$dir" HEAD 2>&1 || {
       echo "не создать копию дерева"; return 1; }
 
-    # Ворота читают базовую линию и набор данных из своего дерева.
-    ln -sf "$ROOT/corpus" "$dir/corpus" 2>/dev/null
+    # Набор данных. Раньше сюда ставилась ссылка на общий каталог, и это
+    # оказалось дефектом, ломающим весь прогон: задача обогащения набора
+    # перегенерировала общий dataset.jsonl, после чего ворота ВСЕХ остальных
+    # задач мерили по одному набору, а сравнивали с базовой линией, снятой по
+    # другому. Каждая из них честно закрывалась с «качество просело».
+    #
+    # Теперь: большие неизменяемые файлы по ссылке, чтобы не множить 330
+    # мегабайт на каждую задачу, а рабочий набор своей копией, потому что
+    # именно его перезаписывают.
+    mkdir -p "$dir/corpus"
+    for f in "$ROOT"/corpus/*; do
+      base="$(basename "$f")"
+      [ "$base" = "dataset.jsonl" ] && continue
+      ln -sf "$f" "$dir/corpus/$base" 2>/dev/null
+    done
+    if [ "$name" = "dataset" ]; then
+      # Задаче обогащения нужен полностью свой набор: она правит и те файлы,
+      # что остальным отданы только на чтение.
+      rm -f "$dir"/corpus/*
+      cp -R "$ROOT/corpus/." "$dir/corpus/" 2>/dev/null
+    else
+      cp "$ROOT/corpus/dataset.jsonl" "$dir/corpus/dataset.jsonl" 2>/dev/null
+    fi
 
     echo "=== $name: агент пошёл ==="
     task_prompt "$name" | opencode run --auto --dir "$dir" --model "$MODEL" \
