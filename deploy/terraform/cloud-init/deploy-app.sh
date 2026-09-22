@@ -25,6 +25,8 @@ STORE_KEY=${STORE_KEY:-}
 REDIS_ADDR=${REDIS_ADDR:-}
 REDIS_PASSWORD=${REDIS_PASSWORD:-}
 SERVICE_USER=${SERVICE_USER:-ubuntu}
+LOGGING_DIR=$APP_DIR/deploy/logging
+LOGGING_PACK=""
 
 log() { echo "[pii-guard-deploy] $*"; }
 
@@ -53,25 +55,29 @@ install_go() {
   rm -f /tmp/go.tar.gz
 }
 
+# unpack_source кладёт исходный код в каталог назначения. По умолчанию это
+# $SRC_DIR, но каталог задаётся вторым доводом: тем же кодом скачивается пакет
+# настроек журнала, когда сервис разворачивают из готового исполняемого файла.
 unpack_source() {
-  local url=$1
-  rm -rf "$SRC_DIR"
-  mkdir -p "$SRC_DIR"
+  local url=$1 dest=${2:-$SRC_DIR}
+  rm -rf "$dest"
+  mkdir -p "$dest"
   case "$url" in
     *.zip)
       fetch "$url" /tmp/src.zip
+      rm -rf /tmp/src
       unzip -q /tmp/src.zip -d /tmp/src
       # Архив может содержать один верхний каталог, а может не содержать.
       if [ "$(find /tmp/src -maxdepth 1 -mindepth 1 | wc -l)" = "1" ] && [ -d "$(find /tmp/src -maxdepth 1 -mindepth 1)" ]; then
-        mv "$(find /tmp/src -maxdepth 1 -mindepth 1)"/* "$SRC_DIR"/
+        mv "$(find /tmp/src -maxdepth 1 -mindepth 1)"/* "$dest"/
       else
-        mv /tmp/src/* "$SRC_DIR"/
+        mv /tmp/src/* "$dest"/
       fi
       rm -rf /tmp/src /tmp/src.zip
       ;;
     *)
       fetch "$url" /tmp/src.tar.gz
-      tar -C "$SRC_DIR" --strip-components=1 -xzf /tmp/src.tar.gz
+      tar -C "$dest" --strip-components=1 -xzf /tmp/src.tar.gz
       rm -f /tmp/src.tar.gz
       ;;
   esac
@@ -125,6 +131,73 @@ write_env() {
   chmod 0600 "$ENV_OUT"
 }
 
+# --- Сбор журнала ---
+#
+# Пакет настроек лежит в deploy/logging: пределы journald, дополнение к службе
+# с уровнем журнала и путями аудита, почасовая архивация аудита. Ставит его
+# install.sh из самого пакета, здесь только поиск пакета на машине.
+#
+# Почему это делает скрипт, а не сама облачная инициализация. Шаблон
+# cloud-init получает готовый набор переменных от compute.tf и scaling.tf, и
+# положить файлы пакета через write_files нельзя, не добавив в оба вызова
+# templatefile ещё одну переменную, то есть не правя чужие файлы. Скрипт же
+# едет на машину целиком и выполняется и на машине сервиса, и на копиях в
+# группе, поэтому установка живёт здесь и в одном экземпляре.
+#
+# Слой Loki остаётся выключенным: его файлы копируются вместе с пакетом, но
+# ничто их не запускает, как и задумано в docs/LOGGING.md.
+
+# find_logging_pack ищет пакет по убыванию свежести и кладёт путь в
+# LOGGING_PACK: исходники этого разворачивания, уже лежащий на машине пакет,
+# исходники по ссылке. Последний случай нужен при разворачивании из готового
+# исполняемого файла: исходников на машине нет, а несколько файлов настроек
+# нужны.
+find_logging_pack() {
+  local dir
+  for dir in "$SRC_DIR/deploy/logging" "$LOGGING_DIR"; do
+    if [ -f "$dir/install.sh" ]; then
+      LOGGING_PACK=$dir
+      return 0
+    fi
+  done
+
+  local tmp=/tmp/pii-guard-logging-src
+  if [ -n "$SOURCE_URL" ]; then
+    log "исходников на машине нет, качаю пакет журнала из архива"
+    unpack_source "$SOURCE_URL" "$tmp" || return 1
+  elif [ -n "$REPO_URL" ]; then
+    log "исходников на машине нет, качаю пакет журнала из репозитория"
+    rm -rf "$tmp"
+    git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$tmp" || return 1
+  else
+    return 1
+  fi
+
+  [ -f "$tmp/deploy/logging/install.sh" ] || return 1
+  LOGGING_PACK="$tmp/deploy/logging"
+}
+
+install_logging() {
+  if ! find_logging_pack; then
+    log "пакет сбора журнала не найден: ни в $SRC_DIR/deploy/logging, ни в $LOGGING_DIR, ни по ссылке на исходники"
+    log "journald останется с умолчаниями и на нагрузке молча отбросит всё сверх 10000 сообщений за 30 секунд"
+    return 0
+  fi
+
+  if [ "$LOGGING_PACK" != "$LOGGING_DIR" ]; then
+    mkdir -p "$LOGGING_DIR"
+    cp -R "$LOGGING_PACK/." "$LOGGING_DIR/"
+  fi
+  chmod 0755 "$LOGGING_DIR"/*.sh 2>/dev/null || true
+
+  log "ставлю сбор журнала: пределы journald, дополнение к службе, архивация аудита"
+  if bash "$LOGGING_DIR/install.sh"; then
+    log "сбор журнала настроен"
+  else
+    log "установка сбора журнала не удалась, смотрите journalctl -u systemd-journald"
+  fi
+}
+
 start_service() {
   systemctl daemon-reload
   systemctl enable pii-guard.service
@@ -148,6 +221,12 @@ mkdir -p "$APP_DIR" "$APP_DIR/configs"
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR"
 write_env
 if obtain_binary; then
+  # Сбор журнала ставится до запуска службы: дополнение к ней задаёт уровень
+  # журнала, каталог аудита и снимает ограничитель частоты journald, и всё это
+  # должно действовать уже с первого запуска, а не со следующего перезапуска.
+  # Вызов через ||: сбор журнала это не причина не поднять сервис. Что именно
+  # не получилось, скрипт уже сказал в журнал облачной инициализации.
+  install_logging || log "сбор журнала не настроен, разворачивание продолжается"
   start_service
   wait_ready || true
 else

@@ -4,6 +4,8 @@ import (
 	_ "embed"
 	"net/http"
 	"strconv"
+
+	"pii-guard/internal/logging"
 )
 
 // uiPage — встроенная страница проверки. Файл лежит рядом с кодом и попадает
@@ -48,6 +50,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write([]byte(uiPage)); err != nil {
-		s.log.Warn("не удалось отдать страницу проверки", "error", err.Error())
+		s.log.WarnContext(r.Context(), "не удалось отдать страницу проверки",
+			logging.Component("api"), logging.Err(err))
 	}
 }

@@ -22,3 +22,7 @@ testdata/*_sample.jsonl
 testdata/corpus-sample.jsonl
 testdata/informal_*.jsonl
 testdata/sample_ru_pii.jsonl
+
+# Кеш разбора python от проверочных скриптов.
+__pycache__/
+*.pyc

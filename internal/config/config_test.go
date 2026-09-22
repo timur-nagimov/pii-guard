@@ -56,7 +56,11 @@ func TestLoadSampleConfig(t *testing.T) {
 	if cfg.Server.WriteTimeout != 9*time.Second {
 		t.Errorf("таймаут записи %v, ожидалось 9s", cfg.Server.WriteTimeout)
 	}
-	if cfg.Store.TTL != time.Hour || cfg.Store.KeyEnv != "PII_STORE_KEY" {
+	// Пятнадцать минут, а не час: срок жизни записи согласован с пределом их
+	// числа. Миллион записей при плановой тысяче запросов в секунду
+	// набирается за 16.7 минуты, поэтому час был бы обещанием, которого
+	// хранилище не выполняет.
+	if cfg.Store.TTL != 15*time.Minute || cfg.Store.KeyEnv != "PII_STORE_KEY" {
 		t.Errorf("настройки хранилища разобраны неверно: %+v", cfg.Store)
 	}
 	if cfg.Defaults.Preset != mask.PresetFull || cfg.Defaults.MinConfidence != 0.6 {
@@ -206,7 +210,7 @@ systems:
 		{"предел тяжёлых запросов", cfg.Limits.HeavyInflight, 6},
 		{"порог тяжёлого запроса", cfg.Limits.HeavyThresholdBytes, 64 << 10},
 		{"предельное ожидание", cfg.Limits.MaxWait, 500 * time.Millisecond},
-		{"срок жизни записи", cfg.Store.TTL, time.Hour},
+		{"срок жизни записи", cfg.Store.TTL, 15 * time.Minute},
 		{"предел числа записей", cfg.Store.MaxRecords, 1_000_000},
 		{"переменная с ключом хранилища", cfg.Store.KeyEnv, "PII_STORE_KEY"},
 		{"пресет по умолчанию", cfg.Defaults.Preset, mask.PresetFull},

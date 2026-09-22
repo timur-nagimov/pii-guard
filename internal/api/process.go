@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"pii-guard/internal/config"
+	"pii-guard/internal/logging"
 	"pii-guard/internal/store"
 )
 
@@ -94,10 +95,15 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 		// Профиль проверяющей системы никогда не отвечает пятисотой ошибкой:
 		// пять подряд невалидных ответов останавливают весь прогон.
 		if sys.ErrorMode(cfg.Defaults) == config.OnErrorOpen {
+			took := time.Since(started)
 			s.metrics.ObserveDegraded(sys.Name)
 			w.Header().Set("X-PII-Degraded", "1")
 			s.writeJSON(w, http.StatusOK, processResponse{Result: payload})
-			s.logProcess(r, sys.Name, id, dirMask, len(payload), nil, time.Since(started), true)
+			s.logProcess(r, sys.Name, id, dirMask, len(payload), nil, took, true)
+			// Текст ушёл назад неизменённым, то есть персональные данные в нём
+			// остались. Для отчётности это событие важнее удачного
+			// маскирования, поэтому в аудит оно идёт обязательно.
+			s.auditProcess(r, sys, id, dirMask, len(payload), nil, took, "degraded")
 			return
 		}
 		w.Header().Set("Retry-After", "1")
@@ -106,12 +112,39 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 	}
 	if code != http.StatusOK {
 		s.writeError(w, r, code, "demask_forbidden", "демаскирование недоступно для этой системы")
+		// Отказанная попытка развернуть маску это тоже обращение к
+		// персональным данным, и для службы контроля оно интереснее
+		// удавшегося: видно, кто просил чужое.
+		s.auditProcess(r, sys, id, dirDemask, len(payload), nil, time.Since(started), "forbidden")
 		return
 	}
 
+	took := time.Since(started)
 	s.writeJSON(w, http.StatusOK, processResponse{Result: result.text})
-	s.metrics.ObserveProcess(sys.Name, string(dir), time.Since(started), len(payload), result.counts)
-	s.logProcess(r, sys.Name, id, dir, len(payload), result.counts, time.Since(started), false)
+	s.metrics.ObserveProcess(sys.Name, string(dir), took, len(payload), result.counts)
+	s.logProcess(r, sys.Name, id, dir, len(payload), result.counts, took, false)
+	s.auditProcess(r, sys, id, dir, len(payload), result.counts, took, "ok")
+}
+
+// auditProcess записывает обращение к персональным данным в журнал аудита.
+// В записи только типы, их число и размер текста: ни исходного текста, ни
+// найденных значений, ни самого ключа доступа — от ключа остаётся отпечаток,
+// по которому видно, что ключ тот же, но не видно самого ключа.
+func (s *Server) auditProcess(r *http.Request, sys config.System, payloadID string, dir direction, size int, counts map[string]int, took time.Duration, result string) {
+	if !s.audit.Enabled() {
+		return
+	}
+	ctx := r.Context()
+	s.audit.Write(ctx, logging.AuditEvent{
+		Op:        string(dir),
+		System:    sys.Name,
+		Actor:     logging.ActorFromKey(r.Header.Get(sys.Auth.Header)),
+		PayloadID: payloadID,
+		Bytes:     size,
+		Types:     counts,
+		Result:    result,
+		Duration:  took,
+	})
 }
 
 // outcome — результат обработки одного запроса.
@@ -206,7 +239,31 @@ func countsOf(e *store.Entry) map[string]int {
 // resolveSystem опознаёт систему по заголовку с ключом. Проверяющая система
 // заголовков не шлёт, поэтому запросы без ключа достаются единственной
 // анонимной системе из настроек.
+//
+// Здесь же имя опознанной системы кладётся в данные запроса. Дальше его не
+// нужно передавать руками: обработчик журнала берёт его из контекста сам, и
+// поле system появляется во всех записях запроса, включая те, что пишет
+// прослойка уже после возврата из обработчика. Точка одна на три входа:
+// /process, /v1/inspect и /v1/chat/completions зовут resolveSystem.
 func (s *Server) resolveSystem(r *http.Request, cfg *config.Config) (config.System, bool) {
+	sys, ok := keyedSystem(r, cfg)
+	if !ok {
+		// Ключ прислали, но он не подошёл ни одной системе.
+		if headerPresent(r, cfg) {
+			return config.System{}, false
+		}
+		sys, ok = cfg.AnonymousSystem()
+	}
+	if ok {
+		logging.SetSystem(r.Context(), sys.Name)
+	}
+	return sys, ok
+}
+
+// keyedSystem ищет систему, чей ключ доступа совпал с присланным. Вынесено
+// отдельно, потому что этой же проверкой закрыта служебная ручка смены
+// уровня журнала: запасного пути в анонимную систему там быть не должно.
+func keyedSystem(r *http.Request, cfg *config.Config) (config.System, bool) {
 	for _, sys := range cfg.Systems {
 		if !sys.Enabled || sys.Auth.None || sys.Auth.Header == "" {
 			continue
@@ -220,11 +277,7 @@ func (s *Server) resolveSystem(r *http.Request, cfg *config.Config) (config.Syst
 			return sys, true
 		}
 	}
-	// Ключ прислали, но он не подошёл ни одной системе.
-	if headerPresent(r, cfg) {
-		return config.System{}, false
-	}
-	return cfg.AnonymousSystem()
+	return config.System{}, false
 }
 
 // headerPresent сообщает, что в запросе есть хотя бы один известный заголовок

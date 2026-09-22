@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"pii-guard/internal/config"
@@ -375,5 +377,177 @@ func TestRegistryAccessible(t *testing.T) {
 	}
 	if len(eng.Registry().Types()) == 0 {
 		t.Fatal("набор детекторов не объявил ни одного типа")
+	}
+}
+
+// --- Сбой обработки куска длинного текста ---
+//
+// Длинный текст режется на куски, и каждый кусок разбирает рабочая горутина.
+// Паника в горутине роняет процесс целиком: предохранитель обработчика живёт в
+// другой горутине и дочернюю панику поймать не может. Набор детекторов ловит
+// только панику самого детектора, весь остальной код горутины до перехвата не
+// был защищён ничем. Тесты ниже держат этот перехват на месте.
+
+// chunkPanicPhone — значение, по которому видно, какие куски были разобраны.
+const chunkPanicPhone = "+79161234567"
+
+// longChunkedText собирает текст длиннее порога разбиения, в котором телефон
+// встречается в каждом куске.
+func longChunkedText() string {
+	piece := "Телефон " + chunkPanicPhone + " и почта ivan@example.com, далее. "
+	// Кусков должно быть больше, чем рабочих горутин: иначе каждая горутина
+	// заберёт ровно одно задание и зависание отправителя заданий не проявится.
+	return strings.Repeat(piece, chunkTarget*(runtime.GOMAXPROCS(0)+2)/len(piece))
+}
+
+// countFrom считает вхождения значения, начинающиеся не раньше смещения off.
+func countFrom(text, value string, off int) int {
+	n := 0
+	for i := off; i < len(text); {
+		j := strings.Index(text[i:], value)
+		if j < 0 {
+			break
+		}
+		n++
+		i += j + len(value)
+	}
+	return n
+}
+
+// TestChunkPanicDoesNotKillProcess — главный тест по сбою куска. Паника
+// роняется внутри рабочей горутины, а не внутри детектора, то есть ровно там,
+// где её раньше не ловил никто. Проверяется, что процесс жив, ответ отдан по
+// остальным кускам, а событие ушло наружу через обработчик.
+func TestChunkPanicDoesNotKillProcess(t *testing.T) {
+	sys, defs := allTypesSystem(t)
+	eng := newTestEngine()
+
+	var mu sync.Mutex
+	var reported []int
+	var recovered any
+	eng.OnPanic(func(chunk int, rec any) {
+		mu.Lock()
+		defer mu.Unlock()
+		reported = append(reported, chunk)
+		recovered = rec
+	})
+	eng.chunkHook = func(chunk int) {
+		if chunk == 0 {
+			panic("сбой разбора куска")
+		}
+	}
+
+	text := longChunkedText()
+	bounds := splitBounds(text)
+	if len(bounds) < 3 {
+		t.Fatalf("текст длиной %d байт разбит на %d кусков, нужно хотя бы три", len(text), len(bounds))
+	}
+
+	// Если перехвата нет, процесс умирает здесь и до проверок дело не доходит.
+	res := eng.Mask(text, sys, defs)
+
+	mu.Lock()
+	gotReported := append([]int(nil), reported...)
+	gotRecovered := recovered
+	mu.Unlock()
+
+	if len(gotReported) != 1 || gotReported[0] != 0 {
+		t.Fatalf("о сбое сообщено по кускам %v, ожидался ровно один кусок с номером 0", gotReported)
+	}
+	if gotRecovered != "сбой разбора куска" {
+		t.Fatalf("обработчику передано %v вместо значения паники", gotRecovered)
+	}
+	if len([]rune(res.Text)) != len([]rune(text)) {
+		t.Fatalf("длина ответа в рунах %d вместо %d", len([]rune(res.Text)), len([]rune(text)))
+	}
+
+	// Соседние куски сохранили свои смещения: пропуск куска не сдвигает
+	// найденное в остальных. Ожидаемое число — все телефоны, начинающиеся не
+	// раньше начала второго куска.
+	want := countFrom(text, chunkPanicPhone, bounds[1][0])
+	if want == 0 {
+		t.Fatal("во втором и следующих кусках нет ни одного телефона, тест ничего не проверяет")
+	}
+	if res.Counts[pii.TypePhone] != want {
+		t.Fatalf("замаскировано %d телефонов, ожидалось %d", res.Counts[pii.TypePhone], want)
+	}
+	for _, s := range res.Spans {
+		if s.Start < 0 || s.End > len(text) || s.Start >= s.End {
+			t.Fatalf("фрагмент с границами %d:%d не лежит в исходном тексте длиной %d", s.Start, s.End, len(text))
+		}
+		if got := text[s.Start:s.End]; s.Type == pii.TypePhone && got != chunkPanicPhone {
+			t.Fatalf("смещения фрагмента сползли: по границам %d:%d стоит %q", s.Start, s.End, got)
+		}
+	}
+
+	// Пропущенный кусок остался неразобранным — это заявленная деградация,
+	// а не ошибка теста.
+	if !strings.Contains(res.Text, chunkPanicPhone) {
+		t.Fatal("пропущенный кусок оказался разобран, значит паника не сработала")
+	}
+}
+
+// TestChunkPanicEveryChunkStillAnswers проверяет крайний случай: падают все
+// куски. Ответ всё равно отдаётся, а рабочие горутины возвращаются к очереди
+// заданий — иначе отправитель заданий встал бы навсегда и тест не завершился.
+func TestChunkPanicEveryChunkStillAnswers(t *testing.T) {
+	sys, defs := allTypesSystem(t)
+	eng := newTestEngine()
+
+	var mu sync.Mutex
+	failures := 0
+	eng.OnPanic(func(int, any) {
+		mu.Lock()
+		failures++
+		mu.Unlock()
+	})
+	eng.chunkHook = func(int) { panic("сбой разбора куска") }
+
+	text := longChunkedText()
+	bounds := splitBounds(text)
+	res := eng.Mask(text, sys, defs)
+
+	mu.Lock()
+	got := failures
+	mu.Unlock()
+
+	if got != len(bounds) {
+		t.Fatalf("о сбое сообщено %d раз при %d кусках", got, len(bounds))
+	}
+	if res.Text != text {
+		t.Fatal("текст изменился, хотя все куски пропущены")
+	}
+	if len(res.Spans) != 0 {
+		t.Fatalf("при пропуске всех кусков принято %d фрагментов", len(res.Spans))
+	}
+}
+
+// TestChunkPanicHandlerSilentOnHealthyText проверяет обратную сторону:
+// на исправном тексте обработчик сбоя не вызывается ни разу, то есть показатель
+// сбоев не шумит на рабочей нагрузке.
+func TestChunkPanicHandlerSilentOnHealthyText(t *testing.T) {
+	sys, defs := allTypesSystem(t)
+	eng := newTestEngine()
+
+	var mu sync.Mutex
+	failures := 0
+	eng.OnPanic(func(int, any) {
+		mu.Lock()
+		failures++
+		mu.Unlock()
+	})
+
+	text := longChunkedText()
+	res := eng.Mask(text, sys, defs)
+
+	mu.Lock()
+	got := failures
+	mu.Unlock()
+
+	if got != 0 {
+		t.Fatalf("на исправном тексте сообщено о %d сбоях", got)
+	}
+	if want := strings.Count(text, chunkPanicPhone); res.Counts[pii.TypePhone] != want {
+		t.Fatalf("замаскировано %d телефонов, ожидалось %d", res.Counts[pii.TypePhone], want)
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"pii-guard/internal/config"
+	"pii-guard/internal/logging"
 	"pii-guard/internal/mask"
 )
 
@@ -39,6 +40,7 @@ type chatMessage struct {
 // модель в ответе не сохраняет, а типизированный плейсхолдер переживает
 // пересказ и позволяет вернуть пользователю настоящее значение.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	begin := time.Now()
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		s.writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "поддерживается только POST")
@@ -55,6 +57,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusNotImplemented, "upstream_not_configured", "для системы не задан адрес языковой модели")
 		return
 	}
+	s.extendWriteDeadline(w, r, sys)
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, cfg.Server.MaxBodyBytes))
 	if err != nil {
@@ -80,6 +83,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		opts = mask.Options{Default: mask.PresetToken, PerType: nil}
 	}
 	back := make(map[string]string)
+	counts := make(map[string]int)
 	masked := make([]chatMessage, len(req.Messages))
 	for i, msg := range req.Messages {
 		text, isString := decodeContent(msg.Content)
@@ -88,6 +92,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		res := s.engine.Mask(text, sys, cfg.Defaults)
+		for t, n := range res.Counts {
+			counts[string(t)] += n
+		}
 		applied := mask.Apply(text, res.Spans, opts)
 		for _, ph := range applied.Placeholders {
 			back[ph.Token] = ph.Value
@@ -119,8 +126,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.callUpstream(r, sys, outBody)
 	if err != nil {
 		s.metrics.ObserveUpstream(sys.Name, "error", time.Since(started))
-		s.log.Warn("языковая модель недоступна", "system", sys.Name, "error", err.Error())
+		s.log.WarnContext(r.Context(), "языковая модель недоступна",
+			logging.Event(logging.EventProxy), logging.Component("proxy"), logging.Err(err))
 		s.writeError(w, r, http.StatusBadGateway, "upstream_unavailable", "языковая модель недоступна")
+		// Текст уже ушёл модели, поэтому обращение к персональным данным
+		// состоялось независимо от того, дождались мы ответа или нет.
+		s.auditProcess(r, sys, "", "proxy", len(body), counts, time.Since(begin), "error")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -138,7 +149,43 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-PII-Masked", itoa(len(back)))
 	w.WriteHeader(resp.StatusCode)
 	if _, err := w.Write([]byte(restored)); err != nil {
-		s.log.Warn("не удалось записать ответ", "error", err.Error())
+		s.log.WarnContext(r.Context(), "не удалось записать ответ",
+			logging.Event(logging.EventProxy), logging.Component("proxy"), logging.Err(err))
+	}
+	s.auditProcess(r, sys, "", "proxy", len(body), counts, time.Since(begin), "ok")
+}
+
+// defaultUpstreamTimeout — срок ожидания ответа модели, когда он не задан
+// настройками.
+const defaultUpstreamTimeout = 60 * time.Second
+
+// proxyWriteMargin — запас поверх срока ожидания модели: за это время нужно
+// вернуть в ответ исходные значения и записать его клиенту.
+const proxyWriteMargin = 5 * time.Second
+
+// extendWriteDeadline продлевает срок записи ответа на этом соединении.
+//
+// Общий срок записи у сервера равен девяти секундам, и он выбран под контракт
+// /process: девять короче десятисекундного таймаута проверяющей системы,
+// поэтому обрыв остаётся решением сервиса, а не клиента. На пути прокси тот же
+// срок переворачивает порядок: модель по настройкам отвечает до шестидесяти
+// секунд, и ответ, пришедший на десятой, записать клиенту было бы уже нечем —
+// соединение сервер закрыл бы сам.
+//
+// http.ResponseController меняет срок на одном соединении и только на текущий
+// запрос: следующий запрос по тому же соединению снова получит общий срок
+// сервера. Так обе цепочки живут со своими сроками, и общий срок сервера
+// менять не приходится.
+func (s *Server) extendWriteDeadline(w http.ResponseWriter, r *http.Request, sys config.System) {
+	timeout := sys.Upstream.Timeout
+	if timeout <= 0 {
+		timeout = defaultUpstreamTimeout
+	}
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(timeout + proxyWriteMargin)); err != nil {
+		// Не смертельно: сервис останется с общим сроком записи. Но знать об
+		// этом надо, потому что длинные ответы модели будут обрываться.
+		s.log.WarnContext(r.Context(), "не удалось продлить срок записи ответа",
+			logging.Event(logging.EventProxy), logging.Component("proxy"), logging.Err(err))
 	}
 }
 
@@ -146,7 +193,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) callUpstream(r *http.Request, sys config.System, body []byte) (*http.Response, error) {
 	timeout := sys.Upstream.Timeout
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = defaultUpstreamTimeout
 	}
 	url := strings.TrimRight(sys.Upstream.URL, "/") + "/chat/completions"
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(body))
@@ -154,6 +201,9 @@ func (s *Server) callUpstream(r *http.Request, sys config.System, body []byte) (
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Обращение к модели должно быть видно в её журнале под тем же номером,
+	// под которым запрос клиента виден у нас.
+	logging.Propagate(r.Context(), req)
 	if sys.Upstream.TokenEnv != "" {
 		if token := os.Getenv(sys.Upstream.TokenEnv); token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
