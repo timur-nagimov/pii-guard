@@ -7,3 +7,4 @@
 .github export-ignore
 *.mp4 export-ignore
 *.png export-ignore
+/tools export-ignore

@@ -55,6 +55,7 @@ func main() {
 	onlyCategory := flag.String("category", "", "ограничить набор одной категорией")
 	examples := flag.Int("examples", 0, "сколько примеров ошибок напечатать")
 	limit := flag.Int("limit", 0, "обработать не больше стольких элементов")
+	minConf := flag.Float64("min-conf", 0.5, "порог уверенности: 0.5 профиль полноты, 0.75 и выше профиль точности")
 	flag.Parse()
 
 	samples, err := load(*datasetPath, *onlyCategory, *limit)
@@ -63,7 +64,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	eng, sys, defs := buildEngine()
+	eng, sys, defs := buildEngine(*minConf)
 	byType := map[string]*stat{}
 	byCategory := map[string]*stat{}
 	bySource := map[string]*stat{}
@@ -131,7 +132,7 @@ func main() {
 
 // buildEngine собирает конвейер с теми же детекторами, что и сервис, и с
 // профилем проверяющей системы.
-func buildEngine() (*engine.Engine, config.System, config.Defaults) {
+func buildEngine(minConf float64) (*engine.Engine, config.System, config.Defaults) {
 	reg := pii.NewRegistry()
 	reg.Register(
 		pii.NewNumericDetector(),
@@ -148,7 +149,7 @@ func buildEngine() (*engine.Engine, config.System, config.Defaults) {
 	)
 	defs := config.Defaults{
 		Preset:            mask.PresetFull,
-		MinConfidence:     0.5,
+		MinConfidence:     minConf,
 		DateWithoutAnchor: config.DatePIIContext,
 	}
 	sys := config.System{
