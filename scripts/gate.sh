@@ -23,7 +23,30 @@ set -o pipefail
 cd "$(dirname "$0")/.." || exit 2
 ROOT="$PWD"
 BASELINE="$ROOT/scripts/baseline.json"
-URL="${GATE_URL:-http://127.0.0.1:18081}"
+# Каждый прогон ворот держит свои следы в своём каталоге. Раньше все писали
+# по общим путям в /tmp, и параллельные прогоны затирали улики друг друга:
+# ворота падали, а в файле подробностей лежал уже чужой успешный результат.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/gate.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+
+# Порт выбирается свободный, а не фиксированный. Фиксированный порт означает,
+# что ворота могут опросить чужую уже запущенную копию сервиса и проверить не
+# тот код. Это не гипотеза: ровно так сегодня проверялась правка, которой в
+# опрошенной копии не было.
+if [ -n "$GATE_URL" ]; then
+  URL="$GATE_URL"
+  URL_GIVEN=1
+else
+  GATE_PORT_PICKED="$(python3 -c '
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+')"
+  URL="http://127.0.0.1:$GATE_PORT_PICKED"
+  URL_GIVEN=0
+fi
 QUICK=0
 FAILED=0
 PASSED=0
@@ -43,9 +66,9 @@ for arg in "$@"; do
         go run ./cmd/gen -out "$CORPUS" -n 8000 -seed 42 >/dev/null 2>&1
       fi
       echo "снимаю качество..."
-      go run ./cmd/score -dataset "$CORPUS" >/tmp/gate-init.txt 2>&1 || {
-        echo "замер не отработал, подробности /tmp/gate-init.txt"; exit 2; }
-      python3 "$ROOT/scripts/gate-quality.py" --init /tmp/gate-init.txt > "$BASELINE" || exit 2
+      go run ./cmd/score -dataset "$CORPUS" >"$WORK/init.txt" 2>&1 || {
+        echo "замер не отработал, подробности $WORK/init.txt"; exit 2; }
+      python3 "$ROOT/scripts/gate-quality.py" --init "$WORK/init.txt" > "$BASELINE" || exit 2
       echo "базовая линия записана: $BASELINE"
       echo "Проверьте её глазами и внесите в git отдельным коммитом."
       exit 0
@@ -84,22 +107,22 @@ else
   bad "формат исходников: $(gofmt -l . | tr '\n' ' ')"
 fi
 
-if go vet ./... >/tmp/gate-vet.log 2>&1; then
+if go vet ./... >"$WORK/vet.log" 2>&1; then
   ok "статический анализ"
 else
-  bad "статический анализ, подробности /tmp/gate-vet.log"
+  bad "статический анализ, подробности $WORK/vet.log"
 fi
 
-if go build ./... >/tmp/gate-build.log 2>&1; then
+if go build ./... >"$WORK/build.log" 2>&1; then
   ok "сборка"
 else
-  bad "сборка, подробности /tmp/gate-build.log"
+  bad "сборка, подробности $WORK/build.log"
 fi
 
-if go test ./... -race -count=1 >/tmp/gate-test.log 2>&1; then
+if go test ./... -race -count=1 >"$WORK/test.log" 2>&1; then
   ok "тесты с детектором гонок"
 else
-  bad "тесты, подробности /tmp/gate-test.log"
+  bad "тесты, подробности $WORK/test.log"
 fi
 
 say "5. Базовая линия"
@@ -133,26 +156,26 @@ else
     go run ./cmd/gen -out "$CORPUS" -n 8000 -seed 42 >/dev/null 2>&1
   fi
 
-  if go run ./cmd/score -dataset "$CORPUS" >/tmp/gate-score.txt 2>&1; then
+  if go run ./cmd/score -dataset "$CORPUS" >"$WORK/score.txt" 2>&1; then
     # Оба правила проверяет измеритель: положительные срезы с допуском,
     # отрицательные строго с нулём. Держать их в одном месте важнее, чем
     # разделять ради красивого вывода.
-    if python3 "$ROOT/scripts/gate-quality.py" "$BASELINE" /tmp/gate-score.txt >/tmp/gate-quality.txt 2>&1; then
+    if python3 "$ROOT/scripts/gate-quality.py" "$BASELINE" "$WORK/score.txt" >"$WORK/quality.txt" 2>&1; then
       ok "качество по типам не просело"
       ok "отрицательные срезы строго ноль"
-      grep -q "Стало лучше" /tmp/gate-quality.txt && sed -n '/Стало лучше/,/^$/p' /tmp/gate-quality.txt | sed 's/^/        /'
+      grep -q "Стало лучше" "$WORK/quality.txt" && sed -n '/Стало лучше/,/^$/p' "$WORK/quality.txt" | sed 's/^/        /'
     else
-      if grep -q "ложные срабатывания" /tmp/gate-quality.txt; then
+      if grep -q "ложные срабатывания" "$WORK/quality.txt"; then
         ok "качество по типам не просело"
         bad "отрицательные срезы: есть ложные срабатывания"
       else
         bad "качество просело"
         ok "отрицательные срезы строго ноль"
       fi
-      sed 's/^/        /' /tmp/gate-quality.txt
+      sed 's/^/        /' "$WORK/quality.txt"
     fi
   else
-    bad "замер качества не отработал, подробности /tmp/gate-score.txt"
+    bad "замер качества не отработал, подробности $WORK/score.txt"
   fi
 fi
 
@@ -160,10 +183,11 @@ say "8-10. Живой сервис"
 
 SERVICE_PID=""
 GATE_PORT="$(printf '%s' "$URL" | sed 's#.*:##')"
-if curl -s -m 3 -o /dev/null "$URL/healthz" 2>/dev/null; then
+if [ "$URL_GIVEN" = "1" ] && curl -s -m 3 -o /dev/null "$URL/healthz" 2>/dev/null; then
+  # Адрес задал вызывающий, значит он отвечает за то, что там нужная сборка.
   STARTED_HERE=0
 else
-  go build -o /tmp/gate-pii-guard ./cmd/pii-guard 2>/dev/null
+  go build -o "$WORK/pii-guard" ./cmd/pii-guard 2>/dev/null
 
   # Свой файл настроек на время прогона. Две причины, и обе стоили ворот
   # молчаливого пропуска самых важных проверок.
@@ -178,7 +202,7 @@ else
   # проверка контракта, сценариев жюри и поиска утечки не выполнялась вовсе.
   sed -e "s#^  http: .*#  http: \":$GATE_PORT\"#" \
       -e "s#^  https: .*#  https: \"\"#" \
-      configs/config.yaml > /tmp/gate-config.yaml
+      configs/config.yaml > "$WORK/config.yaml"
 
   # Одноразовые значения: ворота проверяют поведение, а не секреты. Хеши
   # берутся от заведомо известной строки, чтобы при надобности можно было
@@ -202,8 +226,8 @@ else
     esac
   done
 
-  env "${GATE_ENV[@]}" /tmp/gate-pii-guard -config /tmp/gate-config.yaml \
-    >/tmp/gate-service.log 2>&1 &
+  env "${GATE_ENV[@]}" "$WORK/pii-guard" -config "$WORK/config.yaml" \
+    >"$WORK/service.log" 2>&1 &
   SERVICE_PID=$!
   STARTED_HERE=1
   for _ in $(seq 1 30); do
@@ -218,51 +242,51 @@ cleanup() {
 trap cleanup EXIT
 
 if curl -s -m 3 -o /dev/null "$URL/healthz" 2>/dev/null; then
-  if bash scripts/verify.sh "$URL" >/tmp/gate-verify.log 2>&1; then
+  if bash scripts/verify.sh "$URL" >"$WORK/verify.log" 2>&1; then
     ok "контракт: маска и обратное преобразование"
   else
-    bad "контракт, подробности /tmp/gate-verify.log"
+    bad "контракт, подробности $WORK/verify.log"
   fi
 
-  if bash scripts/jury.sh "$URL" all >/tmp/gate-jury.log 2>&1; then
+  if bash scripts/jury.sh "$URL" all >"$WORK/jury.log" 2>&1; then
     ok "сценарии жюри"
   else
-    bad "сценарии жюри, подробности /tmp/gate-jury.log"
+    bad "сценарии жюри, подробности $WORK/jury.log"
   fi
 
   # Самая важная проверка всего файла. Значение персональных данных,
   # попавшее в журнал или в показатели, обесценивает решение целиком.
-  if bash scripts/gate-noleak.sh "$URL" /tmp/gate-service.log >/tmp/gate-leak.log 2>&1; then
+  if bash scripts/gate-noleak.sh "$URL" "$WORK/service.log" >"$WORK/leak.log" 2>&1; then
     ok "персональные данные не в журнале и не в показателях"
   else
-    bad "УТЕЧКА в журнал или показатели, подробности /tmp/gate-leak.log"
+    bad "УТЕЧКА в журнал или показатели, подробности $WORK/leak.log"
   fi
 else
-  bad "сервис не поднялся, подробности /tmp/gate-service.log"
+  bad "сервис не поднялся, подробности $WORK/service.log"
 fi
 
 say "11-14. Поставка"
 
-if bash scripts/dist-check.sh >/tmp/gate-dist.log 2>&1; then
+if bash scripts/dist-check.sh >"$WORK/dist.log" 2>&1; then
   ok "в архиве нет секретов и скомпилированных файлов"
 else
-  bad "в архив попало лишнее, подробности /tmp/gate-dist.log"
+  bad "в архив попало лишнее, подробности $WORK/dist.log"
 fi
 
-if python3 "$ROOT/scripts/gate-links.py" >/tmp/gate-links.log 2>&1; then
+if python3 "$ROOT/scripts/gate-links.py" >"$WORK/links.log" 2>&1; then
   ok "ссылки в документах целы"
 else
   bad "битые ссылки:"
-  sed 's/^/        /' /tmp/gate-links.log
+  sed 's/^/        /' "$WORK/links.log"
 fi
 
 if [ "$QUICK" = "1" ]; then
   skip "схемы Mermaid: быстрый режим"
 elif command -v mmdc >/dev/null 2>&1 || [ -x /tmp/mermaid-check/node_modules/.bin/mmdc ]; then
-  if bash scripts/gate-mermaid.sh >/tmp/gate-mermaid.log 2>&1; then
+  if bash scripts/gate-mermaid.sh >"$WORK/mermaid.log" 2>&1; then
     ok "схемы Mermaid разбираются"
   else
-    bad "сломанные схемы, подробности /tmp/gate-mermaid.log"
+    bad "сломанные схемы, подробности $WORK/mermaid.log"
   fi
 else
   skip "схемы Mermaid: нечем рисовать"
