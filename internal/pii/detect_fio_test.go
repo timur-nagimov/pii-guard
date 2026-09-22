@@ -712,3 +712,39 @@ func TestFIOLowerSurnameKeepsFullName(t *testing.T) {
 		})
 	}
 }
+
+// TestFIOLatinAbbrevNotSurname закрепляет ловушку латинских сокращений.
+// Слова целиком заглавными в латинице — это почти всегда сокращения (API,
+// HTTP, SLA, JSON), а не фамилии. Расширение поддержки латинских имён не
+// должно превращать такие сокращения в персональные данные.
+func TestFIOLatinAbbrevNotSurname(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want []string
+	}{
+		// Сокращения в одиночку и рядом с якорем фамилией не становятся.
+		{"сокращение API", "Client API", nil},
+		{"сокращение HTTP", "Client HTTP", nil},
+		{"сокращение SLA", "Client SLA", nil},
+		{"сокращение JSON", "Client JSON", nil},
+		{"сокращение после якоря", "Cardholder API", nil},
+		{"несколько сокращений подряд", "Client API HTTP SLA JSON", nil},
+		{"сокращение в начале предложения", "API is the interface", nil},
+		{"сокращение с точкой", "Client API.", nil},
+		// Сокращение после настоящего имени не входит во фрагмент, а само имя
+		// остаётся распознанным.
+		{"сокращение после имени", "Client IVAN API", []string{"IVAN"}},
+		{"сокращение после имени с отчеством", "Client IVAN IVANOVICH API", []string{"IVAN IVANOVICH"}},
+		// Сокращение не должно превращать пару в тройку.
+		{"сокращение после пары", "Client IVANOV IVAN API", []string{"IVANOV IVAN"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := fioFound(c.text)
+			if !fioEqual(got, c.want) {
+				t.Fatalf("текст %q: получено %q, ожидалось %q", c.text, got, c.want)
+			}
+		})
+	}
+}

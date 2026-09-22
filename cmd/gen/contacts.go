@@ -86,6 +86,9 @@ func (g *Generator) phone() string {
 	}
 }
 
+// intlCountryCodes — коды стран для международных номеров телефонов.
+var intlCountryCodes = []string{"1", "44", "49", "33", "34", "39", "41", "31", "48", "380", "375", "7"}
+
 // postcode возвращает почтовый индекс из шести цифр.
 func (g *Generator) postcode() string { return g.digitsNonZero(6) }
 
