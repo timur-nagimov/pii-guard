@@ -159,10 +159,15 @@ func TestSpansAreByteOffsets(t *testing.T) {
 				t.Fatalf("%s: байтовый срез не совпал со значением %q", r.ID, r.Values[i])
 			}
 			// Срез по тем же числам, но в рунах, обязан отличаться: это и
-			// означает, что смещения байтовые, а не символьные.
-			runes := []rune(r.Text)
-			if s.End <= len(runes) && string(runes[s.Start:s.End]) == r.Values[i] {
-				t.Fatalf("%s: срез по рунам совпал со значением, смещения похожи на символьные", r.ID)
+			// означает, что смещения байтовые, а не символьные. Проверка
+			// осмысленна только когда в самом значении есть многобайтовые
+			// знаки: для чисто однобайтового значения байтовый и рунный срезы
+			// совпадают, и отличить их по значению нельзя.
+			if utf8.RuneCountInString(r.Values[i]) != len(r.Values[i]) {
+				runes := []rune(r.Text)
+				if s.End <= len(runes) && string(runes[s.Start:s.End]) == r.Values[i] {
+					t.Fatalf("%s: срез по рунам совпал со значением, смещения похожи на символьные", r.ID)
+				}
 			}
 		}
 	}
@@ -334,6 +339,103 @@ func hasLatinHomoglyph(s string) bool {
 	return strings.ContainsAny(s, "aeopcyxAEOPCYX")
 }
 
+// TestLowercaseSlice проверяет срез в нижнем регистре: весь текст строчными,
+// разметка пересчитана и указывает на значения.
+func TestLowercaseSlice(t *testing.T) {
+	types := knownTypes()
+	g := NewGenerator(41, false)
+	g.lowercase = true
+	checked := 0
+	for _, r := range g.Generate(400) {
+		if r.Text != strings.ToLower(r.Text) {
+			t.Fatalf("%s: текст не в нижнем регистре: %q", r.ID, r.Text)
+		}
+		checkRecord(t, r, types)
+		checked++
+	}
+	if checked < 300 {
+		t.Fatalf("проверено всего %d записей", checked)
+	}
+}
+
+// TestLowercasePreservesOffsets проверяет, что перевод в нижний регистр не
+// ломает байтовые смещения: срез по границам обязан указывать на значение.
+func TestLowercasePreservesOffsets(t *testing.T) {
+	g := NewGenerator(43, false)
+	for _, r := range g.Generate(200) {
+		lower := lowerRecord(r)
+		for i, s := range lower.Spans {
+			if lower.Text[s.Start:s.End] != lower.Values[i] {
+				t.Fatalf("%s: после перевода в нижний регистр фрагмент %d указывает не на значение", r.ID, i)
+			}
+		}
+	}
+}
+
+// TestNoiseKinds проверяет, что каждый вид шума действительно вносится:
+// ё вместо е, ноль вместо о, лишний пробел в номере, латинские омоглифы.
+func TestNoiseKinds(t *testing.T) {
+	g := NewGenerator(47, false)
+	found := map[string]bool{
+		"ё вместо е": false, "ноль вместо о": false,
+		"лишний пробел": false, "омоглифы": false,
+	}
+	for i := 0; i < 400; i++ {
+		v := g.noiseValue("Иванов Сергей 123456")
+		if strings.Contains(v, "ё") {
+			found["ё вместо е"] = true
+		}
+		if strings.Contains(v, "0") {
+			found["ноль вместо о"] = true
+		}
+		if strings.Contains(v, " ") && strings.Contains(v, "1 2") {
+			found["лишний пробел"] = true
+		}
+		if hasLatinHomoglyph(v) {
+			found["омоглифы"] = true
+		}
+	}
+	for name, ok := range found {
+		if !ok {
+			t.Errorf("вид шума %s ни разу не встретился", name)
+		}
+	}
+}
+
+// TestInsertSpace проверяет вставку пробела внутрь номера.
+func TestInsertSpace(t *testing.T) {
+	g := NewGenerator(61, false)
+	got := g.insertSpace("123456")
+	if !strings.Contains(got, " ") || pii.DigitsOnly(got) != "123456" {
+		t.Errorf("insertSpace дал %q, цифры должны сохраниться", got)
+	}
+	if got := g.insertSpace("Иванов"); got != "Иванов" {
+		t.Errorf("insertSpace изменил слово без цифр: %q", got)
+	}
+}
+
+// TestLong64kSize проверяет, что текст категории long_64k действительно
+// переходит порог разбиения движка в шестьдесят четыре килобайта.
+func TestLong64kSize(t *testing.T) {
+	g := NewGenerator(53, false)
+	r := buildRecord("long64k-test", "long_64k", genLong64k(g))
+	if len(r.Text) < 64<<10 {
+		t.Fatalf("текст long_64k занимает %d байт, не переходит порог 64 КБ", len(r.Text))
+	}
+	checkRecord(t, r, knownTypes())
+}
+
+// TestPhoneIntl проверяет международную запись телефона: одиннадцать цифр.
+func TestPhoneIntl(t *testing.T) {
+	g := NewGenerator(59, false)
+	for i := 0; i < 50; i++ {
+		v := g.phoneIntl()
+		if n := len(pii.DigitsOnly(v)); n != 11 {
+			t.Errorf("международный телефон %q содержит %d цифр вместо одиннадцати", v, n)
+		}
+	}
+}
+
 // TestNegativeCategoriesEmpty проверяет, что отрицательные категории не несут
 // разметки: по ним измеряются ложные срабатывания.
 func TestNegativeCategoriesEmpty(t *testing.T) {
@@ -361,12 +463,20 @@ func TestNewCategoriesPresent(t *testing.T) {
 		// виды текста
 		"dialog", "statement", "export_row", "table_five", "email_letter",
 		"free_note", "two_people", "three_mentions", "bilingual",
+		// новые трудные срезы
+		"noise", "latin_mixed", "long_64k",
 		// трудные отрицательные примеры
 		"neg_support_phone", "neg_bank_requisites", "neg_branch_address_tail",
 		"neg_rate_date", "neg_branch_number", "neg_account_number",
 		"neg_company_like_surname", "neg_named_position", "neg_law_quote",
 		"neg_article_code", "neg_confirm_code", "neg_flight_number",
 		"neg_track_number",
+		// новые отрицательные примеры
+		"neg_vehicle_plate", "neg_imei", "neg_serial_number",
+		"neg_insurance_policy", "neg_medical_card", "neg_student_ticket",
+		"neg_employee_badge", "neg_room_number", "neg_route_number",
+		"neg_historical_figure", "neg_poet_verse", "neg_company_inn",
+		"neg_contract_number",
 	}
 	seen := make(map[string]int)
 	for _, r := range NewGenerator(17, false).Generate(4000) {

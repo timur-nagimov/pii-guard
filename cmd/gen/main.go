@@ -23,18 +23,19 @@ func main() {
 	seed := flag.Uint64("seed", 42, "зерно источника случайности: один seed даёт один и тот же набор")
 	holdout := flag.String("holdout", "", "куда записать отложенную выборку; пусто — не записывать")
 	holdoutN := flag.Int("holdout-n", 0, "число строк отложенной выборки; ноль — десятая часть от -n")
+	lowercase := flag.Bool("lowercase", false, "весь набор в нижнем регистре отдельным срезом")
 	quiet := flag.Bool("quiet", false, "не печатать сводку по категориям")
 	flag.Parse()
 
-	if err := run(*out, *holdout, *n, *holdoutN, *seed, *quiet); err != nil {
+	if err := run(*out, *holdout, *n, *holdoutN, *seed, *lowercase, *quiet); err != nil {
 		fmt.Fprintln(os.Stderr, "gen:", err)
 		os.Exit(1)
 	}
 }
 
 // run порождает основной набор и, если задан путь, отложенную выборку.
-func run(out, holdout string, n, holdoutN int, seed uint64, quiet bool) error {
-	stats, err := writeDataset(out, n, seed, false)
+func run(out, holdout string, n, holdoutN int, seed uint64, lowercase, quiet bool) error {
+	stats, err := writeDataset(out, n, seed, false, lowercase)
 	if err != nil {
 		return err
 	}
@@ -47,7 +48,7 @@ func run(out, holdout string, n, holdoutN int, seed uint64, quiet bool) error {
 	if holdoutN <= 0 {
 		holdoutN = n / 10
 	}
-	heldStats, err := writeDataset(holdout, holdoutN, seed, true)
+	heldStats, err := writeDataset(holdout, holdoutN, seed, true, lowercase)
 	if err != nil {
 		return err
 	}
@@ -69,7 +70,7 @@ type stats struct {
 
 // writeDataset записывает набор в файл построчно. Запись потоковая: длинные
 // тексты занимают сотни килобайт каждый, и держать их все в памяти незачем.
-func writeDataset(path string, n int, seed uint64, holdout bool) (stats, error) {
+func writeDataset(path string, n int, seed uint64, holdout, lowercase bool) (stats, error) {
 	st := stats{byCategory: make(map[string]int), byType: make(map[string]int)}
 	started := time.Now()
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
@@ -90,6 +91,9 @@ func writeDataset(path string, n int, seed uint64, holdout bool) (stats, error) 
 	enc.SetEscapeHTML(false)
 
 	g := NewGenerator(seed, holdout)
+	if lowercase {
+		g.lowercase = true
+	}
 	err = g.Each(n, func(r Record) error {
 		st.records++
 		st.spans += len(r.Spans)
