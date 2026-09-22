@@ -9,7 +9,11 @@
 /coverage.out
 /coverage.html
 /coverage.txt
-corpus/
+# Порождаемые наборы данных в корне. Косая черта в начале обязательна: без
+# неё правило ловит любой каталог с таким именем на любой глубине, и под него
+# попадал весь пакет cmd/corpus из семи исходников. В архив сдачи он не
+# попадал, то есть инструмент сборки наборов просто не доезжал до жюри.
+/corpus/
 deploy/terraform/.terraform/
 deploy/terraform/*.tfstate
 deploy/terraform/*.tfstate.*
