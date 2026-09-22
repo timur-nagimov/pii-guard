@@ -1,0 +1,67 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - dupl
+    - gocognit
+    - goconst
+    - gosec
+    - misspell
+    - nakedret
+    - noctx
+    - prealloc
+    - revive
+    - unconvert
+    - unparam
+    - whitespace
+
+  settings:
+    gocognit:
+      # Тот же порог, что применяет статический анализ организаторов.
+      min-complexity: 15
+    dupl:
+      # Однотипные детекторы — главный источник дублирования, поэтому порог
+      # держим низким и выносим общее в помощники.
+      threshold: 120
+    goconst:
+      min-len: 3
+      min-occurrences: 4
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: indent-error-flow
+        - name: errorf
+    gosec:
+      excludes:
+        # Чтение файла настроек по пути, заданному оператором сервиса.
+        - G304
+
+  exclusions:
+    rules:
+      - path: _test\.go$
+        linters:
+          - dupl
+          - gocognit
+          - goconst
+          - gosec
+          - prealloc
+      - path: cmd/(gen|sonar)/
+        linters:
+          - gocognit
+          - dupl
+
+formatters:
+  enable:
+    - gofmt

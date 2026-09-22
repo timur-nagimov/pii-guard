@@ -2,6 +2,7 @@ package pii
 
 import (
 	"strings"
+	"unicode/utf8"
 )
 
 // NumRun — числовая последовательность: одна или несколько групп цифр,
@@ -265,17 +266,14 @@ func decodeRuneAt(s string, i int) (rune, int) {
 }
 
 func decodeLastRuneBefore(s string, end int) (rune, int) {
-	sub := s[:end]
-	last := rune(0)
-	size := 0
-	for i, r := range sub {
-		last = r
-		size = len(sub) - i
+	// Декодирование с конца строки, а не проход с начала: при проходе
+	// нормализация границ становилась квадратичной по длине текста и роняла
+	// пропускную способность на длинных документах в разы.
+	r, size := utf8.DecodeLastRuneInString(s[:end])
+	if r == utf8.RuneError && size <= 1 {
+		return r, size
 	}
-	if size > len(string(last)) {
-		size = len(string(last))
-	}
-	return last, size
+	return r, size
 }
 
 // ContainsAnyLower ищет в строке нижнего регистра любое из слов и возвращает
@@ -308,13 +306,20 @@ func (d *Doc) NumRuns() []NumRun {
 func (d *Doc) AnchorBefore(start int, anchors []string, maxRunes int) (string, bool) {
 	lo, _ := d.WindowRunes(start, start, maxRunes, 0)
 	window := d.Lower[lo:start]
+	// Берём якорь, который заканчивается ближе всего к значению: из пары
+	// «cvc» и «cvc2» должен победить более длинный, иначе цифра из самого
+	// якоря окажется «чужой цифрой» между якорем и значением.
 	bestPos, bestAnchor := -1, ""
 	for _, a := range anchors {
 		if a == "" {
 			continue
 		}
-		if pos := strings.LastIndex(window, a); pos > bestPos {
-			bestPos, bestAnchor = pos+len(a), a
+		pos := strings.LastIndex(window, a)
+		if pos < 0 {
+			continue
+		}
+		if end := pos + len(a); end > bestPos {
+			bestPos, bestAnchor = end, a
 		}
 	}
 	if bestAnchor == "" {
