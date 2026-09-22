@@ -203,6 +203,36 @@ td.num { text-align: right; white-space: nowrap; }
 .verdict.bad { color: var(--bad); }
 .verdict-details { margin-top: 8px; font-size: 13px; color: var(--ink-soft); }
 
+/* Матрица покрытия: строки — типы, столбцы — системы. Таблица плотная,
+   чтобы с одного взгляда было видно дыры и выключенные системы. */
+.coverage-wrap { overflow-x: auto; }
+table.coverage { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.coverage th, table.coverage td {
+  padding: 6px 8px;
+  text-align: center;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+table.coverage th { color: var(--ink-soft); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.02em; }
+table.coverage td.type-name { text-align: left; font-weight: 600; }
+table.coverage td.type-name .src { display: block; font-weight: 400; font-size: 10.5px; color: var(--ink-soft); }
+table.coverage td.hole { background: #fdeceb; color: var(--bad); font-weight: 650; }
+table.coverage td.off { color: var(--ink-soft); }
+table.coverage td.disabled { color: #b0b6bf; text-decoration: line-through; }
+table.coverage td.preset { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+table.coverage td.demask { color: var(--ok); font-weight: 650; }
+table.coverage td.nodemask { color: var(--ink-soft); }
+table.coverage td.conf { color: var(--ink-soft); font-size: 11.5px; }
+.coverage-legend { margin-top: 10px; font-size: 12.5px; color: var(--ink-soft); }
+.coverage-legend b { color: var(--ink); }
+.coverage-legend .hole { color: var(--bad); font-weight: 650; }
+.coverage-legend .demask { color: var(--ok); font-weight: 650; }
+.coverage-legend .custom { color: var(--accent); font-weight: 650; }
+.coverage-legend .src { color: var(--ink-soft); }
+.coverage-meta { margin-top: 10px; font-size: 12.5px; color: var(--ink-soft); }
+.coverage-meta .updated { color: var(--ink-soft); }
+.coverage-meta .error { color: var(--bad); }
+
 @media (max-width: 720px) {
   body { padding: 16px 12px 48px; }
   .hint { margin-left: 0; width: 100%; }
@@ -216,6 +246,24 @@ td.num { text-align: right; white-space: nowrap; }
   <h1>PII Guard: страница проверки</h1>
   <p>Вставьте текст, выберите вид маскирования и посмотрите, что именно нашлось, где и по какому признаку.</p>
 </header>
+
+<section class="panel" id="panel-coverage">
+  <h2>Матрица покрытия</h2>
+  <div class="coverage-wrap">
+    <table class="coverage">
+      <thead id="coverage-head"></thead>
+      <tbody id="coverage-body"></tbody>
+    </table>
+  </div>
+  <div id="coverage-empty" class="empty" hidden>Настроек пока нет: матрица пуста.</div>
+  <div class="coverage-legend">
+    <span><b class="hole">Дыра</b> — тип из задания не маскируется ни одной включённой системой.</span>
+    <span><b class="demask">Обратное преобразование</b> — системе разрешён demask.</span>
+    <span><b class="custom">custom</b> — тип добавлен настройкой через custom_types.</span>
+    <span><b class="src">extra</b> — тип добавлен ядром сверх задания.</span>
+  </div>
+  <div class="coverage-meta" id="coverage-meta"></div>
+</section>
 
 <section class="panel">
   <h2>Исходный текст</h2>
@@ -342,7 +390,11 @@ td.num { text-align: right; white-space: nowrap; }
     skipped: el('skipped'),
     skippedEmpty: el('skipped-empty'),
     rtVerdict: el('roundtrip-verdict'),
-    rtDetails: el('roundtrip-details')
+    rtDetails: el('roundtrip-details'),
+    covHead: el('coverage-head'),
+    covBody: el('coverage-body'),
+    covEmpty: el('coverage-empty'),
+    covMeta: el('coverage-meta')
   };
 
   // Связь строки таблицы и подсвеченного фрагмента: по общему номеру находки.
@@ -614,6 +666,126 @@ td.num { text-align: right; white-space: nowrap; }
     return 'Сервис ответил кодом ' + result.status + '.';
   }
 
+  // Матрица покрытия. Строки — типы персональных данных, столбцы — системы.
+  // В клетке вид маски, «off» для типа, который система не маскирует, и
+  // «disabled» для выключенной системы. Дыра — тип из задания, не маскируемый
+  // ни одной включённой системой: её подсвечиваем отдельно.
+  var SOURCE_TITLE = {
+    task: 'задание',
+    extra: 'extra',
+    custom: 'custom'
+  };
+
+  function coverageCellClass(value) {
+    if (value === 'disabled') { return 'disabled'; }
+    if (value === 'off') { return 'off'; }
+    return 'preset';
+  }
+
+  function coverageCellText(value) {
+    if (value === 'disabled') { return 'выключено'; }
+    if (value === 'off') { return '—'; }
+    return value;
+  }
+
+  function renderCoverage(data) {
+    clear(nodes.covHead);
+    clear(nodes.covBody);
+
+    var systems = data.systems || [];
+    var types = data.types || [];
+    var cells = data.cells || {};
+    nodes.covEmpty.hidden = systems.length > 0 && types.length > 0;
+
+    // Шапка: пустая клетка угла, затем по столбцу на систему. Под именем
+    // системы — порог уверенности и признак обратного преобразования.
+    var headRow = document.createElement('tr');
+    var corner = document.createElement('th');
+    corner.textContent = 'Тип';
+    headRow.appendChild(corner);
+    systems.forEach(function (sys) {
+      var th = document.createElement('th');
+      var name = document.createElement('div');
+      name.textContent = sys.name;
+      th.appendChild(name);
+      var conf = document.createElement('div');
+      conf.className = 'conf';
+      conf.textContent = 'порог ' + num(sys.min_confidence, 2);
+      th.appendChild(conf);
+      var demask = document.createElement('div');
+      demask.className = sys.demask ? 'demask' : 'nodemask';
+      demask.textContent = sys.demask ? 'обратное преобразование' : 'без обратного';
+      th.appendChild(demask);
+      headRow.appendChild(th);
+    });
+    nodes.covHead.appendChild(headRow);
+
+    // Строки: тип, источник, затем по клетке на систему. Дыра считается по
+    // включённым системам: тип из задания, которому не маскируется ни одна.
+    types.forEach(function (t) {
+      var row = document.createElement('tr');
+      var nameCell = document.createElement('td');
+      nameCell.className = 'type-name';
+      nameCell.textContent = t.name;
+      var src = document.createElement('span');
+      src.className = 'src';
+      src.textContent = SOURCE_TITLE[t.source] || t.source;
+      nameCell.appendChild(src);
+      row.appendChild(nameCell);
+
+      var rowCells = cells[t.name] || {};
+      var maskedByAny = false;
+      var hole = t.source === 'task';
+      systems.forEach(function (sys) {
+        var value = rowCells[sys.name] || 'off';
+        if (sys.enabled && value !== 'off' && value !== 'disabled') {
+          maskedByAny = true;
+        }
+        var td = document.createElement('td');
+        td.className = coverageCellClass(value);
+        td.textContent = coverageCellText(value);
+        row.appendChild(td);
+      });
+      if (hole && !maskedByAny) {
+        nameCell.classList.add('hole');
+        nameCell.title = 'Дыра: тип из задания не маскируется ни одной включённой системой';
+      }
+      nodes.covBody.appendChild(row);
+    });
+
+    var updated = document.createElement('span');
+    updated.className = 'updated';
+    updated.textContent = 'Обновлено ' + new Date().toLocaleTimeString() +
+      ', перечитывается раз в 5 секунд вместе с настройками.';
+    nodes.covMeta.appendChild(updated);
+  }
+
+  function renderCoverageError(message) {
+    clear(nodes.covMeta);
+    var err = document.createElement('span');
+    err.className = 'error';
+    err.textContent = 'Матрица недоступна: ' + message;
+    nodes.covMeta.appendChild(err);
+  }
+
+  async function refreshCoverage() {
+    try {
+      var resp = await fetch('/v1/coverage', { method: 'GET' });
+      var raw = await resp.text();
+      var data = null;
+      if (raw) {
+        try { data = JSON.parse(raw); } catch (err) { data = null; }
+      }
+      if (!resp.ok || !data) {
+        renderCoverageError('сервис ответил кодом ' + resp.status);
+        return;
+      }
+      renderCoverage(data);
+    } catch (err) {
+      renderCoverageError(err && err.message ? err.message : 'соединение не установлено');
+    }
+  }
+
   async function runInspect() {
     var text = nodes.text.value;
     if (text.trim() === '') {
@@ -729,6 +901,12 @@ td.num { text-align: right; white-space: nowrap; }
   // Первый разбор сразу при открытии: страницу чаще всего открывают,
   // чтобы что-то увидеть, а не чтобы нажать кнопку.
   runInspect();
+
+  // Матрица покрытия живёт в такт с настройками: они перечитываются раз в
+  // пять секунд, и матрица обязана это отражать. Первый показ сразу, дальше
+  // по таймеру.
+  refreshCoverage();
+  setInterval(refreshCoverage, 5000);
 })();
 </script>
 </body>
