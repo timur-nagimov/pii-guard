@@ -15,6 +15,15 @@ const (
 	reasonOrgAddress   = "org_address"
 	reasonAllowList    = "allow_list"
 	reasonStreetName   = "street_name"
+	// reasonOrgRequisites — число принадлежит юридическому лицу: ОГРН, КПП,
+	// БИК, расчётный счёт. Такие реквизиты персональными данными не являются.
+	reasonOrgRequisites = "org_requisites"
+	// reasonRefNumber — служебный номер: заказ, договор, накладная, тикет.
+	reasonRefNumber = "reference_number"
+	// reasonNetworkAddress — адрес узла сети, а не телефон и не ИНН.
+	reasonNetworkAddress = "network_address"
+	// reasonCommonWord — нарицательное слово, принятое за фамилию.
+	reasonCommonWord = "common_word"
 )
 
 // Окна поиска признаков. Все размеры заданы в рунах: байтовое окно для
@@ -34,6 +43,15 @@ const (
 	// выборе адреса, к которому относится признак организации.
 	ctxLeftPenalty     = 8
 	ctxSentencePenalty = 16
+	// ctxRefWindow — окно слева, в котором ищется признак служебного номера.
+	// Сорока рун хватает на «Обращение зарегистрировано под номером».
+	ctxRefWindow = 40
+	// ctxReqWindow — окно слева для реквизитов организации: они стоят вплотную
+	// к числу, как в «ОГРН 7668521679545».
+	ctxReqWindow = 12
+	// ctxChainWindow — на столько рун части одного адреса расходятся друг от
+	// друга: «г. Ростов» и «ул. Большая Садовая» разделены только «-на-Дону,».
+	ctxChainWindow = 12
 )
 
 // ContextOptions — настройки контекстных правил. Нулевое значение означает,
@@ -165,8 +183,24 @@ func (s *ctxScan) spanText(i int) string {
 
 // typeRules применяет правила, зависящие от типа фрагмента.
 func (s *ctxScan) typeRules(i int) string {
-	if s.spans[i].Type != TypeFIO {
+	if ctxIsIPv4(s.spanText(i)) {
+		return reasonNetworkAddress
+	}
+	switch {
+	case s.spans[i].Type == TypeFIO:
+		return s.fioRules(i)
+	case ctxReferenceType(s.spans[i].Type):
+		return s.numberRules(i)
+	default:
 		return ""
+	}
+}
+
+// fioRules — правила для имён: нарицательное слово, название улицы,
+// упоминание известного человека.
+func (s *ctxScan) fioRules(i int) string {
+	if ctxCommonWord(s.spanText(i)) {
+		return reasonCommonWord
 	}
 	if s.isStreetName(i) {
 		return reasonStreetName
@@ -175,6 +209,162 @@ func (s *ctxScan) typeRules(i int) string {
 		return reasonPublicFigure
 	}
 	return ""
+}
+
+// numberRules — правила для номеров документов и контактов. Оба смотрят
+// только влево: признак стоит перед значением, а слова справа вроде
+// «(заявка принята)» к значению не относятся.
+func (s *ctxScan) numberRules(i int) string {
+	if s.leftAnchorWins(i, ctxReqWindow, ctxRequisiteMarkers) {
+		return reasonOrgRequisites
+	}
+	if s.leftAnchorWins(i, ctxRefWindow, ctxRefMarkers) {
+		return reasonRefNumber
+	}
+	return ""
+}
+
+// ctxReferenceType сообщает, что фрагмент этого типа мог оказаться служебным
+// номером. Имена, адреса, даты и места сюда не входят: у них свои правила, а
+// номер заказа на них не похож.
+func ctxReferenceType(t Type) bool {
+	switch t {
+	case TypePassport, TypeCard, TypeINN, TypePhone, TypeSNILS, TypeCVV,
+		TypePIN, TypeDeptCode, TypeDriverLicense, TypeMilitaryID,
+		TypeBirthCert, TypeForeignPassport, TypeResidencePermit, TypePostcode:
+		return true
+	default:
+		return false
+	}
+}
+
+// ctxRequisiteMarkers — признаки реквизитов юридического лица. Стоящее за
+// ними число принадлежит организации, а не человеку.
+var ctxRequisiteMarkers = []string{
+	"огрн", "огрнип", "кпп", "бик", "окпо", "оквэд", "окато", "октмо",
+	"р/с", "к/с", "расчетный счет", "расчетного счета", "расчетном счете",
+	"корреспондентский счет", "корр. счет", "корсчет",
+}
+
+// ctxRefMarkers — признаки служебного номера: заказа, договора, тикета,
+// сетевого узла. Многословные формы перечислены явно, потому что признак из
+// нескольких слов ищется подстрокой.
+var ctxRefMarkers = []string{
+	"номер заказа", "номером заказа", "заказ №", "заказа №", "заказ n",
+	"договор", "накладн", "счет-фактур", "счет фактур", "артикул",
+	"тикет", "под номером", "номер операции", "номером операции",
+	"номер транзакции", "номер платежа", "в чеке", "верси", "сборк", "билд",
+	"ip", "ip-адрес", "адрес сервера", "сервер", "узл", "трафик",
+	"в журнале", "балансировщик", "хост", "порт", "заявлени о возврате",
+}
+
+// ctxPIIAnchors — признаки персональных данных. Нужны для сравнения: правило
+// снимает фрагмент, только если служебный признак стоит к нему ближе, чем
+// любой признак персональных данных. Поэтому в «В заявке указаны СНИЛС
+// 285...» слово «заявка» ничего не снимает.
+var ctxPIIAnchors = []string{
+	"паспорт", "пасп", "снилс", "инн", "карт", "телефон", "тел", "мобильн",
+	"моб", "сотов",
+	"почт", "email", "e-mail", "адрес", "пин", "pin", "cvv", "cvc",
+	"удостоверен", "свидетельств", "военн", "жительств", "водительск",
+	"рожден", "гражданств", "выдан", "подразделен", "индекс", "фио",
+	"фамил", "имя", "отчеств", "держател", "клиент", "заемщик", "плательщик",
+	"анкет", "документ", "сери", "заявител", "сотрудник", "перевод", "вклад",
+	"cardholder", "внж", "рвп", "загранпаспорт",
+}
+
+// leftAnchorWins сообщает, что ближайший слева признак говорит о служебном
+// номере, а не о персональных данных.
+func (s *ctxScan) leftAnchorWins(i, window int, markers []string) bool {
+	sp := s.spans[i]
+	lo, _ := s.d.WindowRunes(sp.Start, sp.Start, window, 0)
+	lo = ctxSkipPartialWord(s.low, lo, sp.Start)
+	if lo >= sp.Start {
+		return false
+	}
+	left := s.low[lo:sp.Start]
+	own := ctxLastMarker(left, markers)
+	return own >= 0 && own > ctxLastMarker(left, ctxPIIAnchors)
+}
+
+// ctxSkipPartialWord сдвигает начало окна за обрезанное слово. Без сдвига
+// окно, начавшееся внутри слова, даёт ложную границу слова: «паспорт»,
+// обрезанный до «порт», превратился бы в признак сетевого порта.
+func ctxSkipPartialWord(text string, lo, hi int) int {
+	if lo <= 0 || lo >= hi {
+		return lo
+	}
+	if r, _ := decodeLastRuneBefore(text, lo); !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+		return lo
+	}
+	for lo < hi {
+		r, size := utf8.DecodeRuneInString(text[lo:])
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			break
+		}
+		lo += size
+	}
+	return lo
+}
+
+// ctxLastMarker возвращает смещение последнего вхождения любого признака или
+// -1, если ни один признак не найден.
+func ctxLastMarker(text string, markers []string) int {
+	last := -1
+	for _, h := range ctxFindMarkers(text, markers, ctxMaxTail) {
+		if h.Start > last {
+			last = h.Start
+		}
+	}
+	return last
+}
+
+// ctxNonNameStems — основы нарицательных слов, которые детектор имён иногда
+// принимает за фамилию: «Головной офис», «Дополнительный офис». Хранятся
+// основами, поэтому падежные формы перечислять не нужно.
+var ctxNonNameStems = map[string]bool{
+	"головн": true, "дополнительн": true, "юридическ": true, "фактическ": true,
+	"почтов": true, "расчетн": true, "корреспондентск": true, "операционн": true,
+	"центральн": true, "обособленн": true, "структурн": true, "уполномоченн": true,
+	"контактн": true, "мобильн": true, "домашн": true, "рабоч": true,
+}
+
+// ctxCommonWord сообщает, что фрагмент состоит из одного нарицательного слова.
+// Одно слово потому, что рядом с именем такое слово стоит отдельно, а внутри
+// имени из двух слов нарицательное слово не встречается.
+func ctxCommonWord(value string) bool {
+	words := ctxWords(ctxNormalizeValue(value))
+	return len(words) == 1 && ctxNonNameStems[ctxStem(words[0])]
+}
+
+// ctxIsIPv4 сообщает, что значение записано как сетевой адрес: четыре числа от
+// нуля до 255 через точку. Такой адрес не бывает ни телефоном, ни ИНН.
+func ctxIsIPv4(value string) bool {
+	parts := strings.Split(strings.TrimSpace(value), ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		if !ctxIsByteNumber(p) {
+			return false
+		}
+	}
+	return true
+}
+
+// ctxIsByteNumber сообщает, что строка — это число от нуля до 255.
+func ctxIsByteNumber(p string) bool {
+	if p == "" || len(p) > 3 {
+		return false
+	}
+	n := 0
+	for i := 0; i < len(p); i++ {
+		if !ctxIsDigitByte(p[i]) {
+			return false
+		}
+		n = n*10 + int(p[i]-'0')
+	}
+	return n <= 255
 }
 
 // split раскладывает фрагменты на оставленные и снятые.
@@ -330,6 +520,15 @@ var ctxOrgMarkers = []string{
 	"адрес компании", "адреса компании", "адрес магазина", "адреса магазина",
 	"пункт выдачи", "пункта выдачи", "пункте выдачи", "пвз",
 	"альфа-банк", "альфабанк", "сбербанк", "втб", "тинькофф",
+	// Слова про помещение организации. «Офис» и «касса» в тексте про клиента
+	// не встречаются, поэтому берём их как самостоятельные признаки.
+	"офис", "касс", "пункт обслуживания", "пункта обслуживания",
+	"пункте обслуживания", "пункт приема", "пункта приема", "пункте приема",
+	"операционная касса", "операционный офис", "представительств",
+	"торговая точка", "торговой точки", "точка продаж", "точке продаж",
+	"почтовое отделение", "почтового отделения", "мфц", "терминал",
+	"райффайзен", "газпромбанк", "россельхозбанк", "совкомбанк", "росбанк",
+	"почта банк", "уралсиб", "ак барс", "юникредит", "отп банк",
 }
 
 // ctxOrgForms — организационные формы. Ищутся как целое слово: «ао» внутри
@@ -354,9 +553,55 @@ func (s *ctxScan) markOrgAddresses() {
 	}
 	for _, h := range hits {
 		if i, ok := s.ownerAddress(h, addrs); ok {
-			s.reasons[i] = reasonOrgAddress
+			s.markOrgChain(i, addrs)
 		}
 	}
+}
+
+// markOrgChain снимает выбранный адрес вместе с его продолжениями. Адрес
+// организации детектор иногда отдаёт двумя фрагментами: «г. Ростов-на-Дону» и
+// «ул. Большая Садовая, д. 105». Продолжением считается соседний адрес, от
+// которого выбранный отделён только разделителями: чужой адрес так вплотную
+// не стоит, между адресами разных людей всегда есть слова.
+func (s *ctxScan) markOrgChain(i int, addrs []int) {
+	s.reasons[i] = reasonOrgAddress
+	for _, j := range addrs {
+		if j == i || s.reasons[j] != "" {
+			continue
+		}
+		if s.sameOrgAddress(i, j) {
+			s.reasons[j] = reasonOrgAddress
+		}
+	}
+}
+
+// gapText возвращает текст между двумя фрагментами в порядке их следования.
+func (s *ctxScan) gapText(i, j int) string {
+	a, b := s.spans[i], s.spans[j]
+	if b.Start < a.Start {
+		a, b = b, a
+	}
+	if a.End < 0 || b.Start > len(s.low) || a.End > b.Start {
+		return ""
+	}
+	return s.low[a.End:b.Start]
+}
+
+// sameOrgAddress сообщает, что два фрагмента — части одного адреса. Признаки
+// такие: фрагменты стоят вплотную, в одном предложении, а между ними нет ни
+// цифр, ни слова про персональные данные. Адрес другого человека так близко
+// не стоит, между адресами всегда есть слова вроде «клиент проживает».
+func (s *ctxScan) sameOrgAddress(i, j int) bool {
+	a, b := s.spans[i], s.spans[j]
+	if ctxRuneDistance(s.d, a.Start, a.End, b.Start, b.End) > ctxChainWindow {
+		return false
+	}
+	lo, hi := ctxSentenceBounds(s.d.Text, a.Start)
+	if b.Start < lo || b.Start >= hi {
+		return false
+	}
+	gap := s.gapText(i, j)
+	return !strings.ContainsAny(gap, "\n0123456789") && ctxLastMarker(gap, ctxPIIAnchors) < 0
 }
 
 // ownerAddress выбирает адрес, к которому относится признак организации.

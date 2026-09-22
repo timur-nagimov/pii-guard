@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,6 +31,9 @@ type Server struct {
 	sem      chan struct{}
 	heavySem chan struct{}
 
+	// upstreams кеширует клиентов к языковой модели по имени системы.
+	upstreams sync.Map
+
 	ready atomic.Bool
 }
 
@@ -48,7 +52,12 @@ func (s *Server) Config() *config.Config { return s.cfg.Load() }
 
 // SetConfig подменяет настройки без перезапуска сервиса. Размеры ограничителей
 // остаются прежними: менять их на ходу небезопасно для идущих запросов.
-func (s *Server) SetConfig(cfg *config.Config) { s.cfg.Store(cfg) }
+func (s *Server) SetConfig(cfg *config.Config) {
+	s.cfg.Store(cfg)
+	// Настройки обращения к модели могли измениться, поэтому кешированных
+	// клиентов нужно собрать заново.
+	s.upstreams = sync.Map{}
+}
 
 // SetReady переключает готовность принимать запросы. При завершении работы
 // готовность снимается заранее, чтобы балансировщик перестал слать запросы.

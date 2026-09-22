@@ -5,3 +5,7 @@
 *.out
 coverage.*
 corpus/
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.*
+deploy/terraform/.terraform.lock.hcl
