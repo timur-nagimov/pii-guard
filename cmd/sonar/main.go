@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -56,6 +57,7 @@ func parseFlags() flags {
 	flag.BoolVar(&f.demaskUnknownID, "demask-unknown-id", false, "слать обратный запрос с неизвестным идентификатором")
 	flag.IntVar(&f.bigPayload, "big-payload", 0, "размер тела тяжёлого запроса в байтах, ноль выключает проверку")
 	flag.Parse()
+	f.url = normalizeURL(f.url)
 	return f
 }
 
@@ -140,4 +142,15 @@ func printSummary(rep Report, dir string) {
 	fmt.Printf("обратный шаг: точное восстановление %.1f%% на %d элементах\n",
 		rep.Demask.ExactShare*100, rep.Demask.Total)
 	fmt.Printf("отчёты: %s/report.md и %s/report.json\n", dir, dir)
+}
+
+// normalizeURL дописывает путь ручки, если передали только адрес сервиса.
+// На стенде удобнее указывать адрес целиком, и ошибка в пути выглядела бы как
+// «решение не держит нагрузку», хотя дело в опечатке запуска.
+func normalizeURL(raw string) string {
+	trimmed := strings.TrimRight(raw, "/")
+	if strings.HasSuffix(trimmed, "/process") {
+		return trimmed
+	}
+	return trimmed + "/process"
 }
