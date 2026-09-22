@@ -1,0 +1,4 @@
+go test fuzz v1
+string("Zip: 384105;")
+int(0)
+int(0)

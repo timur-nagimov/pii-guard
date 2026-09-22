@@ -130,18 +130,27 @@ func (d *Doc) tokenize() {
 	started := false
 	for i, r := range d.Text {
 		d.runeStarts = append(d.runeStarts, int32(i))
+		// Размер руны берём из DecodeRuneInString, а не из utf8.RuneLen(r):
+		// для невалидного UTF-8 range отдаёт RuneError и съедает один байт,
+		// тогда как RuneLen(RuneError) возвращает три. Конец токена по
+		// RuneLen вылезал бы за границы строки и ронял срез по нему в
+		// детекторах.
+		size := 1
+		if _, sz := utf8.DecodeRuneInString(d.Text[i:]); sz > 0 {
+			size = sz
+		}
 		k := classify(r)
 		if !started {
-			cur = Token{Kind: k, Start: i, End: i + utf8.RuneLen(r)}
+			cur = Token{Kind: k, Start: i, End: i + size}
 			started = true
 			continue
 		}
 		if k == cur.Kind {
-			cur.End = i + utf8.RuneLen(r)
+			cur.End = i + size
 			continue
 		}
 		d.Tokens = append(d.Tokens, cur)
-		cur = Token{Kind: k, Start: i, End: i + utf8.RuneLen(r)}
+		cur = Token{Kind: k, Start: i, End: i + size}
 	}
 	if started {
 		d.Tokens = append(d.Tokens, cur)

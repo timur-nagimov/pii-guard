@@ -1,0 +1,2 @@
+go test fuzz v1
+string("FIO: MARGARITA GRIGOREV, INN 444409350086, tel 8-962-589-39-62.")
