@@ -1,6 +1,13 @@
 // Команда score измеряет качество обнаружения прямо на размеченном наборе,
 // без сети и без запуска сервиса. Нужна для быстрых итераций: полный прогон
 // имитатора проверяющей системы занимает минуты, а этот замер — секунды.
+//
+// Помимо базового замера по одному набору команда умеет:
+//
+//	-datasets  прогон по нескольким наборам с общей таблицей тип×набор;
+//	-preset    выбор вида маскирования (по умолчанию full);
+//	-lower     замер на тексте, приведённом к нижнему регистру;
+//	-split     разделить типы задания и наши добавления сверх него.
 package main
 
 import (
@@ -40,23 +47,55 @@ type goldSpan struct {
 	Type  string `json:"type"`
 }
 
-// stat копит показатели по одному срезу: типу или категории.
+// stat копит показатели по одному срезу: типу, категории или источнику.
+//
+// Пропуск и ложное срабатывание считаются раздельно. Пропуск — эталонный
+// фрагмент, который не замаскирован целиком: полностью (ratio == 0) или
+// частично (0 < ratio < 1). Ложное срабатывание — изменённые руны за
+// пределами эталонных фрагментов.
 type stat struct {
 	fragments int
 	changed   float64
 	touched   int
-	extra     int
-	outside   int
+	missed    int // ratio == 0: фрагмент не затронут вовсе
+	partial   int // 0 < ratio < 1: фрагмент замаскирован не полностью
+	full      int // ratio == 1: фрагмент замаскирован целиком
+	extra     int // ложные срабатывания: изменённые руны вне эталона
+	outside   int // всего рун вне эталона
+}
+
+// taskTypes — типы из раздела 4.1 технического задания. Остальные типы,
+// которые умеет сервис, — наши добавления сверх задания.
+var taskTypes = map[string]bool{
+	"FIO": true, "DOB": true, "BIRTH_PLACE": true, "PASSPORT": true,
+	"CITIZENSHIP": true, "ISSUER": true, "DEPT_CODE": true, "ISSUE_DATE": true,
+	"DRIVER_LICENSE": true, "ADDRESS": true, "EMAIL": true, "PHONE": true,
+	"INN": true, "CARD": true, "CVV": true, "PIN": true, "CARDHOLDER": true,
 }
 
 func main() {
 	datasetPath := flag.String("dataset", "corpus/dataset.jsonl", "путь к размеченному набору")
+	datasets := flag.String("datasets", "", "список наборов через запятую: общая таблица тип×набор")
 	onlyType := flag.String("type", "", "показать примеры ошибок только по этому типу")
 	onlyCategory := flag.String("category", "", "ограничить набор одной категорией")
 	examples := flag.Int("examples", 0, "сколько примеров ошибок напечатать")
 	limit := flag.Int("limit", 0, "обработать не больше стольких элементов")
 	minConf := flag.Float64("min-conf", 0.5, "порог уверенности: 0.5 профиль полноты, 0.75 и выше профиль точности")
+	presetName := flag.String("preset", "full", "вид маскирования: full, full_ws, partial, initials, token, synthetic")
+	lower := flag.Bool("lower", false, "привести текст к нижнему регистру перед замером")
+	split := flag.Bool("split", false, "разделить типы задания и наши добавления сверх него")
 	flag.Parse()
+
+	preset := mask.Preset(*presetName)
+	if !preset.Valid() {
+		fmt.Fprintf(os.Stderr, "неизвестный пресет %q\n", *presetName)
+		os.Exit(1)
+	}
+
+	if *datasets != "" {
+		runDatasets(*datasets, *minConf, preset, *lower, *split)
+		return
+	}
 
 	samples, err := load(*datasetPath, *onlyCategory, *limit)
 	if err != nil {
@@ -64,23 +103,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	eng, sys, defs := buildEngine(*minConf)
+	eng, sys, defs := buildEngine(*minConf, preset)
 	byType := map[string]*stat{}
 	byCategory := map[string]*stat{}
 	bySource := map[string]*stat{}
 	shown := 0
 
 	for _, s := range samples {
-		res := eng.Mask(s.Text, sys, defs)
+		text := s.Text
+		if *lower {
+			text = strings.ToLower(text)
+		}
+		res := eng.Mask(text, sys, defs)
 		cat := ensure(byCategory, s.Category)
 
-		origRunes := []rune(s.Text)
+		origRunes := []rune(text)
 		maskRunes := []rune(res.Text)
-		idx := runeIndex(s.Text)
+		idx := runeIndex(text)
 		inside := make([]bool, len(origRunes))
 
 		for _, g := range s.Spans {
-			if g.Start < 0 || g.End > len(s.Text) || g.Start >= g.End {
+			if g.Start < 0 || g.End > len(text) || g.Start >= g.End {
 				continue
 			}
 			startRune, endRune := idx[g.Start], idx[g.End]
@@ -101,11 +144,25 @@ func main() {
 				cat.touched++
 				src.touched++
 			}
+			switch {
+			case ratio == 0:
+				st.missed++
+				cat.missed++
+				src.missed++
+			case ratio < 1:
+				st.partial++
+				cat.partial++
+				src.partial++
+			default:
+				st.full++
+				cat.full++
+				src.full++
+			}
 			if ratio < 0.5 && *examples > 0 && shown < *examples &&
 				(*onlyType == "" || *onlyType == g.Type) {
 				shown++
 				fmt.Printf("ПРОПУСК %-16s [%s] %q\n   текст: %s\n   маска: %s\n",
-					g.Type, s.Category, s.Text[g.Start:g.End], cut(s.Text), cut(res.Text))
+					g.Type, s.Category, text[g.Start:g.End], cut(text), cut(res.Text))
 			}
 		}
 
@@ -121,18 +178,153 @@ func main() {
 		}
 		if extra > 0 && *examples > 0 && shown < *examples && *onlyType == "" && len(s.Spans) == 0 {
 			shown++
-			fmt.Printf("ЛИШНЕЕ  [%s]\n   текст: %s\n   маска: %s\n", s.Category, cut(s.Text), cut(res.Text))
+			fmt.Printf("ЛИШНЕЕ  [%s]\n   текст: %s\n   маска: %s\n", s.Category, cut(text), cut(res.Text))
 		}
 	}
 
-	report("Типы", byType, *onlyType)
-	report("Источники", bySource, "")
-	report("Категории", byCategory, "")
+	report("Типы", byType, *onlyType, *split)
+	report("Источники", bySource, "", false)
+	report("Категории", byCategory, "", false)
+}
+
+// runDatasets прогоняет замер по нескольким наборам и печатает общую таблицу
+// тип×набор: доля изменённого, доля затронутых, число фрагментов.
+func runDatasets(list string, minConf float64, preset mask.Preset, lower, split bool) {
+	paths := strings.Split(list, ",")
+	eng, sys, defs := buildEngine(minConf, preset)
+
+	// byType[тип][набор] = stat
+	byType := map[string]map[string]*stat{}
+	// bySet[набор] = stat (итог по набору)
+	bySet := map[string]*stat{}
+
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		setName := setLabel(path)
+		samples, err := load(path, "", 0)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "набор %s: %v\n", path, err)
+			continue
+		}
+		for _, s := range samples {
+			text := s.Text
+			if lower {
+				text = strings.ToLower(text)
+			}
+			res := eng.Mask(text, sys, defs)
+			origRunes := []rune(text)
+			maskRunes := []rune(res.Text)
+			idx := runeIndex(text)
+			inside := make([]bool, len(origRunes))
+			set := ensure(bySet, setName)
+
+			for _, g := range s.Spans {
+				if g.Start < 0 || g.End > len(text) || g.Start >= g.End {
+					continue
+				}
+				startRune, endRune := idx[g.Start], idx[g.End]
+				for i := startRune; i < endRune && i < len(inside); i++ {
+					inside[i] = true
+				}
+				ratio := changedRatio(origRunes, maskRunes, startRune, endRune)
+				st := ensureType(byType, g.Type, setName)
+				st.fragments++
+				set.fragments++
+				st.changed += ratio
+				set.changed += ratio
+				if ratio > 0 {
+					st.touched++
+					set.touched++
+				}
+				switch {
+				case ratio == 0:
+					st.missed++
+					set.missed++
+				case ratio < 1:
+					st.partial++
+					set.partial++
+				default:
+					st.full++
+					set.full++
+				}
+			}
+
+			if !s.PartialLabels {
+				var outside int
+				extra, outside := outsideChanges(origRunes, maskRunes, inside)
+				set.extra += extra
+				set.outside += outside
+			}
+		}
+	}
+
+	// Заголовок: тип, набор, изменено, затронуто, фрагментов.
+	fmt.Printf("\nКачество по типам и наборам (пресет %s%s)\n", preset, lowerLabel(lower))
+	fmt.Printf("%-16s %-22s %10s %10s %10s\n", "тип", "набор", "изменено", "затронуто", "фрагментов")
+
+	types := sortedTypeKeys(byType)
+	for _, t := range types {
+		ts := byType[t]
+		sets := sortedKeys(ts)
+		for _, n := range sets {
+			s := ts[n]
+			touched := 0.0
+			if s.fragments > 0 {
+				touched = 100 * float64(s.touched) / float64(s.fragments)
+			}
+			mark := ""
+			if split {
+				mark = "  [задание]"
+				if !taskTypes[t] {
+					mark = "  [добавление]"
+				}
+			}
+			fmt.Printf("%-16s %-22s %10.4f %9.1f%% %10d%s\n",
+				t, n, avg(s), touched, s.fragments, mark)
+		}
+	}
+
+	// Итог по наборам.
+	fmt.Printf("\nИтог по наборам\n%-22s %10s %10s %10s %10s\n", "набор", "изменено", "затронуто", "фрагментов", "ложных")
+	sets := sortedKeys(bySet)
+	for _, n := range sets {
+		s := bySet[n]
+		touched := 0.0
+		if s.fragments > 0 {
+			touched = 100 * float64(s.touched) / float64(s.fragments)
+		}
+		fp := 0.0
+		if s.outside > 0 {
+			fp = 100 * float64(s.extra) / float64(s.outside)
+		}
+		fmt.Printf("%-22s %10.4f %9.1f%% %10d %9.2f%%\n",
+			n, avg(s), touched, s.fragments, fp)
+	}
+}
+
+// setLabel превращает путь к набору в короткое имя для таблицы.
+func setLabel(path string) string {
+	base := path
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	base = strings.TrimSuffix(base, ".jsonl")
+	return base
+}
+
+func lowerLabel(lower bool) string {
+	if lower {
+		return ", нижний регистр"
+	}
+	return ""
 }
 
 // buildEngine собирает конвейер с теми же детекторами, что и сервис, и с
 // профилем проверяющей системы.
-func buildEngine(minConf float64) (*engine.Engine, config.System, config.Defaults) {
+func buildEngine(minConf float64, preset mask.Preset) (*engine.Engine, config.System, config.Defaults) {
 	reg := pii.NewRegistry()
 	reg.Register(
 		pii.NewNumericDetector(),
@@ -148,7 +340,7 @@ func buildEngine(minConf float64) (*engine.Engine, config.System, config.Default
 		pii.NewExtraDocumentsDetector(),
 	)
 	defs := config.Defaults{
-		Preset:            mask.PresetFull,
+		Preset:            preset,
 		MinConfidence:     minConf,
 		DateWithoutAnchor: config.DatePIIContext,
 	}
@@ -157,7 +349,7 @@ func buildEngine(minConf float64) (*engine.Engine, config.System, config.Default
 		Enabled:  true,
 		AllTypes: true,
 		Demask:   true,
-		Preset:   mask.PresetFull,
+		Preset:   preset,
 		Exclusions: config.Exclusions{
 			PublicFigures: true,
 			OrgAddresses:  true,
@@ -246,7 +438,7 @@ func ensure(m map[string]*stat, key string) *stat {
 	return s
 }
 
-func report(title string, m map[string]*stat, only string) {
+func report(title string, m map[string]*stat, only string, split bool) {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		if only != "" && k != only {
@@ -258,18 +450,31 @@ func report(title string, m map[string]*stat, only string) {
 		a, b := m[keys[i]], m[keys[j]]
 		return avg(a) < avg(b)
 	})
-	fmt.Printf("\n%s\n%-24s %10s %10s %10s\n", title, "срез", "изменено", "затронуто", "фрагментов")
+	fmt.Printf("\n%s\n%-24s %10s %10s %10s %10s %10s %10s\n",
+		title, "срез", "изменено", "затронуто", "пропущено", "частично", "ложных", "фрагментов")
 	for _, k := range keys {
 		s := m[k]
 		touched := 0.0
+		missed := 0.0
+		partial := 0.0
 		if s.fragments > 0 {
-			touched = float64(s.touched) / float64(s.fragments)
+			touched = 100 * float64(s.touched) / float64(s.fragments)
+			missed = 100 * float64(s.missed) / float64(s.fragments)
+			partial = 100 * float64(s.partial) / float64(s.fragments)
 		}
 		extra := ""
-		if s.outside > 0 && s.extra > 0 {
-			extra = fmt.Sprintf("  лишних байт %.2f%%", 100*float64(s.extra)/float64(s.outside))
+		if s.outside > 0 {
+			extra = fmt.Sprintf("%9.2f%%", 100*float64(s.extra)/float64(s.outside))
 		}
-		fmt.Printf("%-24s %10.4f %9.1f%% %10d%s\n", k, avg(s), 100*touched, s.fragments, extra)
+		mark := ""
+		if split {
+			mark = "  [задание]"
+			if !taskTypes[k] {
+				mark = "  [добавление]"
+			}
+		}
+		fmt.Printf("%-24s %10.4f %9.1f%% %9.1f%% %9.1f%% %10s %10d%s\n",
+			k, avg(s), touched, missed, partial, extra, s.fragments, mark)
 	}
 }
 
@@ -278,6 +483,35 @@ func avg(s *stat) float64 {
 		return 0
 	}
 	return s.changed / float64(s.fragments)
+}
+
+func sortedKeys(m map[string]*stat) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedTypeKeys(m map[string]map[string]*stat) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// ensureType достаёт статистику по паре тип×набор, создавая промежуточные
+// карты по мере необходимости.
+func ensureType(m map[string]map[string]*stat, typ, setName string) *stat {
+	ts, ok := m[typ]
+	if !ok {
+		ts = map[string]*stat{}
+		m[typ] = ts
+	}
+	return ensure(ts, setName)
 }
 
 func cut(s string) string {
