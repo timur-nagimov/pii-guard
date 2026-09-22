@@ -85,6 +85,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	back := make(map[string]string)
 	counts := make(map[string]int)
 	masked := make([]chatMessage, len(req.Messages))
+	// Счётчик плейсхолдеров общий на весь запрос: иначе в каждом сообщении
+	// первый телефон получал бы [PHONE_1], и разные значения столкнулись бы в
+	// одной подстановке, а обратное преобразование подставило бы одно последнее.
+	shared := &mask.TokenState{}
 	for i, msg := range req.Messages {
 		text, isString := decodeContent(msg.Content)
 		if !isString {
@@ -95,6 +99,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		for t, n := range res.Counts {
 			counts[string(t)] += n
 		}
+		opts.Shared = shared
 		applied := mask.Apply(text, res.Spans, opts)
 		for _, ph := range applied.Placeholders {
 			back[ph.Token] = ph.Value
