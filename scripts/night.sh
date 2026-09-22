@@ -757,6 +757,14 @@ run_task() {
   local branch="night/$name"
   local log="$NIGHT/logs/$name.log"
 
+  # Уже сделанное не переделываем. Без этой проверки повторный запуск падал
+  # бы на создании существующей ветки, и очередь нельзя было бы продолжить
+  # после добавления новой задачи или после остановки на полпути.
+  if git -C "$ROOT" rev-parse --verify --quiet "$branch" >/dev/null 2>&1; then
+    printf '  задача %s уже прогонялась, ветка %s на месте, пропускаю\n' "$name" "$branch"
+    return 0
+  fi
+
   {
     echo "=== $name: начало $(date '+%H:%M:%S') ==="
 
