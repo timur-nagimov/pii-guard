@@ -482,6 +482,8 @@ var extraDocAnchorsForeign = []string{
 var extraDocAnchorsPermit = []string{
 	"на жительство", "внж", "рвп", "на проживание",
 	"на временное проживание", "residence permit",
+	"документ иностранного гражданина", "удостоверение внж", "номер внж",
+	"вид на жительство",
 }
 
 // extraDocAnchorsBirthCert — якоря свидетельства о рождении. Сокращение «сор»
@@ -503,7 +505,7 @@ var extraDocAnchorsBirthCertNear = []string{
 // extraDocAnchorsMilitary — якоря военного билета. Основы «военн» и «воинск»
 // покрывают «военный билет», «военника», «воинский документ» и «воинский учёт».
 var extraDocAnchorsMilitary = []string{
-	"военн", "воинск", "military",
+	"военн", "военнослужащ", "воинск", "military",
 }
 
 // extraDocSeriesWords — слова, которые стоят между якорем, серией и номером и
@@ -646,11 +648,13 @@ func extraDocLowerSlice(d *Doc, lo, hi int) string {
 
 // extraDocAnchorNear сообщает, что в окне вокруг значения есть якорь документа.
 // Окна задаются в рунах, поэтому кириллический якорь достаёт до значения.
+// Окно сворачивается по омоглифам: «Cтрaxoвoй» с латинскими буквами совпадает
+// с якорем «страховой».
 func extraDocAnchorNear(d *Doc, start, end int, anchors []string, before, after int) bool {
 	lo, hi := d.WindowRunes(start, end, before, after)
-	window := extraDocLowerSlice(d, lo, hi)
+	window := FoldHomoglyphs(extraDocLowerSlice(d, lo, hi))
 	for _, a := range anchors {
-		if extraDocAnchorEnd(window, a) >= 0 {
+		if extraDocAnchorEnd(window, FoldHomoglyphs(a)) >= 0 {
 			return true
 		}
 	}
@@ -661,12 +665,13 @@ func extraDocAnchorNear(d *Doc, start, end int, anchors []string, before, after 
 // якорем и значением не было других цифр. Без этого требования якорь одного
 // документа в перечислении помечает номер следующего. Окно всегда равно
 // anchorWindow и задано в рунах: кириллический якорь иначе не достаёт.
+// Окно сворачивается по омоглифам; цифры омоглифами не бывают и не меняются.
 func extraDocAnchorBefore(d *Doc, start int, anchors []string) bool {
 	lo, _ := d.WindowRunes(start, start, anchorWindow, 0)
-	window := extraDocLowerSlice(d, lo, start)
+	window := FoldHomoglyphs(extraDocLowerSlice(d, lo, start))
 	best := -1
 	for _, a := range anchors {
-		if e := extraDocAnchorEnd(window, a); e > best {
+		if e := extraDocAnchorEnd(window, FoldHomoglyphs(a)); e > best {
 			best = e
 		}
 	}
@@ -755,7 +760,7 @@ func extraDocForeignShape(d *Doc, runs []NumRun, i int) (int, bool) {
 // цифры, разделитель и две буквы; если серии нет, хватает якоря прямо перед
 // номером.
 func extraDocBirthCert(d *Doc, run NumRun) (Span, bool) {
-	if len(run.Groups) != 1 || len(run.Digits) < 5 || len(run.Digits) > 7 {
+	if len(run.Digits) < 5 || len(run.Digits) > 7 {
 		return Span{}, false
 	}
 	if start, ok := extraDocCertSeries(d, run.Start); ok {
@@ -764,7 +769,7 @@ func extraDocBirthCert(d *Doc, run NumRun) (Span, bool) {
 		}
 		return Span{}, false
 	}
-	if !extraDocAnchorBefore(d, run.Start, extraDocAnchorsBirthCert) {
+	if len(run.Groups) != 1 || !extraDocAnchorBefore(d, run.Start, extraDocAnchorsBirthCert) {
 		return Span{}, false
 	}
 	return extraDocSpan(d, run.Start, run.End, TypeBirthCert, ConfAnchored, "birth_cert:anchor")
@@ -825,6 +830,8 @@ func extraDocSeriesToken(d *Doc, at int) (int, bool) {
 		if !ok {
 			return 0, false
 		}
+		// Служебное слово между серией и номером пропускается, даже если оно
+		// из двух букв: «No» в «VIII-ИК No 258225» серией не является.
 		if extraDocSeriesWords[cardHolderTokenLower(d, k)] {
 			j = k - 1
 			continue
