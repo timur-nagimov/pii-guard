@@ -1,0 +1,6 @@
+go test fuzz v1
+string("Address: Kirov, Oktyabrskaya str., 15, zip 405205, e-mail nikolaev-y@icloud.com.")
+int(0)
+int(0)
+int(0)
+int(0)

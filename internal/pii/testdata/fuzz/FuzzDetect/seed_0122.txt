@@ -1,0 +1,2 @@
+go test fuzz v1
+string("zip: 394098;\nZIP: 394098;\nzIP: 394098;")
