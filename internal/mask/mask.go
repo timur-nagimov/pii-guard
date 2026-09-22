@@ -59,6 +59,18 @@ type Options struct {
 	Default Preset
 	// PerType переопределяет пресет для отдельных типов.
 	PerType map[pii.Type]Preset
+	// Shared — общее состояние нумерации плейсхолдеров для нескольких вызовов
+	// Apply подряд. Нужно, когда один запрос маскируется по частям (сообщения
+	// прокси): без него счётчик начинался бы с единицы в каждой части, и разные
+	// значения получали бы один и тот же плейсхолдер, а обратное преобразование
+	// подставило бы вместо них одно последнее значение.
+	Shared *TokenState
+}
+
+// TokenState — общее состояние нумерации плейсхолдеров между вызовами Apply.
+type TokenState struct {
+	counters   map[pii.Type]int
+	valueToken map[string]string
 }
 
 // PresetFor возвращает пресет для типа с учётом переопределений.
@@ -97,6 +109,14 @@ func Apply(text string, spans []pii.Span, opts Options) Result {
 	res := Result{}
 	counters := make(map[pii.Type]int)
 	valueToken := make(map[string]string)
+	if opts.Shared != nil {
+		if opts.Shared.counters == nil {
+			opts.Shared.counters = make(map[pii.Type]int)
+			opts.Shared.valueToken = make(map[string]string)
+		}
+		counters = opts.Shared.counters
+		valueToken = opts.Shared.valueToken
+	}
 
 	prev := 0
 	for _, s := range spans {
