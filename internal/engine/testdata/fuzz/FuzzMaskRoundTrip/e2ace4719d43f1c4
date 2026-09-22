@@ -1,0 +1,2 @@
+go test fuzz v1
+string("@AAAAAA@AAA\xda@AAA A\xfb\xf6AAAAAAA00")

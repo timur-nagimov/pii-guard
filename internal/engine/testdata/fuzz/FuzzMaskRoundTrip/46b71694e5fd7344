@@ -1,0 +1,2 @@
+go test fuzz v1
+string("a\x11A0\x15\x96\x7f")
