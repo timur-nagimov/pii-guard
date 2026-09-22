@@ -1,0 +1,28 @@
+#cloud-config
+# Облачная инициализация машины общего хранилища.
+#
+# Простой вариант общего хранилища: один Redis в контейнере. Дешевле
+# управляемого кластера примерно втрое и поднимается за минуту, но переживает
+# только перезапуск процесса, не отказ машины. Для хакатонного стенда этого
+# достаточно, для продуктивной среды берите управляемый кластер.
+users:
+  - name: ubuntu
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+write_files:
+  - path: /etc/sysctl.d/99-highload.conf
+    encoding: b64
+    content: ${sysctl_b64}
+  - path: /opt/redis/docker-compose.yml
+    permissions: '0600'
+    encoding: b64
+    content: ${compose_b64}
+package_update: true
+packages: [docker.io, docker-compose-v2, curl, ca-certificates]
+runcmd:
+  - sysctl --system
+  - systemctl enable --now docker
+  - usermod -aG docker ubuntu
+  - docker compose -f /opt/redis/docker-compose.yml up -d
+  - echo 'STAND=redis ready' > /var/log/stand-ready

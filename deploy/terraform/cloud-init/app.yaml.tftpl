@@ -1,0 +1,51 @@
+#cloud-config
+# Облачная инициализация машины сервиса.
+#
+# Разворачивает стенд целиком: пределы ядра, Docker, исполняемый файл сервиса,
+# файл настроек, службу systemd и наблюдение. После пересоздания машины стенд
+# поднимается сам, руками ничего делать не нужно.
+users:
+  - name: ubuntu
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+write_files:
+  - path: /etc/sysctl.d/99-highload.conf
+    encoding: b64
+    content: ${sysctl_b64}
+  - path: /etc/security/limits.d/99-nofile.conf
+    encoding: b64
+    content: ${limits_b64}
+  - path: /etc/pii-guard/deploy.env
+    permissions: '0600'
+    encoding: b64
+    content: ${deploy_env_b64}
+  - path: /usr/local/bin/pii-guard-deploy.sh
+    permissions: '0755'
+    encoding: b64
+    content: ${deploy_script_b64}
+  - path: /opt/pii-guard/configs/config.yaml
+    permissions: '0644'
+    encoding: b64
+    content: ${config_b64}
+  - path: /etc/systemd/system/pii-guard.service
+    permissions: '0644'
+    encoding: b64
+    content: ${unit_b64}
+%{~ for path, content in monitoring_files }
+  - path: ${path}
+    permissions: '0644'
+    encoding: b64
+    content: ${content}
+%{~ endfor }
+package_update: true
+packages: [docker.io, docker-compose-v2, make, git, jq, htop, unzip, ca-certificates, curl, openssl]
+runcmd:
+  - sysctl --system
+  - systemctl enable --now docker
+  - usermod -aG docker ubuntu
+  - /usr/local/bin/pii-guard-deploy.sh
+%{~ if monitoring }
+  - docker compose -f /opt/pii-guard/monitoring/docker-compose.yml up -d
+%{~ endif }
+  - echo 'STAND=app ready' > /var/log/stand-ready

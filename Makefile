@@ -77,3 +77,28 @@ dist: ## собрать архив с исходным кодом для заг�
 .PHONY: dist-check
 dist-check: dist ## проверить, что в архиве нет лишнего
 	@bash scripts/dist-check.sh dist/pii-guard.zip
+
+# Нагрузочное тестирование. Ключи скрипта передаются через LOAD_ARGS,
+# например: make load-ceiling LOAD_ARGS="--remote --url http://10.129.0.22"
+LOAD_ARGS ?=
+
+.PHONY: load-smoke
+load-smoke: ## нагрузка: короткая проверка за тридцать секунд
+	@bash scripts/loadtest.sh smoke --url $(URL) $(LOAD_ARGS)
+
+.PHONY: load-sla
+load-sla: ## нагрузка: прогон по правилам проверяющей системы, 1000 в секунду пять минут
+	@bash scripts/loadtest.sh sla --url $(URL) $(LOAD_ARGS)
+
+.PHONY: load-ceiling
+load-ceiling: ## нагрузка: поиск потолка ступенями на текстах 250 Б, 2 КБ и 8 КБ
+	@bash scripts/loadtest.sh ceiling --url $(URL) $(LOAD_ARGS)
+
+.PHONY: load-soak
+load-soak: ## нагрузка: длительный прогон на утечки с показателями до и после
+	@bash scripts/loadtest.sh soak --url $(URL) $(LOAD_ARGS)
+
+# Цель названа без цифр: список целей в help собирается по буквам и дефисам.
+.PHONY: load-opinion
+load-opinion: ## нагрузка: второе мнение, сценарий k6 на машине генератора
+	@bash scripts/loadtest.sh k6 --remote --url $(URL) $(LOAD_ARGS)

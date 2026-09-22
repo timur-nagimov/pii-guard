@@ -1,0 +1,24 @@
+#cloud-config
+# Облачная инициализация отдельной машины наблюдения.
+#
+# Нужна только в режиме масштабирования: копии сервиса в группе машин
+# появляются и исчезают, а история показателей и панель должны пережить это.
+users:
+  - name: ubuntu
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+write_files:
+%{~ for path, content in monitoring_files }
+  - path: ${path}
+    permissions: '0644'
+    encoding: b64
+    content: ${content}
+%{~ endfor }
+package_update: true
+packages: [docker.io, docker-compose-v2, curl, jq, ca-certificates]
+runcmd:
+  - systemctl enable --now docker
+  - usermod -aG docker ubuntu
+  - docker compose -f /opt/pii-guard/monitoring/docker-compose.yml up -d
+  - echo 'STAND=monitor ready' > /var/log/stand-ready

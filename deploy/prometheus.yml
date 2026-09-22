@@ -1,6 +1,37 @@
+# Сбор показателей стенда pii-guard.
+#
+# Масштабирование. Список копий сервиса описан ровно в одном месте, якорем
+# pii_targets ниже. Чтобы добавить копию, допишите её адрес в этот список:
+# задание сбора и панели Grafana подхватят цель сами, копии разделяются в
+# панелях по метке instance. Никаких других правок не требуется.
+#
+# Откуда брать адрес копии:
+#   - docker compose: имя службы и порт, например "app-2:8080";
+#   - отдельная машина стенда: внутренний адрес, например "10.129.0.22:8080".
+
 global:
   scrape_interval: 5s
+  scrape_timeout: 4s
+  evaluation_interval: 5s
+  external_labels:
+    stand: pii-guard
+
 scrape_configs:
+  # Копии сервиса маскирования.
   - job_name: pii-guard
+    metrics_path: /metrics
     static_configs:
-      - targets: ["app:8080"]
+      - targets: &pii_targets
+          - "app:8080"
+        labels:
+          service: pii-guard
+
+  # Сам Prometheus: по нему видно, жив ли сбор, не отстаёт ли он и сколько
+  # рядов данных накоплено. Без этого задания отказ сбора выглядит как
+  # отказ сервиса.
+  - job_name: prometheus
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: prometheus

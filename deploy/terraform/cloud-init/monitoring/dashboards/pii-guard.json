@@ -1,0 +1,954 @@
+{
+  "uid": "pii-guard-overview",
+  "title": "Модуль безопасности персональных данных",
+  "description": "Состояние сервиса маскирования: нагрузка, задержка, находки, запас по машине.",
+  "tags": [
+    "pii-guard"
+  ],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m"
+    ]
+  },
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Запросов в секунду",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pii-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum(rate(pii_requests_total[1m]))",
+          "legendFormat": "",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Задержка, доля 99",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pii-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.05
+              },
+              {
+                "color": "red",
+                "value": 0.2
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(pii_request_duration_seconds_bucket[1m])))",
+          "legendFormat": "",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Доля неуспешных ответов",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pii-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.001
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum(rate(pii_requests_total{code!~\"2..\"}[5m])) / clamp_min(sum(rate(pii_requests_total[5m])), 0.001)",
+          "legendFormat": "",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Записей в хранилище",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pii-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum(pii_store_records)",
+          "legendFormat": "",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Частота запросов по операциям",
+      "description": "Прямое маскирование и обратное преобразование считаются отдельно.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pii-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisLabel": "",
+            "gradientMode": "none"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum by (op) (rate(pii_requests_total[1m]))",
+          "legendFormat": "{{op}}",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Задержка обработки",
+      "description": "Контракт проверяющей системы: клиентский таймаут десять секунд.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pii-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisLabel": "",
+            "gradientMode": "none"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le, op) (rate(pii_request_duration_seconds_bucket[1m])))",
+          "legendFormat": "{{op}} доля 50",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, op) (rate(pii_request_duration_seconds_bucket[1m])))",
+          "legendFormat": "{{op}} доля 95",
+          "refId": "B",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, op) (rate(pii_request_duration_seconds_bucket[1m])))",
+          "legendFormat": "{{op}} доля 99",
+          "refId": "C",
+          "editorMode": "code",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Ответы по кодам",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pii-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisLabel": "",
+            "gradientMode": "none"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum by (code) (rate(pii_requests_total[1m]))",
+          "legendFormat": "{{code}}",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Одновременные запросы и ожидание в очереди",
+      "description": "Ограничители сервиса: рост очереди означает приближение к потолку.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pii-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisLabel": "",
+            "gradientMode": "none"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum(pii_inflight)",
+          "legendFormat": "в обработке",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(pii_queue_wait_seconds_bucket[1m]))) * 1000",
+          "legendFormat": "ожидание, доля 99, мс",
+          "refId": "B",
+          "editorMode": "code",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Находки по типам персональных данных",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pii-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisLabel": "",
+            "gradientMode": "none"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum by (type) (rate(pii_detections_total[5m]))",
+          "legendFormat": "{{type}}",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Объём текста и оценка в токенах",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pii-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisLabel": "",
+            "gradientMode": "none"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(pii_payload_bytes_bucket[5m])))",
+          "legendFormat": "тело запроса, доля 95",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum by (direction) (rate(pii_tokens_est_total[5m]))",
+          "legendFormat": "токены {{direction}}",
+          "refId": "B",
+          "editorMode": "code",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Тревожные события",
+      "description": "В штатном режиме все четыре линии лежат на нуле.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pii-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisLabel": "",
+            "gradientMode": "none"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum(rate(pii_degraded_total[5m]))",
+          "legendFormat": "переход на запасной путь",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum(rate(pii_detector_panics_total[5m]))",
+          "legendFormat": "сбои детекторов",
+          "refId": "B",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum(rate(pii_direction_ambiguous_total[5m]))",
+          "legendFormat": "неоднозначное направление",
+          "refId": "C",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum(rate(pii_skipped_total[5m]))",
+          "legendFormat": "пропущенные находки",
+          "refId": "D",
+          "editorMode": "code",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Машина сервиса",
+      "description": "Потолок стенда упирается в процессор: на 23 тысячах запросов в секунду занято 22 ядра из 24.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pii-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisLabel": "",
+            "gradientMode": "none"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[1m])) * 100)",
+          "legendFormat": "процессор, проценты",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum(go_goroutines)",
+          "legendFormat": "горутины",
+          "refId": "B",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pii-prometheus"
+          },
+          "expr": "sum(process_resident_memory_bytes) / 1048576",
+          "legendFormat": "память, МБ",
+          "refId": "C",
+          "editorMode": "code",
+          "range": true
+        }
+      ]
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  }
+}

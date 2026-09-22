@@ -1,0 +1,17 @@
+# Провижининг панелей: Grafana забирает JSON из этой же папки при старте,
+# заходить в интерфейс и что-то настраивать руками не нужно.
+apiVersion: 1
+
+providers:
+  - name: pii-guard
+    orgId: 1
+    folder: PII Guard
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 10
+    options:
+      # Путь внутри контейнера: docker-compose.yml монтирует deploy/grafana
+      # в /etc/grafana/provisioning.
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false
