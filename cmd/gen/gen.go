@@ -16,13 +16,23 @@ type Span struct {
 	Type  string `json:"type"`
 }
 
+// sourceSynthetic — происхождение записей этого генератора. Набор собирают из
+// нескольких источников, и отчёт по качеству разделяет свои данные и чужие.
+const sourceSynthetic = "synthetic"
+
 // Record — одна строка набора данных в формате JSON Lines.
 type Record struct {
-	ID       string   `json:"id"`
-	Category string   `json:"category"`
-	Text     string   `json:"text"`
-	Spans    []Span   `json:"spans"`
-	Values   []string `json:"-"`
+	ID       string `json:"id"`
+	Category string `json:"category"`
+	// Source — происхождение элемента. У этого генератора всегда synthetic.
+	Source string `json:"source"`
+	Text   string `json:"text"`
+	Spans  []Span `json:"spans"`
+	// PartialLabels означает, что размечены не все персональные данные текста.
+	// Порождённые записи размечены по построению полностью, поэтому здесь
+	// всегда false; поле нужно для единого формата с открытыми источниками.
+	PartialLabels bool     `json:"partial_labels"`
+	Values        []string `json:"-"`
 }
 
 // frag — кусок будущего текста. Пустой тип означает обрамляющий текст, который
@@ -104,11 +114,13 @@ func (b *builder) record(id, category string) Record {
 		spans = []Span{}
 	}
 	return Record{
-		ID:       id,
-		Category: category,
-		Text:     b.sb.String(),
-		Spans:    spans,
-		Values:   b.values,
+		ID:            id,
+		Category:      category,
+		Source:        sourceSynthetic,
+		Text:          b.sb.String(),
+		Spans:         spans,
+		PartialLabels: false,
+		Values:        b.values,
 	}
 }
 
@@ -167,8 +179,10 @@ type Generator struct {
 // разделяется всей программой и воспроизводимости не даёт.
 func NewGenerator(seed uint64, holdout bool) *Generator {
 	src := rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)
+	// Источник намеренно не криптографический: набор обязан повторяться по
+	// seed, а crypto/rand повторить нельзя.
 	return &Generator{
-		r:         rand.New(src),
+		r:         rand.New(src), //nolint:gosec // воспроизводимость важнее криптостойкости
 		holdout:   holdout,
 		surnames:  splitPool(surnamesAll),
 		maleNames: splitPool(maleNamesAll),
@@ -196,12 +210,16 @@ func (g *Generator) fromPool(p pool) string {
 // chance сообщает, наступило ли событие с вероятностью percent процентов.
 func (g *Generator) chance(percent int) bool { return g.r.IntN(100) < percent }
 
+// decimalDigits — цифры для порождения номеров. Выборка из строки вместо
+// арифметики над байтом: так не возникает приведения типов.
+const decimalDigits = "0123456789"
+
 // digits порождает строку из n случайных цифр.
 func (g *Generator) digits(n int) string {
 	var b strings.Builder
 	b.Grow(n)
 	for i := 0; i < n; i++ {
-		b.WriteByte(byte('0' + g.r.IntN(10)))
+		b.WriteByte(decimalDigits[g.r.IntN(len(decimalDigits))])
 	}
 	return b.String()
 }
@@ -211,5 +229,5 @@ func (g *Generator) digitsNonZero(n int) string {
 	if n <= 0 {
 		return ""
 	}
-	return string(byte('1'+g.r.IntN(9))) + g.digits(n-1)
+	return string(decimalDigits[1+g.r.IntN(len(decimalDigits)-1)]) + g.digits(n-1)
 }

@@ -27,19 +27,25 @@ type Sample struct {
 	Category  string     `json:"category"`
 	Text      string     `json:"text"`
 	Fragments []Fragment `json:"spans"`
+	// PartialLabels означает, что размечены не все персональные данные текста.
+	// Так помечаются настоящие тексты из открытых источников: в них попадаются
+	// чужие неразмеченные имена, поэтому изменения за пределами размеченных
+	// фрагментов у таких элементов не считаются лишними срабатываниями.
+	PartialLabels bool `json:"partial_labels"`
 }
 
 // rawSample принимает набор в нескольких написаниях полей, чтобы имитатор не
 // ломался от того, каким генератором набор собран.
 type rawSample struct {
-	PayloadID string        `json:"payload_id"`
-	ID        string        `json:"id"`
-	Category  string        `json:"category"`
-	Text      string        `json:"text"`
-	Payload   string        `json:"payload"`
-	Spans     []rawFragment `json:"spans"`
-	Fragments []rawFragment `json:"fragments"`
-	Entities  []rawFragment `json:"entities"`
+	PayloadID     string        `json:"payload_id"`
+	ID            string        `json:"id"`
+	Category      string        `json:"category"`
+	Text          string        `json:"text"`
+	Payload       string        `json:"payload"`
+	PartialLabels bool          `json:"partial_labels"`
+	Spans         []rawFragment `json:"spans"`
+	Fragments     []rawFragment `json:"fragments"`
+	Entities      []rawFragment `json:"entities"`
 }
 
 // rawFragment принимает разметку фрагмента как по смещениям, так и по одному
@@ -115,9 +121,10 @@ func decodeJSONL(raw []byte) ([]rawSample, error) {
 // normalize приводит элемент набора к единому виду и проверяет разметку.
 func (r rawSample) normalize() (Sample, error) {
 	s := Sample{
-		PayloadID: firstNonEmpty(r.PayloadID, r.ID),
-		Category:  firstNonEmpty(r.Category, "без категории"),
-		Text:      firstNonEmpty(r.Text, r.Payload),
+		PayloadID:     firstNonEmpty(r.PayloadID, r.ID),
+		Category:      firstNonEmpty(r.Category, "без категории"),
+		Text:          firstNonEmpty(r.Text, r.Payload),
+		PartialLabels: r.PartialLabels,
 	}
 	if s.Text == "" {
 		return Sample{}, errors.New("не задан текст")

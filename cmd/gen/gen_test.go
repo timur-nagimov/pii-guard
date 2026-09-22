@@ -15,6 +15,10 @@ import (
 // не порождать набор заново на каждом прогоне.
 const samplePath = "../../testdata/sample.jsonl"
 
+// minShapesPerType — сколько разных форм записи обязано быть у каждого типа.
+// Требование задания: не меньше пятнадцати.
+const minShapesPerType = 15
+
 // knownTypes собирает все типы, которые вправе встретиться в разметке.
 func knownTypes() map[string]bool {
 	out := make(map[string]bool)
@@ -34,8 +38,8 @@ func knownTypes() map[string]bool {
 // побайтово один и тот же результат. Без этого нельзя сравнивать замеры
 // качества между запусками.
 func TestGenerateDeterministic(t *testing.T) {
-	first := NewGenerator(42, false).Generate(120)
-	second := NewGenerator(42, false).Generate(120)
+	first := NewGenerator(42, false).Generate(200)
+	second := NewGenerator(42, false).Generate(200)
 	if len(first) != len(second) {
 		t.Fatalf("разное число записей: %d и %d", len(first), len(second))
 	}
@@ -70,13 +74,22 @@ func TestGenerateSeedChangesCorpus(t *testing.T) {
 	}
 }
 
-// checkRecord проверяет одну запись: границы в пределах текста, фрагмент
-// совпадает с подставленным значением, фрагменты не пересекаются и не
-// захватывают перевод строки.
+// checkRecord проверяет одну запись: границы байтовые и в пределах текста,
+// срез текста по границам совпадает с подставленным значением, фрагменты не
+// пересекаются, не захватывают пробелы и перевод строки.
 func checkRecord(t *testing.T, r Record, types map[string]bool) {
 	t.Helper()
 	if !utf8.ValidString(r.Text) {
 		t.Fatalf("%s: текст не является корректным UTF-8", r.ID)
+	}
+	if r.Source != sourceSynthetic {
+		t.Fatalf("%s: источник %q вместо %q", r.ID, r.Source, sourceSynthetic)
+	}
+	if r.PartialLabels {
+		t.Fatalf("%s: порождённая запись помечена как размеченная частично", r.ID)
+	}
+	if len(r.Spans) != len(r.Values) {
+		t.Fatalf("%s: %d фрагментов при %d значениях", r.ID, len(r.Spans), len(r.Values))
 	}
 	prevEnd := 0
 	for i, s := range r.Spans {
@@ -90,7 +103,10 @@ func checkRecord(t *testing.T, r Record, types map[string]bool) {
 		}
 		prevEnd = s.End
 		got := r.Text[s.Start:s.End]
-		if i < len(r.Values) && got != r.Values[i] {
+		if !utf8.ValidString(got) {
+			t.Fatalf("%s: фрагмент %d обрывает букву посреди кодовой последовательности: %q", r.ID, i, got)
+		}
+		if got != r.Values[i] {
 			t.Fatalf("%s: фрагмент %d указывает на %q вместо подставленного %q", r.ID, i, got, r.Values[i])
 		}
 		if strings.ContainsAny(got, "\n\r") {
@@ -100,25 +116,214 @@ func checkRecord(t *testing.T, r Record, types map[string]bool) {
 			t.Fatalf("%s: фрагмент %d захватил пробелы по краям: %q", r.ID, i, got)
 		}
 	}
-	if len(r.Spans) != len(r.Values) {
-		t.Fatalf("%s: %d фрагментов при %d значениях", r.ID, len(r.Spans), len(r.Values))
-	}
 }
 
 // TestSpansPointToValues проверяет разметку всего набора: смещения байтовые и
 // указывают ровно на подставленное значение.
 func TestSpansPointToValues(t *testing.T) {
 	types := knownTypes()
-	for _, r := range NewGenerator(7, false).Generate(600) {
+	for _, r := range NewGenerator(7, false).Generate(1500) {
 		checkRecord(t, r, types)
 	}
+}
+
+// TestSpansAreByteOffsets проверяет, что смещения именно байтовые, а не по
+// символам. Кириллическая буква занимает два байта, поэтому у записи с
+// кириллицей перед фрагментом число байтов до него больше числа символов;
+// если бы смещения считались по символам, срез попал бы не туда.
+func TestSpansAreByteOffsets(t *testing.T) {
+	checked := 0
+	for _, r := range NewGenerator(21, false).Generate(800) {
+		for i, s := range r.Spans {
+			runesBefore := utf8.RuneCountInString(r.Text[:s.Start])
+			if runesBefore == s.Start {
+				continue // до фрагмента только однобайтовые знаки, проверять нечего
+			}
+			checked++
+			if r.Text[s.Start:s.End] != r.Values[i] {
+				t.Fatalf("%s: байтовый срез не совпал со значением %q", r.ID, r.Values[i])
+			}
+			// Срез по тем же числам, но в рунах, обязан отличаться: это и
+			// означает, что смещения байтовые, а не символьные.
+			runes := []rune(r.Text)
+			if s.End <= len(runes) && string(runes[s.Start:s.End]) == r.Values[i] {
+				t.Fatalf("%s: срез по рунам совпал со значением, смещения похожи на символьные", r.ID)
+			}
+		}
+	}
+	if checked < 100 {
+		t.Fatalf("проверено всего %d фрагментов с кириллицей перед ними", checked)
+	}
+}
+
+// TestJSONRoundTripKeepsOffsets проверяет, что после записи в JSON Lines и
+// обратного разбора границы по-прежнему указывают на значение: набор
+// передаётся именно в этом виде.
+func TestJSONRoundTripKeepsOffsets(t *testing.T) {
+	for _, r := range NewGenerator(13, false).Generate(300) {
+		raw, err := json.Marshal(r)
+		if err != nil {
+			t.Fatalf("%s: не сериализуется: %v", r.ID, err)
+		}
+		var back Record
+		if err := json.Unmarshal(raw, &back); err != nil {
+			t.Fatalf("%s: не разбирается: %v", r.ID, err)
+		}
+		if back.Source != sourceSynthetic || back.PartialLabels {
+			t.Fatalf("%s: поля источника потерялись после разбора", r.ID)
+		}
+		for i, s := range back.Spans {
+			if back.Text[s.Start:s.End] != r.Values[i] {
+				t.Fatalf("%s: после разбора фрагмент %d указывает не на значение", r.ID, i)
+			}
+		}
+	}
+}
+
+// TestShapeCatalog проверяет сам перечень форм записи: их не меньше
+// пятнадцати и имена не повторяются.
+func TestShapeCatalog(t *testing.T) {
+	shapes := writeShapes()
+	if len(shapes) < minShapesPerType {
+		t.Fatalf("форм записи %d, требуется не меньше %d", len(shapes), minShapesPerType)
+	}
+	seen := make(map[string]bool, len(shapes))
+	for _, s := range shapes {
+		if seen[s.name] {
+			t.Errorf("форма записи %s объявлена дважды", s.name)
+		}
+		seen[s.name] = true
+	}
+	if shapeCount() != len(shapes) {
+		t.Errorf("shapeCount вернул %d при %d формах", shapeCount(), len(shapes))
+	}
+}
+
+// TestEveryShapeForEveryType прогоняет каждый тип через каждую форму записи:
+// разметка обязана оставаться верной в любом сочетании.
+func TestEveryShapeForEveryType(t *testing.T) {
+	types := knownTypes()
+	shapes := writeShapes()
+	for _, spec := range valueSpecs() {
+		for i, shape := range shapes {
+			g := NewGenerator(uint64(1000+i), false)
+			r := buildRecord("shape-test", spec.name, g.render(spec, g.person(), i))
+			checkRecord(t, r, types)
+			if !hasType(r, spec.typ) {
+				t.Errorf("тип %s в форме %s не попал в разметку: %q", spec.typ, shape.name, r.Text)
+			}
+		}
+	}
+}
+
+// hasType сообщает, встретился ли в разметке нужный тип.
+func hasType(r Record, typ pii.Type) bool {
+	for _, s := range r.Spans {
+		if s.Type == string(typ) {
+			return true
+		}
+	}
+	return false
+}
+
+// skeleton заменяет значения на метку и оставляет только обрамляющий текст.
+// Два разных скелета означают две разные формы записи.
+func skeleton(r Record) string {
+	var b strings.Builder
+	prev := 0
+	for _, s := range r.Spans {
+		b.WriteString(r.Text[prev:s.Start])
+		b.WriteString("<V>")
+		prev = s.End
+	}
+	b.WriteString(r.Text[prev:])
+	return b.String()
+}
+
+// TestFifteenWritingFormsPerType проверяет главное требование к разнообразию:
+// у каждого типа не меньше пятнадцати различных форм записи. Форма считается
+// по обрамляющему тексту, а не по самому значению.
+func TestFifteenWritingFormsPerType(t *testing.T) {
+	for _, spec := range valueSpecs() {
+		g := NewGenerator(77, false)
+		forms := make(map[string]bool)
+		for i := 0; i < 600; i++ {
+			r := buildRecord("form-test", spec.name, g.renderAny(spec, g.person()))
+			forms[skeleton(r)] = true
+		}
+		if len(forms) < minShapesPerType {
+			t.Errorf("тип %s: различных форм записи %d, требуется не меньше %d",
+				spec.typ, len(forms), minShapesPerType)
+		}
+	}
+}
+
+// TestHardWritingFormsAppear проверяет, что трудные формы записи действительно
+// попадают в текст: неразрывный пробел, двойные пробелы, перенос значения на
+// другую строку, длинный или неразрывный дефис, латинские омоглифы.
+func TestHardWritingFormsAppear(t *testing.T) {
+	cases := []struct {
+		shape string
+		name  string
+		found func(text string) bool
+	}{
+		{"nbsp", "неразрывный пробел", func(s string) bool { return strings.Contains(s, nbsp) }},
+		{"double_space", "двойные пробелы", func(s string) bool { return strings.Contains(s, "  ") }},
+		{"line_break", "перенос значения", func(s string) bool { return strings.Contains(s, nl) }},
+		{"hyphen", "особый дефис", func(s string) bool {
+			return strings.Contains(s, hyphenLong) || strings.Contains(s, hyphenNoBreak)
+		}},
+		{"homoglyph", "латинские омоглифы", hasLatinHomoglyph},
+		{"quotes_ru", "кавычки", func(s string) bool { return strings.Contains(s, "«") }},
+		{"parens", "скобки", func(s string) bool { return strings.Contains(s, "(") }},
+		{"semicolons", "точка с запятой", func(s string) bool { return strings.Contains(s, ";") }},
+	}
+	spec, ok := specByName("phone")
+	if !ok {
+		t.Fatal("спецификация phone не найдена")
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			idx := shapeIndex(t, c.shape)
+			g := NewGenerator(5, false)
+			found := false
+			for i := 0; i < 60 && !found; i++ {
+				r := buildRecord("hard-test", spec.name, g.render(spec, g.person(), idx))
+				found = c.found(r.Text)
+			}
+			if !found {
+				t.Errorf("форма %s ни разу не дала ожидаемого знака", c.shape)
+			}
+		})
+	}
+}
+
+// shapeIndex ищет номер формы записи по имени.
+func shapeIndex(t *testing.T, name string) int {
+	t.Helper()
+	for i, s := range writeShapes() {
+		if s.name == name {
+			return i
+		}
+	}
+	t.Fatalf("форма записи %s не найдена", name)
+	return 0
+}
+
+// hasLatinHomoglyph сообщает, встретилась ли в кириллическом тексте латинская
+// буква из набора похожих.
+func hasLatinHomoglyph(s string) bool {
+	if !strings.ContainsAny(s, "абвгдежзийклмнопрстуфхцчшщъыьэюяАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ") {
+		return false
+	}
+	return strings.ContainsAny(s, "aeopcyxAEOPCYX")
 }
 
 // TestNegativeCategoriesEmpty проверяет, что отрицательные категории не несут
 // разметки: по ним измеряются ложные срабатывания.
 func TestNegativeCategoriesEmpty(t *testing.T) {
 	seen := make(map[string]int)
-	for _, r := range NewGenerator(11, false).Generate(800) {
+	for _, r := range NewGenerator(11, false).Generate(4000) {
 		if !isNegativeCategory(r.Category) {
 			continue
 		}
@@ -134,10 +339,50 @@ func TestNegativeCategoriesEmpty(t *testing.T) {
 	}
 }
 
-// TestPlanCoversAllCategories проверяет, что в выпуске есть каждая категория,
-// включая длинные тексты и категорию со сложными предложениями.
+// TestNewCategoriesPresent проверяет, что новые виды текста и новые трудные
+// отрицательные примеры действительно попадают в выпуск.
+func TestNewCategoriesPresent(t *testing.T) {
+	want := []string{
+		// виды текста
+		"dialog", "statement", "export_row", "table_five", "email_letter",
+		"free_note", "two_people", "three_mentions", "bilingual",
+		// трудные отрицательные примеры
+		"neg_support_phone", "neg_bank_requisites", "neg_branch_address_tail",
+		"neg_rate_date", "neg_branch_number", "neg_account_number",
+		"neg_company_like_surname", "neg_named_position", "neg_law_quote",
+		"neg_article_code", "neg_confirm_code", "neg_flight_number",
+		"neg_track_number",
+	}
+	seen := make(map[string]int)
+	for _, r := range NewGenerator(17, false).Generate(4000) {
+		seen[r.Category]++
+	}
+	for _, name := range want {
+		if seen[name] == 0 {
+			t.Errorf("категория %s не встретилась в выпуске", name)
+		}
+	}
+}
+
+// TestAllCategoriesAppearInOutput проверяет, что в выпуске встречается каждая
+// объявленная категория, а не только та, что попала в план.
+func TestAllCategoriesAppearInOutput(t *testing.T) {
+	seen := make(map[string]int)
+	for _, r := range NewGenerator(23, false).Generate(4000) {
+		seen[r.Category]++
+	}
+	for _, c := range allCategories() {
+		if seen[c.name] == 0 {
+			t.Errorf("категория %s не встретилась в выпуске на четыре тысячи строк", c.name)
+		}
+	}
+}
+
+// TestPlanCoversAllCategories проверяет, что в выпуске на тридцать тысяч строк
+// есть каждая категория и что сумма по категориям сходится.
 func TestPlanCoversAllCategories(t *testing.T) {
-	counts := planCounts(8000)
+	const want = 30000
+	counts := planCounts(want)
 	total := 0
 	for i, c := range allCategories() {
 		if counts[i] == 0 {
@@ -145,11 +390,27 @@ func TestPlanCoversAllCategories(t *testing.T) {
 		}
 		total += counts[i]
 	}
-	if total != 8000 {
-		t.Errorf("сумма по категориям %d вместо 8000", total)
+	if total != want {
+		t.Errorf("сумма по категориям %d вместо %d", total, want)
 	}
-	if got := negativeTotal(8000); got < minNegativeRecords {
+	if got := negativeTotal(want); got < minNegativeRecords {
 		t.Errorf("отрицательных строк %d, требуется не меньше %d", got, minNegativeRecords)
+	}
+}
+
+// TestEveryTypeIsCovered проверяет, что в выпуске встречается каждый тип из
+// технического задания: иначе по нему нечего измерять.
+func TestEveryTypeIsCovered(t *testing.T) {
+	seen := make(map[string]int)
+	for _, r := range NewGenerator(31, false).Generate(2000) {
+		for _, s := range r.Spans {
+			seen[s.Type]++
+		}
+	}
+	for typ := range knownTypes() {
+		if seen[typ] == 0 {
+			t.Errorf("тип %s не встретился в выпуске", typ)
+		}
 	}
 }
 
@@ -222,7 +483,7 @@ func TestSampleFile(t *testing.T) {
 	if err != nil {
 		t.Skipf("пробная выборка недоступна: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	types := knownTypes()
 	sc := bufio.NewScanner(f)
@@ -251,6 +512,19 @@ func TestSampleFile(t *testing.T) {
 	}
 	if lines < 100 {
 		t.Fatalf("в пробной выборке %d строк, ожидалось не меньше ста", lines)
+	}
+}
+
+// TestFIOFormsDistinct проверяет, что записей имени действительно много и все
+// они разные: имя — самый частый тип в наборе.
+func TestFIOFormsDistinct(t *testing.T) {
+	p := person{surname: "Иванов", name: "Иван", patronymic: "Иванович"}
+	seen := make(map[string]bool)
+	for i := 0; i < fioVariantCount; i++ {
+		seen[p.fioForm(i, caseNom)] = true
+	}
+	if len(seen) < 10 {
+		t.Errorf("различных записей имени %d, ожидалось не меньше десяти", len(seen))
 	}
 }
 
@@ -331,6 +605,78 @@ func TestNameForms(t *testing.T) {
 	}
 }
 
+// TestTextHelpers — проверка вспомогательных преобразований формы записи.
+func TestTextHelpers(t *testing.T) {
+	t.Run("разрыв значения по пробелу", func(t *testing.T) {
+		in := frags(lit("Паспорт: "), val(pii.TypePassport, "1234 567890"))
+		out := splitLastValue(in)
+		r := buildRecord("split", "test", out)
+		if !strings.Contains(r.Text, "1234\n567890") {
+			t.Fatalf("значение не разорвано переводом строки: %q", r.Text)
+		}
+		if len(r.Spans) != 2 {
+			t.Fatalf("получено %d фрагментов вместо двух", len(r.Spans))
+		}
+		checkRecord(t, r, knownTypes())
+	})
+	t.Run("короткое значение не разрывается", func(t *testing.T) {
+		in := frags(val(pii.TypeCVV, "123"))
+		if len(splitLastValue(in)) != 1 {
+			t.Error("значение из трёх знаков разорвано")
+		}
+	})
+	t.Run("неразрывный пробел", func(t *testing.T) {
+		if got := withNBSP("а б"); got != "а"+nbsp+"б" {
+			t.Errorf("получено %q", got)
+		}
+	})
+	t.Run("двойные пробелы", func(t *testing.T) {
+		if got := withDoubleSpaces("а б"); got != "а  б" {
+			t.Errorf("получено %q", got)
+		}
+	})
+	t.Run("длинный дефис", func(t *testing.T) {
+		if got := replaceHyphens("8-916", hyphenLong); got != "8"+hyphenLong+"916" {
+			t.Errorf("получено %q", got)
+		}
+	})
+	t.Run("первая буква в нижний регистр", func(t *testing.T) {
+		if got := lowerFirst("Паспорт выдан"); got != "паспорт выдан" {
+			t.Errorf("получено %q", got)
+		}
+	})
+	t.Run("первая буква в верхний регистр", func(t *testing.T) {
+		if got := upperFirst("прошу закрыть счёт"); got != "Прошу закрыть счёт" {
+			t.Errorf("получено %q", got)
+		}
+	})
+	t.Run("омоглифы меняют только похожие буквы", func(t *testing.T) {
+		g := NewGenerator(1, false)
+		const src = "абвгдеж"
+		replaced := false
+		for i := 0; i < 50; i++ {
+			got := g.replaceHomoglyphs(src)
+			if len([]rune(got)) != len([]rune(src)) {
+				t.Fatalf("число букв изменилось: %q", got)
+			}
+			for k, r := range []rune(got) {
+				orig := []rune(src)[k]
+				if r == orig {
+					continue
+				}
+				lat, ok := homoglyphs[orig]
+				if !ok || r != lat {
+					t.Fatalf("буква %q заменена на %q без латинского двойника", orig, r)
+				}
+				replaced = true
+			}
+		}
+		if !replaced {
+			t.Error("ни одна буква ни разу не заменена")
+		}
+	})
+}
+
 // TestValueShapes — табличная проверка порождаемых значений: длины, наличие
 // разделителей, контрольные суммы и верные, и заведомо неверные.
 func TestValueShapes(t *testing.T) {
@@ -362,19 +708,19 @@ func TestValueShapes(t *testing.T) {
 			}
 		}},
 		{"номер карты проходит алгоритм Луна", func(t *testing.T) {
-			_, number := g.cardNumber(true)
+			number := g.cardNumber(true)
 			if !pii.Luhn(pii.DigitsOnly(number)) {
 				t.Errorf("номер %q не проходит алгоритм Луна", number)
 			}
 		}},
 		{"испорченный номер карты не проходит алгоритм Луна", func(t *testing.T) {
-			_, number := g.cardNumber(false)
+			number := g.cardNumber(false)
 			if pii.Luhn(pii.DigitsOnly(number)) {
 				t.Errorf("номер %q неожиданно верен", number)
 			}
 		}},
 		{"номер карты содержит шестнадцать цифр", func(t *testing.T) {
-			_, number := g.cardNumber(true)
+			number := g.cardNumber(true)
 			if len(pii.DigitsOnly(number)) != 16 {
 				t.Errorf("в номере %q не шестнадцать цифр", number)
 			}
@@ -435,7 +781,8 @@ func TestValueShapes(t *testing.T) {
 			}
 		}},
 		{"свидетельство о рождении содержит римскую серию", func(t *testing.T) {
-			if v := g.birthCert(); !strings.Contains(v, "-") || !strings.Contains(v, "№") {
+			v := g.birthCert()
+			if !strings.Contains(v, "-") || len(pii.DigitsOnly(v)) != 6 {
 				t.Errorf("свидетельство %q неверной формы", v)
 			}
 		}},
@@ -470,7 +817,7 @@ func TestValueShapes(t *testing.T) {
 				t.Error("адрес с плюсом ни разу не встретился")
 			}
 		}},
-		{"восемь форматов даты различаются", func(t *testing.T) {
+		{"двенадцать форматов даты различаются", func(t *testing.T) {
 			d := dateVal{day: 5, month: 3, year: 1984}
 			seen := make(map[string]bool)
 			for i := 0; i < formatCount; i++ {
@@ -507,6 +854,12 @@ func TestValueShapes(t *testing.T) {
 				t.Errorf("получено %q", got)
 			}
 		}},
+		{"имя держателя карты заглавными", func(t *testing.T) {
+			v := g.holderName(person{surname: "Иванов", name: "Иван"})
+			if v != strings.ToUpper(v) || !strings.Contains(v, " ") {
+				t.Errorf("имя держателя %q неверной формы", v)
+			}
+		}},
 		{"гражданство непустое", func(t *testing.T) {
 			if g.citizenship() == "" {
 				t.Error("гражданство пустое")
@@ -519,7 +872,9 @@ func TestValueShapes(t *testing.T) {
 		}},
 		{"орган выдачи содержит географию", func(t *testing.T) {
 			v := strings.ToLower(g.issuer())
-			if !strings.Contains(v, "г.") && !strings.Contains(v, "обл") && !strings.Contains(v, "край") && !strings.Contains(v, "республик") {
+			if !strings.Contains(v, "г.") && !strings.Contains(v, "обл") &&
+				!strings.Contains(v, "край") && !strings.Contains(v, "республик") &&
+				!strings.Contains(v, "округ") {
 				t.Errorf("орган выдачи %q без географии", v)
 			}
 		}},
