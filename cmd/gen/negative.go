@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Отрицательные категории. Текст в них состоит только из обрамляющих кусков,
 // поэтому разметка пустая. Эти примеры нужны, чтобы измерять ложные
@@ -194,4 +197,196 @@ func negThreeDigits(g *Generator) []frag {
 		"Три цифры с обратной стороны нужны только при оплате в интернете.",
 	}
 	return frags(lit(g.pick(tmpl)))
+}
+
+// negSupportPhone порождает телефон службы поддержки банка. Справочный номер
+// организации печатают в каждом письме, и маскировать его нельзя.
+func negSupportPhone(g *Generator) []frag {
+	tmpl := []string{
+		"Телефон службы поддержки банка: %s, звонок по России бесплатный.",
+		"По вопросам обслуживания звоните на %s.",
+		"Горячая линия %s работает круглосуточно.",
+		"Если карта утеряна, наберите %s с любого телефона.",
+		"Контакт-центр: %s, среднее время ожидания — две минуты.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), g.pick(supportPhones))))
+}
+
+// negBankRequisites порождает подпись письма с ИНН и КПП самого банка. Это
+// реквизиты организации, а не налоговый номер клиента.
+func negBankRequisites(g *Generator) []frag {
+	text := fmt.Sprintf(
+		"С уважением, %s. ИНН %s, КПП %s, лицензия Банка России № %s.",
+		g.pick(bankNames), g.digitsNonZero(10), g.digitsNonZero(9), g.digitsNonZero(4),
+	)
+	if g.chance(40) {
+		text = fmt.Sprintf(
+			"Реквизиты банка: %s, ИНН %s, КПП %s, БИК %s.",
+			g.pick(bankNames), g.digitsNonZero(10), g.digitsNonZero(9), "0445"+g.digits(5),
+		)
+	}
+	return frags(lit(text))
+}
+
+// negBranchAddressTail порождает адрес отделения в конце письма: подпись
+// организации, а не адрес проживания клиента.
+func negBranchAddressTail(g *Generator) []frag {
+	tmpl := []string{
+		"Благодарим за обращение.\n%s, адрес отделения: %s.",
+		"Ответ подготовлен отделением банка.\nАдрес для визита: %s, %s.",
+		"Ждём вас в офисе.\n%s\n%s\nРежим работы: будни с 9 до 20.",
+		"Документы можно забрать лично.\n%s, %s.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), g.pick(bankNames), g.pick(bankOffices))))
+}
+
+// negRateDate порождает дату курса валют: дата справочного показателя не
+// связана с человеком.
+func negRateDate(g *Generator) []frag {
+	d := g.randomDate(2019, 2026)
+	rate := fmt.Sprintf("%d,%02d", 30+g.r.IntN(70), g.r.IntN(100))
+	tmpl := []string{
+		"Курс %s на %s составляет %s рубля.",
+		"На %s официальный курс %s установлен на уровне %s.",
+		"Котировка %s от %s: %s.",
+		"Курс продажи %s действует с %s и равен %s.",
+	}
+	t := g.pick(tmpl)
+	// Только в одном шаблоне дата стоит первой, остальные начинаются с валюты.
+	if strings.HasPrefix(t, "На %s") {
+		return frags(lit(fmt.Sprintf(t, d.format(g.r.IntN(formatCount)), g.pick(currencyPairs), rate)))
+	}
+	return frags(lit(fmt.Sprintf(t, g.pick(currencyPairs), d.format(g.r.IntN(formatCount)), rate)))
+}
+
+// negBranchNumber порождает номер отделения банка.
+func negBranchNumber(g *Generator) []frag {
+	num := fmt.Sprintf("%04d/%04d", 1+g.r.IntN(9000), 1+g.r.IntN(9000))
+	if g.chance(40) {
+		num = fmt.Sprintf("№ %d", 1+g.r.IntN(9000))
+	}
+	tmpl := []string{
+		"Счёт открыт в отделении %s.",
+		"Обратитесь в отделение %s, там есть сейфовые ячейки.",
+		"Отделение %s временно не обслуживает юридических лиц.",
+		"Документы переданы в отделение %s для хранения.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), num)))
+}
+
+// negAccountNumber порождает номер счёта без персональных данных рядом.
+// Двадцать цифр похожи на связку карты и паспорта, но это реквизит счёта.
+func negAccountNumber(g *Generator) []frag {
+	acc := "408178" + g.digits(14)
+	if g.chance(35) {
+		acc = "40817" + g.digits(3) + " " + g.digits(4) + " " + g.digits(8)
+	}
+	tmpl := []string{
+		"Средства зачислены на счёт %s.",
+		"Номер счёта для пополнения: %s.",
+		"Счёт %s закрыт по заявлению, остаток переведён.",
+		"В платёжном поручении укажите счёт %s.",
+		"Корреспондентский счёт %s используется для межбанковских переводов.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), acc)))
+}
+
+// negCompanyLikeSurname порождает название компании, образованное от фамилии.
+// Фамилия в наименовании юридического лица не является персональными данными.
+func negCompanyLikeSurname(g *Generator) []frag {
+	tmpl := []string{
+		"Договор заключён с %s на поставку оборудования.",
+		"Подрядчиком выступает %s.",
+		"Счёт выставлен от %s, оплата в течение десяти дней.",
+		"%s подтвердила готовность выполнить работы.",
+		"Аудит провела %s по заказу банка.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), g.pick(companyLikeSurname))))
+}
+
+// negNamedPosition порождает должность или звание, в название которых входит
+// фамилия известного человека.
+func negNamedPosition(g *Generator) []frag {
+	tmpl := []string{
+		"Приглашённый эксперт — %s.",
+		"На конференции выступит %s.",
+		"Программу ведёт %s.",
+		"Отзыв подготовил %s.",
+		"Комиссию возглавляет %s.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), g.pick(namedPositions))))
+}
+
+// negLawQuote порождает цитату из закона с номером и датой принятия. Номер и
+// дата нормативного акта похожи на реквизиты документа человека.
+func negLawQuote(g *Generator) []frag {
+	d := g.randomDate(1995, 2024)
+	acts := []string{
+		"Федеральный закон от %s № 152-ФЗ",
+		"Федеральный закон от %s № 115-ФЗ",
+		"Постановление Правительства РФ от %s № 1119",
+		"Указание Банка России от %s № 5599-У",
+		"Приказ ФНС России от %s № ММВ-7-14/502@",
+	}
+	act := fmt.Sprintf(g.pick(acts), d.format(g.r.IntN(formatCount)))
+	tmpl := []string{
+		"Согласно документу %s обработка данных допускается с согласия субъекта.",
+		"В соответствии с актом %s банк обязан хранить сведения пять лет.",
+		"Основание: %s.",
+		"Цитата: «оператор обязан обеспечить конфиденциальность» — %s.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), act)))
+}
+
+// negArticleCode порождает артикул товара из букв и цифр.
+func negArticleCode(g *Generator) []frag {
+	tmpl := []string{
+		"Артикул товара %s, остаток на складе четыре штуки.",
+		"В чеке указан код позиции %s.",
+		"Товар %s снят с продажи.",
+		"Проверьте артикул %s перед оформлением возврата.",
+		"Позиция %s входит в акцию до конца месяца.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), g.pick(articleCodes))))
+}
+
+// negConfirmCode порождает код подтверждения из сообщения в приложении.
+func negConfirmCode(g *Generator) []frag {
+	code := g.digits(4 + g.r.IntN(3))
+	tmpl := []string{
+		"Push-уведомление: код подтверждения операции %s.",
+		"Бот прислал код %s, введите его в форме.",
+		"Проверочный код %s истекает через десять минут.",
+		"Для подтверждения входа используйте код %s.",
+		"Код подтверждения платежа: %s. Не передавайте его третьим лицам.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), code)))
+}
+
+// negFlightNumber порождает номер авиарейса: буквы и цифры рядом с датой
+// похожи на реквизиты документа.
+func negFlightNumber(g *Generator) []frag {
+	flight := fmt.Sprintf("%s %d", g.pick(airlineCodes), 100+g.r.IntN(9000))
+	tmpl := []string{
+		"Рейс %s вылетает по расписанию.",
+		"Посадка на рейс %s завершится за двадцать минут до вылета.",
+		"Билет оформлен на рейс %s, выход у стойки регистрации.",
+		"Рейс %s задержан на полтора часа.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), flight)))
+}
+
+// negTrackNumber порождает почтовый трек-номер отправления.
+func negTrackNumber(g *Generator) []frag {
+	track := fmt.Sprintf("%s%sRU", g.pick(trackPrefixes), g.digits(9))
+	if g.chance(35) {
+		track = g.digits(14)
+	}
+	tmpl := []string{
+		"Трек-номер отправления %s, посылка в пути.",
+		"Отследить доставку карты можно по номеру %s.",
+		"Почтовый идентификатор %s присвоен отправлению.",
+		"Документы отправлены заказным письмом, трек %s.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), track)))
 }

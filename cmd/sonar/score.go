@@ -86,10 +86,19 @@ func NormalizedLevenshtein(a, b string) float64 {
 // верными и сравнение прямое; иначе позиции восстанавливаются сопоставлением
 // рун, потому что маска могла сдвинуть текст.
 func ScoreMasking(s Sample, masked string) MaskScore {
+	var sc MaskScore
 	if len(masked) == len(s.Text) {
-		return scoreSameLength(s, masked)
+		sc = scoreSameLength(s, masked)
+	} else {
+		sc = scoreShifted(s, masked)
 	}
-	return scoreShifted(s, masked)
+	// У элементов с частичной разметкой размечены не все персональные данные,
+	// поэтому изменения за пределами размеченных фрагментов лишними не
+	// считаются и в долю лишнего не попадают.
+	if s.PartialLabels {
+		sc.OutsideChangedBytes, sc.OutsideTotalBytes = 0, 0
+	}
+	return sc
 }
 
 // scoreSameLength оценивает ответ, сохранивший длину исходного текста.

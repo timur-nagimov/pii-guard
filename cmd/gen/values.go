@@ -223,26 +223,48 @@ func firstRune(w string) string {
 	return ""
 }
 
+// fioVariantCount — число разных записей имени.
+const fioVariantCount = 14
+
 // fioVariant возвращает одну из записей имени. Вариативность записи важнее
 // числа разных людей: детектор обязан узнавать имя в любой форме.
 func (g *Generator) fioVariant(p person, c gcase) string {
-	switch g.r.IntN(8) {
+	return p.fioForm(g.r.IntN(fioVariantCount), c)
+}
+
+// fioForm возвращает запись имени с указанным номером. Номер, а не выбор
+// внутри функции, потому что тест обязан перебрать все записи.
+func (p person) fioForm(i int, c gcase) string {
+	ni, pi := firstRune(p.name), firstRune(p.patronymic)
+	switch i % fioVariantCount {
 	case 0:
 		return p.full(c)
 	case 1:
 		return p.nameFirst(c)
 	case 2:
-		return p.surnameForm(c) + " " + firstRune(p.name) + "." + firstRune(p.patronymic) + "."
+		return p.surnameForm(c) + " " + ni + "." + pi + "."
 	case 3:
-		return firstRune(p.name) + "." + firstRune(p.patronymic) + ". " + p.surnameForm(c)
+		return ni + "." + pi + ". " + p.surnameForm(c)
 	case 4:
 		return p.surnameForm(c) + " " + p.nameForm(c)
 	case 5:
 		return p.nameForm(c) + " " + p.surnameForm(c)
 	case 6:
-		return p.surnameForm(c) + " " + firstRune(p.name) + ". " + firstRune(p.patronymic) + "."
+		return p.surnameForm(c) + " " + ni + ". " + pi + "."
+	case 7:
+		return strings.ToUpper(p.surnameForm(c)) + " " + p.nameForm(c) + " " + p.patronymicForm(c)
+	case 8:
+		return p.surnameForm(c) + " " + ni + pi
+	case 9:
+		return p.nameForm(c) + " " + p.patronymicForm(c)
+	case 10:
+		return p.surnameForm(c) + ", " + p.nameForm(c) + " " + p.patronymicForm(c)
+	case 11:
+		return ni + ". " + p.surnameForm(c)
+	case 12:
+		return p.surnameForm(c) + " " + p.nameForm(c) + " " + p.patronymicForm(c)
 	default:
-		return p.full(c)
+		return strings.ToUpper(p.full(c))
 	}
 }
 
@@ -264,7 +286,7 @@ func (g *Generator) randomDate(minYear, maxYear int) dateVal {
 }
 
 // formatCount — число поддерживаемых записей даты.
-const formatCount = 8
+const formatCount = 12
 
 // format записывает дату в одном из восьми форматов.
 func (d dateVal) format(i int) string {
@@ -283,8 +305,16 @@ func (d dateVal) format(i int) string {
 		return fmt.Sprintf("%02d %s %d", d.day, monthsGenitive[d.month-1], d.year)
 	case 6:
 		return fmt.Sprintf("%02d.%02d.%02d", d.day, d.month, d.year%100)
-	default:
+	case 7:
 		return fmt.Sprintf("%02d %02d %04d", d.day, d.month, d.year)
+	case 8:
+		return fmt.Sprintf("%d.%d.%04d", d.day, d.month, d.year)
+	case 9:
+		return fmt.Sprintf("%02d/%02d/%02d", d.day, d.month, d.year%100)
+	case 10:
+		return fmt.Sprintf("%04d.%02d.%02d", d.year, d.month, d.day)
+	default:
+		return fmt.Sprintf("«%02d» %s %04d", d.day, monthsGenitive[d.month-1], d.year)
 	}
 }
 
@@ -292,13 +322,16 @@ func (d dateVal) format(i int) string {
 // года выносится в обрамляющий текст: в эталоне оно не часть даты.
 func (g *Generator) dateFrags(t pii.Type, d dateVal) []frag {
 	text := d.format(g.r.IntN(formatCount))
-	if g.chance(20) {
+	switch {
+	case g.chance(18):
 		return frags(val(t, text), lit(" г."))
-	}
-	if g.chance(10) {
+	case g.chance(10):
 		return frags(val(t, text), lit(" года"))
+	case g.chance(8):
+		return frags(val(t, text), lit(" г.р."))
+	default:
+		return frags(val(t, text))
 	}
-	return frags(val(t, text))
 }
 
 // passportFrags возвращает серию и номер паспорта в одной из шести записей.
@@ -307,7 +340,7 @@ func (g *Generator) dateFrags(t pii.Type, d dateVal) []frag {
 func (g *Generator) passportFrags() []frag {
 	series, number := g.digitsNonZero(4), g.digits(6)
 	t := pii.TypePassport
-	switch g.r.IntN(6) {
+	switch g.r.IntN(10) {
 	case 0:
 		return frags(val(t, series+" "+number))
 	case 1:
@@ -318,19 +351,31 @@ func (g *Generator) passportFrags() []frag {
 		return frags(val(t, series+"-"+number))
 	case 4:
 		return frags(val(t, series), lit(" № "), val(t, number))
-	default:
+	case 5:
 		return frags(lit("серия "), val(t, series), lit(" номер "), val(t, number))
+	case 6:
+		return frags(lit("с. "), val(t, series), lit(" н. "), val(t, number))
+	case 7:
+		return frags(val(t, series[:2]+"-"+series[2:]+" "+number))
+	case 8:
+		return frags(val(t, series+" "+number[:3]+" "+number[3:]))
+	default:
+		return frags(lit("серия/номер "), val(t, series+"/"+number))
 	}
 }
 
 // deptCode возвращает код подразделения в одной из трёх записей.
 func (g *Generator) deptCode() string {
 	a, b := g.digitsNonZero(3), g.digits(3)
-	switch g.r.IntN(3) {
+	switch g.r.IntN(5) {
 	case 0:
 		return a + "-" + b
 	case 1:
 		return a + " " + b
+	case 2:
+		return a + "/" + b
+	case 3:
+		return a + "." + b
 	default:
 		return a + b
 	}
@@ -360,14 +405,25 @@ func (g *Generator) issuer() string {
 func (g *Generator) driverLicense() string {
 	region := fmt.Sprintf("%02d", 1+g.r.IntN(89))
 	if g.chance(45) {
-		letters := []string{"АА", "АВ", "ВС", "ЕК", "МН", "ОР", "ТУ", "ХА"}
-		return region + " " + g.pick(letters) + " " + g.digits(6)
+		letters := []string{"АА", "АВ", "ВС", "ЕК", "МН", "ОР", "ТУ", "ХА", "РТ", "СН"}
+		switch g.r.IntN(3) {
+		case 0:
+			return region + " " + g.pick(letters) + " " + g.digits(6)
+		case 1:
+			return region + g.pick(letters) + g.digits(6)
+		default:
+			return region + " " + g.pick(letters) + "-" + g.digits(6)
+		}
 	}
-	switch g.r.IntN(3) {
+	switch g.r.IntN(5) {
 	case 0:
 		return region + " " + g.digits(2) + " " + g.digits(6)
 	case 1:
 		return region + g.digits(2) + " " + g.digits(6)
+	case 2:
+		return region + " " + g.digits(2) + "-" + g.digits(6)
+	case 3:
+		return region + "-" + g.digits(2) + "-" + g.digits(6)
 	default:
 		return region + g.digits(2) + g.digits(6)
 	}
@@ -431,11 +487,11 @@ func luhnControl(body string) byte {
 
 // cardNumber возвращает номер карты выбранной платёжной системы в одной из
 // записей: слитно, по четыре через пробел или через дефис.
-func (g *Generator) cardNumber(valid bool) (string, string) {
+func (g *Generator) cardNumber(valid bool) string {
 	brand := cardBrands[g.r.IntN(len(cardBrands))]
 	body := brand.prefix + g.digits(brand.length-len(brand.prefix)-1)
 	number := breakLast(body+string(luhnControl(body)), valid)
-	return brand.name, groupDigits(number, g.r.IntN(3))
+	return groupDigits(number, g.r.IntN(3))
 }
 
 // groupDigits расставляет разделители внутри номера карты.
@@ -474,11 +530,15 @@ func (g *Generator) snils(valid bool) string {
 	}
 	full := body + fmt.Sprintf("%02d", ctrl)
 	full = breakLast(full, valid)
-	switch g.r.IntN(3) {
+	switch g.r.IntN(5) {
 	case 0:
 		return full[:3] + "-" + full[3:6] + "-" + full[6:9] + " " + full[9:]
 	case 1:
 		return full
+	case 2:
+		return full[:3] + "-" + full[3:6] + "-" + full[6:9] + "-" + full[9:]
+	case 3:
+		return full[:3] + " " + full[3:6] + " " + full[6:9] + "-" + full[9:]
 	default:
 		return full[:3] + " " + full[3:6] + " " + full[6:9] + " " + full[9:]
 	}
@@ -488,11 +548,15 @@ func (g *Generator) snils(valid bool) string {
 // семь цифр номера.
 func (g *Generator) foreignPassport() string {
 	series, number := g.digitsNonZero(2), g.digits(7)
-	switch g.r.IntN(3) {
+	switch g.r.IntN(5) {
 	case 0:
 		return series + " " + number
 	case 1:
 		return series + number
+	case 2:
+		return series + "-" + number
+	case 3:
+		return series + " № " + number
 	default:
 		return series + "№" + number
 	}
@@ -500,24 +564,50 @@ func (g *Generator) foreignPassport() string {
 
 // residencePermit возвращает номер вида на жительство.
 func (g *Generator) residencePermit() string {
-	if g.chance(50) {
+	switch g.r.IntN(4) {
+	case 0:
 		return g.digitsNonZero(2) + " " + g.digits(7)
+	case 1:
+		return g.digitsNonZero(4) + " " + g.digits(6)
+	case 2:
+		return g.digitsNonZero(2) + "№" + g.digits(7)
+	default:
+		return g.digitsNonZero(4) + "-" + g.digits(6)
 	}
-	return g.digitsNonZero(4) + " " + g.digits(6)
 }
 
 // birthCert возвращает реквизиты свидетельства о рождении: римская серия,
 // буквенный код и номер.
 func (g *Generator) birthCert() string {
-	roman := []string{"I", "II", "III", "IV", "V", "VI"}
-	codes := []string{"МЮ", "АГ", "ТО", "БК", "НР", "СВ"}
-	return g.pick(roman) + "-" + g.pick(codes) + " № " + g.digits(6)
+	roman := []string{"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"}
+	codes := []string{"МЮ", "АГ", "ТО", "БК", "НР", "СВ", "ИК", "ПН", "ЖТ", "ЕА"}
+	head := g.pick(roman) + "-" + g.pick(codes)
+	switch g.r.IntN(4) {
+	case 0:
+		return head + " № " + g.digits(6)
+	case 1:
+		return head + " " + g.digits(6)
+	case 2:
+		return head + "№" + g.digits(6)
+	default:
+		return head + " No " + g.digits(6)
+	}
 }
 
 // militaryID возвращает номер военного билета.
 func (g *Generator) militaryID() string {
-	codes := []string{"АС", "АН", "НА", "ТА", "ЕС", "МТ"}
-	return g.pick(codes) + " № " + g.digits(7)
+	codes := []string{"АС", "АН", "НА", "ТА", "ЕС", "МТ", "АЕ", "НП", "ТВ", "СО"}
+	head := g.pick(codes)
+	switch g.r.IntN(4) {
+	case 0:
+		return head + " № " + g.digits(7)
+	case 1:
+		return head + " " + g.digits(7)
+	case 2:
+		return head + "-" + g.digits(7)
+	default:
+		return head + g.digits(7)
+	}
 }
 
 // citizenship возвращает запись гражданства.
@@ -525,7 +615,10 @@ func (g *Generator) citizenship() string {
 	return g.pick([]string{
 		"Российская Федерация", "РФ", "гражданин России", "Россия",
 		"Республика Беларусь", "Республика Казахстан", "Узбекистан",
-		"Киргизская Республика", "Армения",
+		"Киргизская Республика", "Армения", "гражданка России",
+		"Республика Таджикистан", "Азербайджанская Республика", "Молдова",
+		"Украина", "Грузия", "Туркменистан", "Russian Federation", "RU",
+		"Россия и Израиль", "Республика Армения", "Азербайджан",
 	})
 }
 
@@ -533,14 +626,22 @@ func (g *Generator) citizenship() string {
 // областью.
 func (g *Generator) birthPlace() string {
 	city := g.pick(cities)
-	switch g.r.IntN(4) {
+	switch g.r.IntN(8) {
 	case 0:
 		return "г. " + city
 	case 1:
 		return "город " + city
 	case 2:
 		return "с. " + g.pick(villages) + ", " + g.pick(regions)
-	default:
+	case 3:
 		return "г. " + city + ", " + g.pick(regions)
+	case 4:
+		return "д. " + g.pick(villages) + ", " + g.pick(regions) + ", Россия"
+	case 5:
+		return "пос. " + g.pick(villages) + " " + g.pick(regions)
+	case 6:
+		return city
+	default:
+		return "гор. " + city + " " + g.pick(regions)
 	}
 }

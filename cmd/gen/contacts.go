@@ -119,9 +119,13 @@ func (g *Generator) flatPart() string {
 	}
 }
 
-// cityPart возвращает населённый пункт с типом.
+// cityPart возвращает населённый пункт с типом. Тип подбирается под название:
+// город не называют деревней, и наоборот.
 func (g *Generator) cityPart() string {
-	return g.pick(settlementTypes) + " " + g.pick(cities)
+	if g.chance(25) {
+		return g.pick(villageTypes) + " " + g.pick(villages)
+	}
+	return g.pick(cityTypes) + " " + g.pick(cities)
 }
 
 // addressBody собирает адрес без индекса по компонентной грамматике: регион,

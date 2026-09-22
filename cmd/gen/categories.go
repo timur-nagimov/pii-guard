@@ -12,19 +12,13 @@ type categorySpec struct {
 }
 
 // simpleCategories возвращает категории с одним типом данных в тексте: по
-// одной на каждый тип из технического задания.
+// одной на каждый тип из технического задания. Список берётся из
+// спецификаций типов, поэтому новый тип попадает в выпуск сам собой.
 func simpleCategories() []categorySpec {
-	names := []string{
-		"fio", "dob", "birth_place", "passport", "citizenship", "issuer",
-		"dept_code", "issue_date", "driver_license", "address", "postcode",
-		"email", "phone", "inn", "card", "cvv", "pin", "cardholder",
-		"snils", "foreign_passport", "residence_permit", "birth_cert",
-		"military_id",
-	}
-	gens := simpleGenerators()
-	out := make([]categorySpec, 0, len(names))
-	for i, name := range names {
-		out = append(out, categorySpec{name: name, weight: 3, gen: gens[i]})
+	specs := valueSpecs()
+	out := make([]categorySpec, 0, len(specs))
+	for _, s := range specs {
+		out = append(out, categorySpec{name: s.name, weight: 4, gen: simpleCategoryGen(s)})
 	}
 	return out
 }
@@ -40,6 +34,24 @@ func compositeCategories() []categorySpec {
 		{name: "date_no_anchor", weight: 4, gen: genDateNoAnchor},
 		{name: "table", weight: 6, gen: genTable},
 		{name: "typos", weight: 4, gen: genTypos},
+	}
+}
+
+// textKindCategories возвращает категории с разными видами текста: разговор,
+// заявление, выгрузка, таблица, письмо, заметка и тексты с несколькими
+// упоминаниями людей. Анкета — не единственная форма, в которой приходят
+// персональные данные, и окружение значения в каждой форме своё.
+func textKindCategories() []categorySpec {
+	return []categorySpec{
+		{name: "dialog", weight: 6, gen: genDialog},
+		{name: "statement", weight: 5, gen: genStatement},
+		{name: "export_row", weight: 6, gen: genExportRow},
+		{name: "table_five", weight: 5, gen: genTableFive},
+		{name: "email_letter", weight: 5, gen: genEmailLetter},
+		{name: "free_note", weight: 5, gen: genFreeNote},
+		{name: "two_people", weight: 5, gen: genTwoPeople},
+		{name: "three_mentions", weight: 5, gen: genThreeMentions},
+		{name: "bilingual", weight: 5, gen: genBilingual},
 	}
 }
 
@@ -61,6 +73,19 @@ func negativeCategories() []categorySpec {
 		{name: "neg_law_reference", gen: negLaw, negative: true},
 		{name: "neg_pin_word", gen: negPINWord, negative: true},
 		{name: "neg_three_digits", gen: negThreeDigits, negative: true},
+		{name: "neg_support_phone", gen: negSupportPhone, negative: true},
+		{name: "neg_bank_requisites", gen: negBankRequisites, negative: true},
+		{name: "neg_branch_address_tail", gen: negBranchAddressTail, negative: true},
+		{name: "neg_rate_date", gen: negRateDate, negative: true},
+		{name: "neg_branch_number", gen: negBranchNumber, negative: true},
+		{name: "neg_account_number", gen: negAccountNumber, negative: true},
+		{name: "neg_company_like_surname", gen: negCompanyLikeSurname, negative: true},
+		{name: "neg_named_position", gen: negNamedPosition, negative: true},
+		{name: "neg_law_quote", gen: negLawQuote, negative: true},
+		{name: "neg_article_code", gen: negArticleCode, negative: true},
+		{name: "neg_confirm_code", gen: negConfirmCode, negative: true},
+		{name: "neg_flight_number", gen: negFlightNumber, negative: true},
+		{name: "neg_track_number", gen: negTrackNumber, negative: true},
 	}
 }
 
@@ -75,6 +100,7 @@ func longCategory() categorySpec {
 func allCategories() []categorySpec {
 	out := simpleCategories()
 	out = append(out, compositeCategories()...)
+	out = append(out, textKindCategories()...)
 	out = append(out, longCategory())
 	return append(out, negativeCategories()...)
 }
@@ -89,11 +115,12 @@ func isNegativeCategory(name string) bool {
 	return false
 }
 
-// Доли выпуска. Отрицательных строк должно быть не меньше трёхсот, иначе
-// ложные срабатывания не на чем мерить.
+// Доли выпуска. Отрицательных строк должно хватать на все отрицательные
+// категории с запасом, иначе ложные срабатывания не на чем мерить: при
+// двадцати семи категориях нижняя граница даёт два десятка строк на каждую.
 const (
-	negativeSharePercent = 12
-	minNegativeRecords   = 300
+	negativeSharePercent = 14
+	minNegativeRecords   = 540
 )
 
 // negativeTotal возвращает число отрицательных строк для набора размера n.
@@ -232,7 +259,9 @@ func (g *Generator) Each(n int, fn func(Record) error) error {
 	cats := allCategories()
 	for i, ci := range g.order(n) {
 		c := cats[ci]
-		id := fmt.Sprintf("%s-%05d", c.name, i)
+		// Префикс источника в идентификаторе: набор склеивается из нескольких
+		// источников, и одинаковых номеров между ними быть не должно.
+		id := fmt.Sprintf("%s-%s-%06d", sourceSynthetic, c.name, i)
 		if err := fn(buildRecord(id, c.name, c.gen(g))); err != nil {
 			return err
 		}
