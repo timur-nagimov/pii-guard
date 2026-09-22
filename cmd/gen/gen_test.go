@@ -346,6 +346,8 @@ func TestNewCategoriesPresent(t *testing.T) {
 		// виды текста
 		"dialog", "statement", "export_row", "table_five", "email_letter",
 		"free_note", "two_people", "three_mentions", "bilingual",
+		// латиница и международные данные
+		"latin_names", "intl_phone", "english_anchor", "mixed_anchor",
 		// трудные отрицательные примеры
 		"neg_support_phone", "neg_bank_requisites", "neg_branch_address_tail",
 		"neg_rate_date", "neg_branch_number", "neg_account_number",
