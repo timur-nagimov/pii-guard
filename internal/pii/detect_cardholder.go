@@ -472,9 +472,9 @@ var extraDocAnchorsSNILS = []string{
 // слова: в наборе встречается и «заграничный паспорт», и опечатка
 // «заграничный пааспорт».
 var extraDocAnchorsForeign = []string{
-	"загранпаспорт", "заграничн", "загран. паспорт", "загран паспорт",
+	"загранпаспорт", "заграничн", "загран. паспорт", "загран паспорт", "загран",
 	"паспорт для выезда", "паспорт для поездок", "для выезда за границу",
-	"для поездок за границу", "passport no", "travel document",
+	"для поездок за границу", "для выезда", "passport no", "travel document",
 	"foreign passport", "international passport",
 }
 
@@ -497,6 +497,7 @@ var extraDocAnchorsBirthCert = []string{
 // набор встречается с опечаткой «свидетельство о орждении».
 var extraDocAnchorsBirthCertNear = []string{
 	"о рождении", "сор", "birth certificate", "свидетельств", "свид",
+	"детский документ", "детского документа", "детский",
 }
 
 // extraDocAnchorsMilitary — якоря военного билета. Основы «военн» и «воинск»
@@ -824,13 +825,14 @@ func extraDocSeriesToken(d *Doc, at int) (int, bool) {
 		if !ok {
 			return 0, false
 		}
+		if extraDocSeriesWords[cardHolderTokenLower(d, k)] {
+			j = k - 1
+			continue
+		}
 		if extraDocIsLetters(d, k, 2) {
 			return k, true
 		}
-		if !extraDocSeriesWords[cardHolderTokenLower(d, k)] {
-			return 0, false
-		}
-		j = k - 1
+		return 0, false
 	}
 	return 0, false
 }
