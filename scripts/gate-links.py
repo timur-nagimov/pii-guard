@@ -20,18 +20,40 @@ import pathlib
 import re
 import sys
 import unicodedata
+from urllib.parse import urlsplit
 
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
-# Заголовок разбирается на уровень и текст до конца строки, а хвост из
-# решёток срезается отдельной функцией. Выражение вида (.*?)\s*#*$ здесь
-# не годится: «.*?», «\s*» и «#*» претендуют на одни и те же символы, и на
-# строке из сотен решёток движок перебирает откаты вместо разбора.
-HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
+# Заголовок разбирается без регулярного выражения. Выражение вида
+# «^(#{1,6})\s+(.*)$» выглядит безобидно, но и «\s+», и «.*» претендуют на
+# одни и те же пробелы: разбор становится неоднозначным, и на строке из
+# сотен решёток движок перебирает откаты вместо работы. Посимвольный разбор
+# делает то же самое за один проход и читается не хуже.
 FENCE = re.compile(r"^\s*(```|~~~)")
 SKIP_DIRS = {".git", "node_modules", "corpus", "dist", "bin", ".terraform"}
 
 # Схемы, на которых проверка останавливается, причина в описании модуля.
-EXTERNAL = ("http://", "https://", "mailto:", "tel:")
+# Схема сравнивается разобранной, а не началом строки: запись вида «HTTPS://»
+# тоже внешняя, а литерал с «://» в коде анализатор справедливо принимает за
+# обращение по незащищённому протоколу, хотя мы сюда как раз не ходим.
+EXTERNAL_SCHEMES = frozenset({"http", "https", "mailto", "tel"})
+
+
+def heading_parts(line):
+    """Разбирает строку заголовка: сколько решёток и что после них.
+
+    Возвращает пару «уровень, текст». Уровень ноль означает, что строка
+    заголовком не является: решёток нет, их больше шести или за ними не
+    стоит пробел.
+    """
+    level = 0
+    while level < len(line) and line[level] == "#":
+        level += 1
+    if level == 0 or level > 6:
+        return 0, ""
+    rest = line[level:]
+    if not rest[:1].isspace():
+        return 0, ""
+    return level, rest.lstrip()
 
 
 def anchor(text):
@@ -72,10 +94,10 @@ def anchors_of(path):
             continue
         if inside:
             continue
-        m = HEADING.match(line)
-        if not m:
+        level, text = heading_parts(line)
+        if not level:
             continue
-        base = anchor(heading_text(m.group(2)))
+        base = anchor(heading_text(text))
         if not base:
             continue
         n = found.get(base, 0)
@@ -139,7 +161,7 @@ def check_doc(doc, rel, cache):
     checked = 0
     broken = []
     for line_no, target in links_of(doc):
-        if target.startswith(EXTERNAL):
+        if urlsplit(target).scheme.lower() in EXTERNAL_SCHEMES:
             continue
         checked += 1
         problem = link_problem(doc, rel, line_no, target, cache)
