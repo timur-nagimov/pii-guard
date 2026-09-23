@@ -105,6 +105,33 @@ func newTestServer(t *testing.T) *httptest.Server {
 	return ts
 }
 
+// newTestServerWithTTL поднимает сервис целиком с заданным сроком жизни записи.
+// Нужен для проверки поведения после истечения срока хранения.
+func newTestServerWithTTL(t *testing.T, ttl time.Duration) *httptest.Server {
+	t.Helper()
+
+	cfg, err := config.Parse([]byte(testConfigYAML()))
+	if err != nil {
+		t.Fatalf("настройки не разобрались: %v", err)
+	}
+
+	st, err := store.New(store.Config{Key: make([]byte, 32), TTL: ttl, MaxRecords: 10000})
+	if err != nil {
+		t.Fatalf("хранилище не создалось: %v", err)
+	}
+	t.Cleanup(st.Close)
+
+	reg := pii.NewRegistry()
+	reg.Register(pii.NewNumericDetector(), pii.NewEmailDetector())
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(cfg, st, engine.New(reg), metrics.New(), log)
+
+	ts := httptest.NewServer(srv.Routes())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
 // processCall описывает один запрос к сервису.
 type processCall struct {
 	method  string
@@ -298,6 +325,141 @@ func TestProcessSameIDDifferentText(t *testing.T) {
 	}
 	if got := resultOf(t, body); got != first {
 		t.Fatalf("восстановлен текст %q вместо %q", got, first)
+	}
+}
+
+// TestProcessUnknownMaskPassthrough проверяет поведение после истечения срока
+// хранения в режиме passthrough: клиент прислал уже замаскированный текст с
+// тем же идентификатором, запись истекла, и сервис возвращает текст как есть с
+// заголовком X-PII-Unknown-Id, а не маскирует звёздочки повторно.
+func TestProcessUnknownMaskPassthrough(t *testing.T) {
+	ts := newTestServerWithTTL(t, 100*time.Millisecond)
+	const payload = "Телефон +79161234567"
+	const id = "payload-ttl-passthrough"
+
+	_, body := do(t, ts, processCall{body: processBody(t, payload, id)})
+	masked := resultOf(t, body)
+
+	// Ждём истечения срока хранения: запись исчезает, а клиент присылает
+	// маску на восстановление.
+	time.Sleep(150 * time.Millisecond)
+
+	resp, err := ts.Client().Post(ts.URL+"/process", "application/json",
+		strings.NewReader(processBody(t, masked, id)))
+	if err != nil {
+		t.Fatalf("запрос не выполнился: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("не удалось прочитать ответ: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("после истечения срока получен код %d вместо 200: %s", resp.StatusCode, raw)
+	}
+	if got := resp.Header.Get("X-PII-Unknown-Id"); got != "1" {
+		t.Fatalf("заголовок X-PII-Unknown-Id равен %q, ожидался 1", got)
+	}
+	if got := resultOf(t, string(raw)); got != masked {
+		t.Fatalf("текст вернулся как %q, ожидалась присланная маска %q", got, masked)
+	}
+}
+
+// TestProcessUnknownMask404 проверяет поведение после истечения срока хранения
+// в режиме 404: клиент прислал маску на восстановление, запись истекла, и
+// сервис отвечает 404 с кодом payload_not_found, не маскируя звёздочки повторно.
+func TestProcessUnknownMask404(t *testing.T) {
+	ts := newTestServerWithTTL(t, 100*time.Millisecond)
+	const payload = "Телефон +79161234567"
+	const id = "payload-ttl-404"
+
+	// Система partner не задаёт on_unknown_id, поэтому по умолчанию работает
+	// режим 404.
+	_, body := do(t, ts, processCall{
+		body:    processBody(t, payload, id),
+		headers: map[string]string{"X-System-Key": testKeyDemask},
+	})
+	masked := resultOf(t, body)
+
+	time.Sleep(150 * time.Millisecond)
+
+	code, body := do(t, ts, processCall{
+		body:    processBody(t, masked, id),
+		headers: map[string]string{"X-System-Key": testKeyDemask},
+	})
+	if code != http.StatusNotFound {
+		t.Fatalf("после истечения срока получен код %d вместо 404: %s", code, body)
+	}
+	if !strings.Contains(body, "payload_not_found") {
+		t.Fatalf("в ответе нет кода ошибки payload_not_found: %s", body)
+	}
+	if strings.Contains(body, masked) {
+		t.Fatalf("маска утекла в ответ об ошибке: %s", body)
+	}
+}
+
+// TestProcessAmbiguousHeader проверяет, что неоднозначный повтор — тот же
+// идентификатор с третьим текстом — маскируется и несёт заголовок
+// X-PII-Ambiguous, чтобы клиент видел неоднозначность.
+func TestProcessAmbiguousHeader(t *testing.T) {
+	ts := newTestServer(t)
+	const id = "payload-ambiguous-header"
+	const first = "Телефон +79161234567"
+	const second = "Другой телефон +79990001122"
+	const third = "Третий телефон +78880001122"
+
+	_, body := do(t, ts, processCall{body: processBody(t, first, id)})
+	maskedFirst := resultOf(t, body)
+
+	_, body = do(t, ts, processCall{body: processBody(t, second, id)})
+	maskedSecond := resultOf(t, body)
+	if maskedSecond == maskedFirst {
+		t.Fatal("второй текст дал ту же маску, что и первый")
+	}
+
+	// Третий текст с тем же идентификатором — неоднозначный повтор.
+	resp, err := ts.Client().Post(ts.URL+"/process", "application/json",
+		strings.NewReader(processBody(t, third, id)))
+	if err != nil {
+		t.Fatalf("запрос не выполнился: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("не удалось прочитать ответ: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("неоднозначный повтор дал код %d: %s", resp.StatusCode, raw)
+	}
+	if got := resp.Header.Get("X-PII-Ambiguous"); got != "1" {
+		t.Fatalf("заголовок X-PII-Ambiguous равен %q, ожидался 1", got)
+	}
+	if got := resultOf(t, string(raw)); strings.Contains(got, "+78880001122") {
+		t.Fatalf("третий текст не замаскирован: %q", got)
+	}
+}
+
+// TestProcessNormalPathUnchanged проверяет, что обычный путь «маска →
+// восстановление» не изменился побайтово: маска и восстановленный текст
+// совпадают с исходными.
+func TestProcessNormalPathUnchanged(t *testing.T) {
+	ts := newTestServer(t)
+	const payload = "Иванов Иван, телефон +79161234567, почта ivan@example.com"
+	const id = "payload-normal-unchanged"
+
+	_, body := do(t, ts, processCall{body: processBody(t, payload, id)})
+	masked := resultOf(t, body)
+
+	// Повтор маскирования даёт ту же маску побайтово.
+	_, body = do(t, ts, processCall{body: processBody(t, payload, id)})
+	if got := resultOf(t, body); got != masked {
+		t.Fatalf("повтор дал другую маску %q вместо %q", got, masked)
+	}
+
+	// Обратное преобразование возвращает исходный текст побайтово.
+	_, body = do(t, ts, processCall{body: processBody(t, masked, id)})
+	if got := resultOf(t, body); got != payload {
+		t.Fatalf("восстановлен текст %q вместо %q", got, payload)
 	}
 }
 
