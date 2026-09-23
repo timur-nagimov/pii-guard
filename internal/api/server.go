@@ -134,10 +134,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/systems", s.handleSystems)
 	mux.HandleFunc("/v1/rules", s.handleRules)
 	mux.HandleFunc("/ui", s.handleUI)
-	// Сценарий и стили страницы приходят своими адресами: страница стала
-	// тремя файлами, и каждый отдаётся со своим типом содержимого.
-	mux.HandleFunc("/ui/app.js", s.handleUIScript)
-	mux.HandleFunc("/ui/app.css", s.handleUIStyles)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleReady)
 	mux.Handle("/metrics", s.metrics.Handler())
