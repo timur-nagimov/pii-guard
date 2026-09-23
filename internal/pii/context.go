@@ -525,9 +525,11 @@ func ctxBankingType(t Type) bool {
 }
 
 // knownFigure ищет имя в словаре известных людей. Полное совпадение фамилии и
-// имени принимается всегда, совпадение по одной фамилии — только вместе с
-// ролевым признаком: одна фамилия слишком часто встречается у обычных людей.
-func (f *ContextFilter) knownFigure(value string, role bool) bool {
+// имени принимается всегда. Совпадение по одной фамилии принимается только
+// вместе с вопросительной формой и только для редкой фамилии: «Петров» и
+// «Кузнецова» частые, и вопрос про них может касаться клиента, а «Достоевский»
+// в общем словаре фамилий отсутствует.
+func (f *ContextFilter) knownFigure(value string, question bool) bool {
 	words := ctxWords(ctxNormalizeValue(value))
 	stems := make([]string, 0, len(words))
 	for _, w := range words {
@@ -540,15 +542,22 @@ func (f *ContextFilter) knownFigure(value string, role bool) bool {
 			}
 		}
 	}
-	if !role {
+	if !question {
 		return false
 	}
 	for _, st := range stems {
-		if f.figureSurname[st] {
+		if f.figureSurname[st] && ctxRareSurname(st) {
 			return true
 		}
 	}
 	return false
+}
+
+// ctxRareSurname сообщает, что основа фамилии не встречается в общем словаре
+// фамилий. Частая фамилия в вопросе к модели может принадлежать клиенту,
+// поэтому совпадение по одной фамилии принимается только для редких.
+func ctxRareSurname(stem string) bool {
+	return !dict.LookupSurname(stem)
 }
 
 // ctxOrgMarkers — признаки того, что адрес принадлежит организации, а не
