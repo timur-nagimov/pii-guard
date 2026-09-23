@@ -295,6 +295,7 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 		pii.NewDriverLicenseLettersDetector(),
 		pii.NewCardHolderDetector(),
 		pii.NewExtraDocumentsDetector(),
+		pii.NewExtraDetector(),
 	)
 	if err := applyCustomTypes(reg, cfg); err != nil {
 		return fmt.Errorf("правила custom_types: %w", err)

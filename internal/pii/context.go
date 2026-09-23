@@ -196,7 +196,10 @@ func (s *ctxScan) typeRules(i int) string {
 	if !s.spanInBounds(i) {
 		return ""
 	}
-	if ctxIsIPv4(s.spanText(i)) {
+	// Сетевой адрес снимается, только если он не был опознан как персональные
+	// данные: явный тип IP_ADDRESS маскируется, а телефон или ИНН, записанные
+	// как адрес, к человеку не относятся.
+	if s.spans[i].Type != TypeIPAddress && ctxIsIPv4(s.spanText(i)) {
 		return reasonNetworkAddress
 	}
 	switch {
@@ -244,7 +247,8 @@ func ctxReferenceType(t Type) bool {
 	switch t {
 	case TypePassport, TypeCard, TypeINN, TypePhone, TypeSNILS, TypeCVV,
 		TypePIN, TypeDeptCode, TypeDriverLicense, TypeMilitaryID,
-		TypeBirthCert, TypeForeignPassport, TypeResidencePermit, TypePostcode:
+		TypeBirthCert, TypeForeignPassport, TypeResidencePermit, TypePostcode,
+		TypeAccount, TypeOMS, TypePlate, TypeVIN, TypeIPAddress:
 		return true
 	default:
 		return false

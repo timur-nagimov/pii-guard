@@ -645,3 +645,83 @@ func (g *Generator) birthPlace() string {
 		return "гор. " + city + " " + g.pick(regions)
 	}
 }
+
+// accountNumber возвращает номер банковского счёта: двадцать цифр, начинающихся
+// на балансовый счёт физического лица. Записывается слитно либо группами.
+func (g *Generator) accountNumber() string {
+	prefix := g.pick([]string{"40817", "40820", "40802", "42301", "42601"})
+	number := prefix + g.digits(15)
+	switch g.r.IntN(4) {
+	case 0:
+		return number
+	case 1:
+		return number[:5] + " " + number[5:8] + " " + number[8:9] + " " + number[9:13] + " " + number[13:]
+	case 2:
+		return number[:5] + " " + number[5:]
+	default:
+		return number[:8] + " " + number[8:]
+	}
+}
+
+// omsNumber возвращает номер полиса ОМС: шестнадцать цифр, слитно либо по
+// четыре.
+func (g *Generator) omsNumber() string {
+	number := g.digitsNonZero(16)
+	switch g.r.IntN(3) {
+	case 0:
+		return number
+	case 1:
+		return number[:4] + " " + number[4:8] + " " + number[8:12] + " " + number[12:]
+	default:
+		return number[:4] + "-" + number[4:8] + "-" + number[8:12] + "-" + number[12:]
+	}
+}
+
+// plateLetters — буквы госномера, имеющие латинские двойники по начертанию.
+var plateLetters = []string{"А", "В", "Е", "К", "М", "Н", "О", "Р", "С", "Т", "У", "Х"}
+
+// plateNumber возвращает госномер автомобиля: буква, три цифры, две буквы, две
+// или три цифры региона. Иногда буквы набирают латиницей.
+func (g *Generator) plateNumber() string {
+	plate := g.pick(plateLetters) + g.digits(3) + g.pick(plateLetters) + g.pick(plateLetters)
+	region := g.digits(2)
+	if g.chance(40) {
+		region = g.digits(3)
+	}
+	plate += region
+	runes := []rune(plate)
+	switch g.r.IntN(4) {
+	case 0:
+		return plate
+	case 1:
+		return string(runes[0]) + " " + string(runes[1:4]) + " " + string(runes[4:6]) + " " + string(runes[6:])
+	case 2:
+		return g.replaceHomoglyphs(plate)
+	default:
+		return string(runes[0]) + string(runes[1:4]) + " " + string(runes[4:6]) + " " + string(runes[6:])
+	}
+}
+
+// vinChars — допустимые знаки VIN: латиница и цифры без букв I, O и Q.
+var vinChars = []rune{
+	'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'L', 'M', 'N',
+	'P', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+	'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+}
+
+// vinNumber возвращает идентификационный номер транспортного средства:
+// семнадцать знаков латиницы и цифр без букв I, O и Q.
+func (g *Generator) vinNumber() string {
+	var b strings.Builder
+	for i := 0; i < 17; i++ {
+		b.WriteRune(vinChars[g.r.IntN(len(vinChars))])
+	}
+	return b.String()
+}
+
+// ipAddress возвращает адрес в сети: IPv4 из четырёх чисел от нуля до 255.
+// Служебные адреса не порождаются: они на человека не указывают.
+func (g *Generator) ipAddress() string {
+	return fmt.Sprintf("%d.%d.%d.%d",
+		1+g.r.IntN(254), g.r.IntN(256), g.r.IntN(256), 1+g.r.IntN(254))
+}

@@ -157,6 +157,11 @@ var typePriority = map[Type]int{
 	TypeEmail:           20,
 	TypeCVV:             15,
 	TypePIN:             14,
+	TypeAccount:         55,
+	TypeOMS:             54,
+	TypePlate:           53,
+	TypeVIN:             52,
+	TypeIPAddress:       51,
 }
 
 // Priority возвращает приоритет типа при разрешении пересечений.
