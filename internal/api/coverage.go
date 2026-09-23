@@ -14,7 +14,20 @@ const (
 	coverageSourceTask   = "task"
 	coverageSourceExtra  = "extra"
 	coverageSourceCustom = "custom"
+
+	// coverageSourcePart — выделяемая часть типа из задания, а не отдельный
+	// тип. Раздел 4.1 перечисляет семнадцать типов, и десятый записан так:
+	// «Адрес (в т.ч. отдельно: страна, индекс, город, улица, дом, квартира
+	// и т.п.)». Индекс мы выделяем отдельным типом, потому что он находится
+	// и маскируется самостоятельно, но считать его восемнадцатым типом
+	// задания нельзя: получилось бы, что покрытие шире требуемого.
+	coverageSourcePart = "task_part"
 )
+
+// coverageParts — типы, которые задание называет частями других типов.
+var coverageParts = map[pii.Type]bool{
+	pii.TypePostcode: true,
+}
 
 // Значения клетки матрицы, когда пресета нет.
 const (
@@ -105,6 +118,10 @@ func collectCoverageTypes(cfg *config.Config) []coverageType {
 	}
 
 	for _, t := range pii.AllTypes() {
+		if coverageParts[t] {
+			add(t, coverageSourcePart)
+			continue
+		}
 		add(t, coverageSourceTask)
 	}
 	for _, t := range extraTypes() {
