@@ -138,6 +138,51 @@ case_7() {
   show "дополнительные документы" "СНИЛС 112-233-445 95, загранпаспорт 75 1234567, вид на жительство 82 № 0123456" "$(req "СНИЛС 112-233-445 95, загранпаспорт 75 1234567, вид на жительство 82 № 0123456" "jury7c-$RANDOM")"
   show "пин-код без карты" "Пин-код 4321 запомните" "$(req "Пин-код 4321 запомните" "jury7d-$RANDOM")"
   echo "  правило сочетаний включается признаком context_rules_enabled в настройках системы"
+
+  echo
+  echo "--- Разбор с объяснением решения ---"
+  echo "  По каждому фрагменту видно, КАКОЕ ПРАВИЛО сработало, а не только результат."
+  curl -s -m 10 -X POST "$URL/v1/inspect" -H 'Content-Type: application/json' \
+    -d '{"text":"Клиент Иванов Иван Иванович, паспорт 4509 123456, тел +7 916 123-45-67"}' \
+    | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+for s in d.get("spans", []):
+    print("    %-12s %-26s уверенность %s  правило %s" % (s["type"], repr(s["value"]), s["confidence"], s["reason"]))
+print("    снято с маскирования фрагментов: %d" % len(d.get("skipped", [])))
+' 2>/dev/null || echo "    разбор выключен настройкой inspect_enabled"
+
+  echo
+  echo "--- Связи между фрагментами одного человека ---"
+  echo "  Текст с двумя людьми разбирается на двух субъектов, карта остаётся у своего."
+  curl -s -m 10 -X POST "$URL/v1/inspect" -H 'Content-Type: application/json' \
+    -d '{"text":"Клиент Иванов Иван Иванович, карта 4111 1111 1111 1111. Менеджер Петров Пётр, тел +7 495 111-22-33."}' \
+    | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+sp = d.get("spans", [])
+subs = d.get("subjects", [])
+if not subs:
+    print("    субъектов ноль: связи строятся только при context_rules_enabled: true")
+for i, s in enumerate(subs, 1):
+    vals = [sp[j]["value"] for j in s.get("fragments", []) if j < len(sp)]
+    print("    субъект %d: типы %s" % (i, s.get("types")))
+    print("       фрагменты: %s" % vals)
+' 2>/dev/null || true
+
+  echo
+  echo "--- Матрица покрытия: что настроено, а что нет ---"
+  curl -s -m 10 "$URL/v1/coverage" -H "X-System-Key: $JURY_KEY" \
+    | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+rows = d.get("rows") or d.get("types") or []
+systems = d.get("systems", [])
+print("    систем-потребителей: %d, типов в матрице: %d" % (len(systems), len(rows)))
+' 2>/dev/null || echo "    матрица недоступна"
+
+  echo
+  echo "  Наглядно всё перечисленное на одной странице: $URL/ui"
 }
 
 case_8() {
