@@ -229,26 +229,7 @@ func (s *Server) resolveFlight(id, payload string, hash [32]byte, entry *store.E
 			auditResult: "corrupted"}, nil
 
 	case errors.Is(gerr, store.ErrNotFound):
-		// Записи нет: либо идентификатор новый, либо срок хранения истёк.
-		// Если присланный текст уже похож на маску, маскировать его
-		// повторно нельзя: звёздочки стали бы «исходником», и оригинал
-		// был бы потерян. Поведение задаёт режим on_unknown_id.
-		if mask.LooksMasked(payload, sys.MaskOptions(cfg.Defaults).Default) {
-			switch sys.UnknownIDMode(cfg.Defaults) {
-			case config.OnUnknownPassthrough:
-				return processResult{out: outcome{text: payload}, dir: dirUnknownMask,
-					code: http.StatusOK, unknownID: true, auditResult: "unknown_id"}, nil
-			default:
-				return processResult{dir: dirDemask, code: http.StatusNotFound,
-					errCode: "payload_not_found", errMsg: "срок хранения истёк или идентификатор неизвестен",
-					auditResult: "not_found"}, nil
-			}
-		}
-		res, e := s.maskAndStore(id, payload, sys, cfg)
-		if e != nil {
-			return processResult{}, e
-		}
-		return processResult{out: res, dir: dirMask, code: http.StatusOK, auditResult: "ok"}, nil
+		return s.resolveNotFound(id, payload, sys, cfg)
 
 	case gerr != nil:
 		// Временная ошибка хранилища: частичного результата нет.
@@ -295,6 +276,29 @@ func (s *Server) resolveFlight(id, payload string, hash [32]byte, entry *store.E
 		return processResult{out: res, dir: dirAmbiguous, code: http.StatusOK,
 			ambiguous: true, auditResult: "ok"}, nil
 	}
+}
+
+// resolveNotFound обрабатывает запись, которой нет: либо идентификатор новый,
+// либо срок хранения истёк. Если присланный текст уже похож на маску,
+// маскировать его повторно нельзя: звёздочки стали бы «исходником», и оригинал
+// был бы потерян. Поведение задаёт режим on_unknown_id.
+func (s *Server) resolveNotFound(id, payload string, sys config.System, cfg *config.Config) (processResult, error) {
+	if mask.LooksMasked(payload, sys.MaskOptions(cfg.Defaults).Default) {
+		switch sys.UnknownIDMode(cfg.Defaults) {
+		case config.OnUnknownPassthrough:
+			return processResult{out: outcome{text: payload}, dir: dirUnknownMask,
+				code: http.StatusOK, unknownID: true, auditResult: "unknown_id"}, nil
+		default:
+			return processResult{dir: dirDemask, code: http.StatusNotFound,
+				errCode: "payload_not_found", errMsg: "срок хранения истёк или идентификатор неизвестен",
+				auditResult: "not_found"}, nil
+		}
+	}
+	res, e := s.maskAndStore(id, payload, sys, cfg)
+	if e != nil {
+		return processResult{}, e
+	}
+	return processResult{out: res, dir: dirMask, code: http.StatusOK, auditResult: "ok"}, nil
 }
 
 // maskAndStore маскирует текст и сохраняет соответствие.

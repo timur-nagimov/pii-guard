@@ -673,35 +673,10 @@ func restorePlaceholders(text string, back map[string]string) string {
 	// Порядок пар задаётся явно: сначала длинные образцы, потом короткие, а при
 	// равной длине по алфавиту. Это нужно, чтобы короткий образец не съедал
 	// начало длинного и чтобы результат не зависел от карты.
-	type pair struct{ from, to string }
 	var pairs []pair
 
 	for token, value := range back {
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			continue
-		}
-		quoted := strings.TrimSuffix(strings.TrimPrefix(string(encoded), "\""), "\"")
-
-		inner := strings.TrimSuffix(strings.TrimPrefix(token, "["), "]")
-		for _, variant := range []string{
-			token,
-			"[" + strings.ReplaceAll(inner, "_", " ") + "]",
-			"<" + inner + ">",
-			"{" + inner + "}",
-			inner,
-		} {
-			if variant == "" {
-				continue
-			}
-			pairs = append(pairs, pair{variant, quoted})
-		}
-		// Подстановка synthetic — настоящее имя, которое модель может
-		// просклонять в ответе. Склонённые формы подстановки тоже заменяются
-		// исходным значением, иначе восстановление потеряет данные.
-		for _, declined := range mask.DeclineVariants(token) {
-			pairs = append(pairs, pair{declined, quoted})
-		}
+		pairs = append(pairs, restorePairsForToken(token, value)...)
 	}
 	if len(pairs) == 0 {
 		return text
@@ -724,4 +699,39 @@ func restorePlaceholders(text string, back map[string]string) string {
 		flat = append(flat, pr.from, pr.to)
 	}
 	return strings.NewReplacer(flat...).Replace(text)
+}
+
+// pair — образец замены: что искать в ответе и чем заменять.
+type pair struct{ from, to string }
+
+// restorePairsForToken собирает образцы замены для одного плейсхолдера: сам
+// токен, его варианты оформления и склонённые формы подстановки.
+func restorePairsForToken(token, value string) []pair {
+	var pairs []pair
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	quoted := strings.TrimSuffix(strings.TrimPrefix(string(encoded), "\""), "\"")
+
+	inner := strings.TrimSuffix(strings.TrimPrefix(token, "["), "]")
+	for _, variant := range []string{
+		token,
+		"[" + strings.ReplaceAll(inner, "_", " ") + "]",
+		"<" + inner + ">",
+		"{" + inner + "}",
+		inner,
+	} {
+		if variant == "" {
+			continue
+		}
+		pairs = append(pairs, pair{variant, quoted})
+	}
+	// Подстановка synthetic — настоящее имя, которое модель может
+	// просклонять в ответе. Склонённые формы подстановки тоже заменяются
+	// исходным значением, иначе восстановление потеряет данные.
+	for _, declined := range mask.DeclineVariants(token) {
+		pairs = append(pairs, pair{declined, quoted})
+	}
+	return pairs
 }

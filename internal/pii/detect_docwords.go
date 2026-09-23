@@ -835,21 +835,8 @@ func (citizenshipDetector) Detect(d *Doc) []Span {
 // гражданства стала бы гражданством.
 func citizenshipValueBefore(d *Doc, from int) (int, int, bool) {
 	low := d.Lower
-	// Пропускаем пробелы и тире между якорем и значением.
-	pos := from
-	for pos > 0 {
-		r, size := decodeLastRuneBefore(low, pos)
-		if size == 0 {
-			return 0, 0, false
-		}
-		if r == ' ' || r == '\t' || r == '\u00a0' {
-			pos -= size
-			continue
-		}
-		if r == '-' || r == '–' || r == '—' {
-			pos -= size
-			break
-		}
+	pos, ok := citizenshipDashBefore(low, from)
+	if !ok {
 		return 0, 0, false
 	}
 	// Набираем слова значения назад.
@@ -860,9 +847,8 @@ func citizenshipValueBefore(d *Doc, from int) (int, int, bool) {
 		if !ok {
 			break
 		}
-		word := low[ws:we]
-		isStem := dwHasStem(word, citizenshipStems)
-		if !isStem && !dwInList(word, citizenshipQualifiers) {
+		isStem, ok := citizenshipWordCandidate(low[ws:we])
+		if !ok {
 			break
 		}
 		matched = matched || isStem
@@ -879,6 +865,39 @@ func citizenshipValueBefore(d *Doc, from int) (int, int, bool) {
 		return 0, 0, false
 	}
 	return start, end, true
+}
+
+// citizenshipDashBefore пропускает пробелы и тире между якорем и значением и
+// возвращает позицию сразу после тире. Если перед якорем тире нет, значение
+// не принимается: «Россия» в новостях без якоря гражданства не гражданство.
+func citizenshipDashBefore(low string, from int) (int, bool) {
+	pos := from
+	for pos > 0 {
+		r, size := decodeLastRuneBefore(low, pos)
+		if size == 0 {
+			return 0, false
+		}
+		if r == ' ' || r == '\t' || r == '\u00a0' {
+			pos -= size
+			continue
+		}
+		if r == '-' || r == '–' || r == '—' {
+			return pos - size, true
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+// citizenshipWordCandidate сообщает, является ли слово названием страны или
+// демонимом (по основе) либо служебным словом рядом с ним. Возвращает признак
+// основы и признак того, что слово вообще подходит для значения гражданства.
+func citizenshipWordCandidate(word string) (isStem, ok bool) {
+	isStem = dwHasStem(word, citizenshipStems)
+	if !isStem && !dwInList(word, citizenshipQualifiers) {
+		return false, false
+	}
+	return isStem, true
 }
 
 // citizenshipValue вычисляет границы названия страны или демонима после якоря.
