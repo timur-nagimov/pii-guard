@@ -53,10 +53,20 @@ drop = re.sub(r"^(FIO\s+)(\d+\.\d+)",
               lambda m: m.group(1) + f"{float(m.group(2))-0.2:.4f}", src, flags=re.M)
 w.joinpath("drop.txt").write_text(drop, encoding="utf-8")
 
-# Ложное срабатывание в отрицательном срезе: он обязан быть строго нулевым.
-neg = re.sub(r"^(neg_\w+\s+)(\d+\.\d+)",
-             lambda m: m.group(1) + "0.0300", src, count=1, flags=re.M)
+# Рост ложных срабатываний в отрицательном срезе.
+#
+# Подделывать надо колонку «ложных», шестую, а не «изменено», вторую. Вторая
+# у отрицательных срезов равна нулю по построению: в них нет размеченных
+# фрагментов, а доля изменённого считается делением на их число. Прежняя
+# версия этой проверки вписывала значение во вторую колонку, ворота его
+# послушно ловили, и оба выглядели рабочими — при том что на настоящем
+# замере проверка не могла сработать никогда.
+neg = re.sub(r"^(neg_\w+\s+\S+\s+\S+\s+\S+\s+\S+\s+)(\d+\.\d+)%",
+             lambda m: m.group(1) + f"{float(m.group(2))+9:.2f}%",
+             src, count=1, flags=re.M)
 w.joinpath("neg.txt").write_text(neg, encoding="utf-8")
+if neg == src:
+    raise SystemExit("подделка не удалась: ни одна строка neg_ не подошла под образец")
 PY
 
 expect "настоящий замер принимается"            0 python3 "$ROOT/scripts/gate-quality.py" scripts/baseline.json "$WORK/real.txt"
