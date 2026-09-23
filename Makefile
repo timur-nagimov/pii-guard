@@ -75,6 +75,10 @@ gate: ## ворота качества: четырнадцать проверо�
 gate-quick: ## ворота без набора данных и без схем, для быстрой проверки
 	@bash scripts/gate.sh --quick
 
+.PHONY: gate-selfcheck
+gate-selfcheck: ## проверить, что сами ворота ловят то, что обещают
+	@bash scripts/gate-selfcheck.sh
+
 .PHONY: jury-check
 jury-check: ## прогнать все проверочные сценарии для жюри
 	@bash scripts/jury.sh $(URL) all
