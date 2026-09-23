@@ -504,8 +504,19 @@ var extraDocAnchorsBirthCertNear = []string{
 
 // extraDocAnchorsMilitary — якоря военного билета. Основы «военн» и «воинск»
 // покрывают «военный билет», «военника», «воинский документ» и «воинский учёт».
+// «военнообязанн» покрывает «военнообязанного», «военнообязанный» и
+// «военнообязанным»: слово «военнообязанного» не подпадает под «военн», потому
+// что хвост после основы длиннее допустимого.
 var extraDocAnchorsMilitary = []string{
-	"военн", "военнослужащ", "воинск", "military",
+	"военн", "военнослужащ", "военнообязанн", "воинск", "military",
+}
+
+// extraDocAnchorsTicket — слова, которые говорят, что «билет» — это билет на
+// поезд или самолёт, а не военный билет. Без военного якоря рядом такой номер
+// военным билетом не считается.
+var extraDocAnchorsTicket = []string{
+	"билет на поезд", "билет на самолёт", "билет на самолет",
+	"билет на автобус", "билет на рейс", "билет в театр", "билет на концерт",
 }
 
 // extraDocSeriesWords — слова, которые стоят между якорем, серией и номером и
@@ -575,7 +586,7 @@ func (extraDocDetector) classify(d *Doc, runs []NumRun, i int) (Span, bool) {
 	if s, ok := extraDocBirthCert(d, runs[i]); ok {
 		return s, true
 	}
-	if s, ok := extraDocMilitary(d, runs[i]); ok {
+	if s, ok := extraDocMilitary(d, runs, i); ok {
 		return s, true
 	}
 	return extraDocPermit(d, runs[i])
@@ -777,23 +788,58 @@ func extraDocBirthCert(d *Doc, run NumRun) (Span, bool) {
 
 // extraDocMilitary находит военный билет: две буквы серии и семь цифр номера
 // при якоре. Без серии номер берётся, только если якорь стоит прямо перед ним.
-func extraDocMilitary(d *Doc, run NumRun) (Span, bool) {
-	if len(run.Groups) != 1 {
-		return Span{}, false
+// Номер из семи цифр может быть разбит на группы — «АС-41 05371» — тогда серия
+// и все группы собираются в один фрагмент. В выгрузках номер часто сливается
+// со следующей сущностью — «НА № 4819577 930956» — тогда берётся первая группа.
+func extraDocMilitary(d *Doc, runs []NumRun, i int) (Span, bool) {
+	run := runs[i]
+	// Номер военного билета — первая группа цифр прогона. В выгрузке номер
+	// сливается со следующей сущностью, поэтому длину берём по первой группе,
+	// а не по всему прогону.
+	firstStart := run.Start
+	if run.HasPlus {
+		firstStart++
 	}
-	n := len(run.Digits)
+	firstLen := run.Groups[0]
+	firstEnd := firstStart + firstLen
+	n := firstLen
 	// Рядом с двухбуквенной серией длина номера допускает опечатку в одну
 	// цифру: сама пара «две буквы плюс номер» уже говорит о документе.
 	if start, ok := extraDocSeries(d, run.Start); ok && n >= 6 && n <= 8 {
-		if extraDocAnchorNear(d, start, run.End, extraDocAnchorsMilitary, anchorWindow, nearAnchorWindow) {
-			return extraDocSpan(d, start, run.End, TypeMilitaryID, ConfHigh, "military_id:series_number")
+		if extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsMilitary, anchorWindow, nearAnchorWindow) {
+			return extraDocSpan(d, start, firstEnd, TypeMilitaryID, ConfHigh, "military_id:series_number")
+		}
+		// Без якоря номер берётся только для ровно семи цифр: «АН-2850498» в
+		// выгрузке. Пара «две буквы плюс семь цифр» характерна для военного
+		// билета, поэтому якорь не обязателен. Опечатки в длине номера и
+		// разбитые номера без якоря не отличить от случайных обозначений.
+		// Слово «билет» без военного якоря — это билет на поезд или самолёт,
+		// а не военный билет, поэтому такой номер без якоря не берём.
+		if n == 7 && !extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsTicket, anchorWindow, nearAnchorWindow) {
+			return extraDocSpan(d, start, firstEnd, TypeMilitaryID, ConfAnchored, "military_id:series_standard")
+		}
+		return Span{}, false
+	}
+	// Номер, разбитый на две отдельные группы: две цифры и пять цифр. Серия
+	// обязательна, иначе «41 05371» без серии не отличить от случайных чисел.
+	if n == 2 && i+1 < len(runs) {
+		next := runs[i+1]
+		if len(next.Digits) == 5 {
+			if start, ok := extraDocSeries(d, run.Start); ok {
+				gap := extraDocLowerSlice(d, run.End, next.Start)
+				if !strings.ContainsAny(gap, "\n\r") && utf8.RuneCountInString(gap) <= 16 && onlyConnectors(gap) {
+					if extraDocAnchorNear(d, start, next.End, extraDocAnchorsMilitary, anchorWindow, nearAnchorWindow) {
+						return extraDocSpan(d, start, next.End, TypeMilitaryID, ConfHigh, "military_id:series_number_split")
+					}
+				}
+			}
 		}
 		return Span{}, false
 	}
 	if n != 7 || !extraDocAnchorBefore(d, run.Start, extraDocAnchorsMilitary) {
 		return Span{}, false
 	}
-	return extraDocSpan(d, run.Start, run.End, TypeMilitaryID, ConfAnchored, "military_id:anchor")
+	return extraDocSpan(d, run.Start, firstEnd, TypeMilitaryID, ConfAnchored, "military_id:anchor")
 }
 
 // extraDocPermit находит номер вида на жительство. Единой формы у него нет,
