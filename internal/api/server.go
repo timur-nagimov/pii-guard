@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"pii-guard/internal/capture"
 	"pii-guard/internal/config"
 	"pii-guard/internal/engine"
 	"pii-guard/internal/logging"
@@ -37,6 +38,11 @@ type Server struct {
 	// лишь slog.
 	lg    *logging.Logger
 	audit *logging.Audit
+
+	// capture — канал сохранения запросов для последующей проверки качества
+	// на настоящих текстах. Пустое значение допустимо и означает выключенный
+	// захват: вызывающему не нужно проверять признак самому.
+	capture *capture.Writer
 
 	// configPath — файл настроек, который правит ручка управления правилами.
 	// Пустое значение означает, что править нечего: сервер поднят тестом или
@@ -83,6 +89,10 @@ func (s *Server) SetLogging(lg *logging.Logger) {
 		s.audit = lg.Audit()
 	}
 }
+
+// SetCapture подключает канал сохранения запросов. Вызывается при запуске,
+// до сборки маршрутов.
+func (s *Server) SetCapture(w *capture.Writer) { s.capture = w }
 
 // SetConfigPath сообщает серверу, какой файл настроек правит ручка управления
 // правилами. Вызывается при запуске, до сборки маршрутов.
