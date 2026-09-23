@@ -129,7 +129,10 @@ func (extraDetector) detectAlnum(d *Doc) []Span {
 	toks := d.Tokens
 	var out []Span
 	for i := 0; i < len(toks); i++ {
-		if toks[i].Kind != KindLat && toks[i].Kind != KindCyr {
+		// Цифра тоже начинает последовательность: VIN почти всегда начинается
+		// с неё (мировой код изготовителя вида 1HG, 5DH, 2M2). Пока цифровые
+		// токены пропускались, треть номеров в наборе не находилась вовсе.
+		if toks[i].Kind != KindLat && toks[i].Kind != KindCyr && toks[i].Kind != KindDigit {
 			continue
 		}
 		// Пробуем собрать госномер: буква, три цифры, две буквы, две или три
@@ -145,7 +148,7 @@ func (extraDetector) detectAlnum(d *Doc) []Span {
 		}
 		// Пробуем собрать VIN: семнадцать знаков латиницы и цифр без пробелов.
 		if start, end, ok := vinSpan(d, toks, i); ok {
-			if extraAnchorNear(d, start, end, anchorsVIN, anchorWindow, nearAnchorWindow) {
+			if extraAnchorNear(d, start, end, anchorsVIN, vinAnchorWindow, nearAnchorWindow) {
 				if s, ok := extraSpan(d, start, end, TypeVIN, ConfHigh, "vin:anchor"); ok {
 					out = append(out, s)
 				}
@@ -233,16 +236,33 @@ func isDigitToken(d *Doc, toks []Token, pos, n int) bool {
 // vinSpan пытается собрать VIN, начиная с токена i: семнадцать знаков латиницы
 // и цифр без букв I, O и Q.
 func vinSpan(d *Doc, toks []Token, i int) (int, int, bool) {
+	// Первый токен обязан быть латиницей или цифрой. Без этой проверки за VIN
+	// принималось слово «Идентификационный»: в нём ровно семнадцать букв, и
+	// маска накрывала сам якорь, оставляя номер рядом открытым.
+	if toks[i].Kind != KindDigit && toks[i].Kind != KindLat {
+		return 0, 0, false
+	}
 	start := toks[i].Start
 	end := toks[i].End
 	count := utf8.RuneCountInString(d.Text[start:end])
+	// Номер переносят и разрывают пробелом: «BFXP336J ZLY4XJ5Z2». Один разрыв
+	// допускаем, считая только знаки самого номера; больше одного — это уже
+	// перечисление, а не номер.
+	gaps := 0
 	j := i
 	for j+1 < len(toks) {
 		next := toks[j+1]
-		if next.Kind != KindDigit && next.Kind != KindLat {
-			break
+		// Пробел — самостоятельный токен, а не пустота между соседями: номер
+		// «BFXP336J ZLY4XJ5Z2» состоит из двух частей, и разрыв виден только
+		// так. Один разрыв допускаем, больше — это уже перечисление.
+		if next.Kind == KindSpace && d.Text[next.Start:next.End] == " " &&
+			gaps == 0 && count < 17 && j+2 < len(toks) &&
+			(toks[j+2].Kind == KindDigit || toks[j+2].Kind == KindLat) {
+			gaps++
+			j++
+			next = toks[j+1]
 		}
-		if d.Text[toks[j].End:next.Start] != "" {
+		if next.Kind != KindDigit && next.Kind != KindLat {
 			break
 		}
 		end = next.End
@@ -253,13 +273,21 @@ func vinSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 		return 0, 0, false
 	}
 	// Буквы I, O и Q из VIN исключены: их убрали, чтобы не путать с единицей
-	// и нулём.
+	// и нулём. Заодно считаем цифры: в настоящем номере они есть всегда, и это
+	// отсекает слова из семнадцати латинских букв.
+	digits := 0
 	for _, r := range d.Text[start:end] {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' {
+		switch {
+		case r >= '0' && r <= '9':
+			digits++
+		case r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z':
 			if vinForbidden[unicode.ToLower(r)] {
 				return 0, 0, false
 			}
 		}
+	}
+	if digits == 0 {
+		return 0, 0, false
 	}
 	return start, end, true
 }
@@ -273,6 +301,12 @@ func tokenIndexAt(d *Doc, toks []Token, off int) int {
 	}
 	return len(toks) - 1
 }
+
+// vinAnchorWindow — окно поиска якоря для VIN. Общего окна в сорок знаков не
+// хватает: фраза «идентификационный номер транспортного средства» сама длиной
+// в сорок пять, и якорь не помещался целиком, из-за чего номер оставался
+// открытым. Форма VIN узкая, поэтому более широкое окно безопасно.
+const vinAnchorWindow = 72
 
 // vinForbidden — буквы, исключённые из VIN: их убрали, чтобы не путать с
 // единицей и нулём.
