@@ -260,28 +260,46 @@ func genBilingual(g *Generator) []frag {
 	latin := titleLatin(p.name) + space + titleLatin(p.surname)
 	switch g.r.IntN(3) {
 	case 0:
-		return concat(
-			frags(lit("Клиент "), val(pii.TypeFIO, p.full(caseNom)), lit(" / ")),
-			frags(val(pii.TypeFIO, latin), lit(", address: ")),
-			frags(val(pii.TypeAddress, g.addressLatin()), lit(", телефон ")),
-			frags(val(pii.TypePhone, g.phone()), lit(".")),
-		)
+		return g.bilingualCardFrags(p, latin)
 	case 1:
-		return concat(
-			frags(lit("Please verify the client: ")),
-			frags(val(pii.TypeFIO, latin), lit(" (по-русски ")),
-			frags(val(pii.TypeFIO, p.full(caseNom)), lit("), passport ")),
-			g.passportFrags(),
-			frags(lit(", дата рождения ")),
-			g.dateFrags(pii.TypeDOB, g.randomDate(1950, 2004)),
-			frags(lit(".")),
-		)
+		return g.bilingualVerifyFrags(p, latin)
 	default:
-		return concat(
-			frags(lit("Beneficiary name: "), val(pii.TypeCardHolder, g.holderName(p)), lit(nl)),
-			frags(lit("Получатель: "), val(pii.TypeFIO, p.full(caseNom)), lit(nl)),
-			frags(lit("Card / карта: "), val(pii.TypeCard, g.cardNumber(true)), lit(nl)),
-			frags(lit("E-mail: "), val(pii.TypeEmail, g.email(p))),
-		)
+		return g.bilingualTransferFrags(p)
 	}
+}
+
+// bilingualCardFrags порождает анкету клиента: имя записано дважды, по-русски
+// и латиницей, а адрес только латиницей.
+func (g *Generator) bilingualCardFrags(p person, latin string) []frag {
+	return concat(
+		frags(lit("Клиент "), val(pii.TypeFIO, p.full(caseNom)), lit(" / ")),
+		frags(val(pii.TypeFIO, latin), lit(", address: ")),
+		frags(val(pii.TypeAddress, g.addressLatin()), lit(", телефон ")),
+		frags(val(pii.TypePhone, g.phone()), lit(".")),
+	)
+}
+
+// bilingualVerifyFrags порождает запрос на проверку клиента: просьба
+// по-английски, а паспорт и дата рождения по-русски.
+func (g *Generator) bilingualVerifyFrags(p person, latin string) []frag {
+	return concat(
+		frags(lit("Please verify the client: ")),
+		frags(val(pii.TypeFIO, latin), lit(" (по-русски ")),
+		frags(val(pii.TypeFIO, p.full(caseNom)), lit("), passport ")),
+		g.passportFrags(),
+		frags(lit(", дата рождения ")),
+		g.dateFrags(pii.TypeDOB, g.randomDate(1950, 2004)),
+		frags(lit(".")),
+	)
+}
+
+// bilingualTransferFrags порождает реквизиты перевода: двуязычная карточка
+// получателя, где каждая строка подписана на обоих языках.
+func (g *Generator) bilingualTransferFrags(p person) []frag {
+	return concat(
+		frags(lit("Beneficiary name: "), val(pii.TypeCardHolder, g.holderName(p)), lit(nl)),
+		frags(lit("Получатель: "), val(pii.TypeFIO, p.full(caseNom)), lit(nl)),
+		frags(lit("Card / карта: "), val(pii.TypeCard, g.cardNumber(true)), lit(nl)),
+		frags(lit("E-mail: "), val(pii.TypeEmail, g.email(p))),
+	)
 }

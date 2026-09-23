@@ -203,6 +203,9 @@ func (rq *required) note(key string) {
 		rq.requestID = true
 	case FieldSystem:
 		rq.system = true
+	default:
+		// Прочие поля обязательными не считаются: набор нужен ровно затем,
+		// чтобы не дописать второй ключ поверх уже переданного.
 	}
 }
 
@@ -378,15 +381,7 @@ func (g *guard) suspect(a slog.Attr, depth int) bool {
 		_, bad := inspectString(v.String())
 		return bad
 	case slog.KindGroup:
-		if depth >= maxGroupDepth {
-			return true
-		}
-		for _, sub := range v.Group() {
-			if g.suspect(sub, depth+1) {
-				return true
-			}
-		}
-		return false
+		return g.suspectGroup(v, depth)
 	case slog.KindAny:
 		_, bad := inspectString(anyToString(v))
 		return bad
@@ -417,15 +412,7 @@ func (g *guard) clean(a slog.Attr, depth int) slog.Attr {
 		}
 		return slog.Attr{Key: a.Key, Value: v}
 	case slog.KindGroup:
-		if depth >= maxGroupDepth {
-			return g.mark(a.Key, "too_deep", 0)
-		}
-		src := v.Group()
-		out := make([]slog.Attr, 0, len(src))
-		for _, sub := range src {
-			out = append(out, g.clean(sub, depth+1))
-		}
-		return slog.Attr{Key: a.Key, Value: slog.GroupValue(out...)}
+		return g.cleanGroup(a.Key, v, depth)
 	case slog.KindAny:
 		s := anyToString(v)
 		if reason, bad := inspectString(s); bad {
@@ -435,6 +422,34 @@ func (g *guard) clean(a slog.Attr, depth int) slog.Attr {
 	default:
 		return slog.Attr{Key: a.Key, Value: v}
 	}
+}
+
+// suspectGroup проверяет вложенную группу полей. Слишком глубокая группа
+// считается подозрительной целиком: разобрать её до дна дороже, чем вычистить.
+func (g *guard) suspectGroup(v slog.Value, depth int) bool {
+	if depth >= maxGroupDepth {
+		return true
+	}
+	for _, sub := range v.Group() {
+		if g.suspect(sub, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
+// cleanGroup вычищает вложенную группу поле за полем. Слишком глубокая группа
+// заменяется пометкой целиком: спускаться дальше дороже, чем потерять её.
+func (g *guard) cleanGroup(key string, v slog.Value, depth int) slog.Attr {
+	if depth >= maxGroupDepth {
+		return g.mark(key, "too_deep", 0)
+	}
+	src := v.Group()
+	out := make([]slog.Attr, 0, len(src))
+	for _, sub := range src {
+		out = append(out, g.clean(sub, depth+1))
+	}
+	return slog.Attr{Key: key, Value: slog.GroupValue(out...)}
 }
 
 // cleanID применяет к полю идентификатора политику LogID. Значение не
@@ -472,13 +487,19 @@ func anyToString(v slog.Value) string {
 	case []string:
 		// Список строк встречается в местах вызова: список типов, список
 		// причин. Проверяем каждый элемент по отдельности.
-		for _, s := range x {
-			if _, bad := inspectString(s); bad {
-				return s
-			}
-		}
-		return ""
+		return firstSuspectString(x)
 	default:
 		return ""
 	}
+}
+
+// firstSuspectString возвращает первый подозрительный элемент списка. Пустая
+// строка означает, что подозрительных нет: она всё равно проверку проходит.
+func firstSuspectString(list []string) string {
+	for _, s := range list {
+		if _, bad := inspectString(s); bad {
+			return s
+		}
+	}
+	return ""
 }
