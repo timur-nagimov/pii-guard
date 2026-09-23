@@ -699,28 +699,25 @@ func dateDayTokenBefore(d *Doc, monthTok int) (int, bool) {
 
 // dateDayTokenAfter ищет число дня справа от месяца в английской записи.
 func dateDayTokenAfter(d *Doc, monthTok int) (int, bool) {
-	for j := monthTok + 1; j < len(d.Tokens) && j <= monthTok+2; j++ {
-		if d.Tokens[j].Kind != KindDigit {
-			continue
-		}
-		if d.Tokens[j].End-d.Tokens[j].Start > 2 {
-			return 0, false
-		}
-		if !dateIsSpacerGap(d.Lower[d.Tokens[monthTok].End:d.Tokens[j].Start]) {
-			return 0, false
-		}
-		return j, true
-	}
-	return 0, false
+	return dateDigitTokenAfter(d, monthTok, 2, 1, 2)
 }
 
 // dateYearTokenAfter ищет четырёхзначный год справа от указанного токена.
 func dateYearTokenAfter(d *Doc, from int) (int, bool) {
-	for j := from + 1; j < len(d.Tokens) && j <= from+3; j++ {
+	return dateDigitTokenAfter(d, from, 3, 4, 4)
+}
+
+// dateDigitTokenAfter ищет справа от токена from число длиной от minLen до
+// maxLen, просматривая не больше span токенов. День и год ищутся одинаково и
+// отличаются только глубиной просмотра и длиной числа, поэтому обход общий.
+// Первое встреченное число решает исход: если оно не той длины или отделено
+// не разделителем, записи нужного вида здесь уже нет.
+func dateDigitTokenAfter(d *Doc, from, span, minLen, maxLen int) (int, bool) {
+	for j := from + 1; j < len(d.Tokens) && j <= from+span; j++ {
 		if d.Tokens[j].Kind != KindDigit {
 			continue
 		}
-		if d.Tokens[j].End-d.Tokens[j].Start != 4 {
+		if n := d.Tokens[j].End - d.Tokens[j].Start; n < minLen || n > maxLen {
 			return 0, false
 		}
 		if !dateIsSpacerGap(d.Lower[d.Tokens[from].End:d.Tokens[j].Start]) {
@@ -1016,9 +1013,25 @@ func (dd dateDetector) byContext(d *Doc, start, end int) (Type, float64, string,
 // или справа от даты. Расстояние нужно, чтобы выбрать между якорем рождения и
 // якорем выдачи, когда в предложении есть оба.
 func dateAnchorDistance(d *Doc, start, end int, anchors []string, before, after int) (int, bool) {
-	best := -1
 	lo, _ := d.WindowRunes(start, start, before, 0)
 	left := FoldHomoglyphs(d.Lower[lo:start])
+	_, hi := d.WindowRunes(end, end, 0, after)
+	right := FoldHomoglyphs(d.Lower[end:hi])
+	best := dateAnchorDistBefore(left, anchors)
+	if dist := dateAnchorDistAfter(right, anchors); dist >= 0 && (best < 0 || dist < best) {
+		best = dist
+	}
+	if best < 0 && dateAnchorInCompact(left, anchors) {
+		return 0, true
+	}
+	return best, best >= 0
+}
+
+// dateAnchorDistBefore возвращает расстояние от конца ближайшего якоря слева
+// до даты или -1, если якоря в окне нет. Слева берётся последнее вхождение:
+// именно оно ближе всего к дате.
+func dateAnchorDistBefore(left string, anchors []string) int {
+	best := -1
 	for _, a := range anchors {
 		na := FoldHomoglyphs(a)
 		pos := strings.LastIndex(left, na)
@@ -1029,11 +1042,15 @@ func dateAnchorDistance(d *Doc, start, end int, anchors []string, before, after 
 			best = dist
 		}
 	}
-	_, hi := d.WindowRunes(end, end, 0, after)
-	right := FoldHomoglyphs(d.Lower[end:hi])
+	return best
+}
+
+// dateAnchorDistAfter возвращает расстояние от даты до ближайшего якоря
+// справа или -1, если якоря в окне нет. Справа ближайшее вхождение — первое.
+func dateAnchorDistAfter(right string, anchors []string) int {
+	best := -1
 	for _, a := range anchors {
-		na := FoldHomoglyphs(a)
-		pos := strings.Index(right, na)
+		pos := strings.Index(right, FoldHomoglyphs(a))
 		if pos < 0 {
 			continue
 		}
@@ -1041,33 +1058,35 @@ func dateAnchorDistance(d *Doc, start, end int, anchors []string, before, after 
 			best = pos
 		}
 	}
-	// Пробел, вставленный внутрь якоря, разрывает слово: «ро жд» вместо
-	// «рожд». Пробуем окно без пробелов. Короткие якоря вроде «др» не берём:
-	// они совпадают внутри чужих слов («адреса» содержит «др»).
-	if best < 0 {
-		compact := strings.Map(func(r rune) rune {
-			if r == ' ' || r == '\t' || r == '\u00a0' {
-				return -1
-			}
-			return r
-		}, left)
-		for _, a := range anchors {
-			if utf8.RuneCountInString(a) < 4 {
-				continue
-			}
-			na := FoldHomoglyphs(a)
-			naCompact := strings.Map(func(r rune) rune {
-				if r == ' ' || r == '\t' || r == '\u00a0' {
-					return -1
-				}
-				return r
-			}, na)
-			if strings.Contains(compact, naCompact) {
-				return 0, true
-			}
+	return best
+}
+
+// dateAnchorInCompact ищет якорь в окне слева, из которого убраны пробелы.
+// Пробел, вставленный внутрь якоря, разрывает слово: «ро жд» вместо «рожд».
+// Короткие якоря вроде «др» не берём: они совпадают внутри чужих слов
+// («адреса» содержит «др»).
+func dateAnchorInCompact(left string, anchors []string) bool {
+	compact := dateDropSpaces(left)
+	for _, a := range anchors {
+		if utf8.RuneCountInString(a) < 4 {
+			continue
+		}
+		if strings.Contains(compact, dateDropSpaces(FoldHomoglyphs(a))) {
+			return true
 		}
 	}
-	return best, best >= 0
+	return false
+}
+
+// dateDropSpaces убирает из строки пробелы. Сравнение без пробелов — способ
+// узнать якорь, разорванный лишним пробелом, не заводя словаря опечаток.
+func dateDropSpaces(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\t' || r == '\u00a0' {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // dateHasNegative сообщает, что рядом стоит слово, при котором дата не
