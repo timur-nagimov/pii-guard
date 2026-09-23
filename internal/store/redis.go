@@ -18,6 +18,10 @@ const (
 	// после сетевой ошибки. Без паузы каждый запрос ждал бы таймаут
 	// соединения, и деградация стоила бы дороже самой обработки.
 	defaultRetryAfter = time.Second
+	// replyPong — ответ Redis на PING. Проверяется дословно: подменённый или
+	// чужой сервис на том же порту отвечает иначе, и лучше считать его
+	// недоступным, чем складывать записи неизвестно куда.
+	replyPong = "PONG"
 )
 
 // RedisConfig — параметры общего хранилища поверх Redis. Поля размечены для
@@ -135,9 +139,9 @@ func NewRedis(cfg Config) (*RedisStore, error) {
 		ttl = defaultTTL
 	}
 	s := &RedisStore{
-		pool:     newRespPool(rcfg),
+		pool:     newRespPool(&rcfg),
 		codec:    c,
-		fallback: newMemoryWithCodec(c, cfg),
+		fallback: newMemoryWithCodec(c, &cfg),
 		ttl:      ttl,
 		prefix:   rcfg.Prefix,
 		retry:    rcfg.RetryAfter,
@@ -275,7 +279,7 @@ func (r *RedisStore) Ping() error {
 		r.markDegraded("ping", err)
 		return err
 	}
-	if rep.kind != kindStatus || rep.text() != "PONG" {
+	if rep.kind != kindStatus || rep.text() != replyPong {
 		return ErrProtocol
 	}
 	r.downUntil.Store(0)

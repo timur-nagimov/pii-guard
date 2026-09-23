@@ -88,7 +88,7 @@ func (r *Runner) worker(ctx context.Context, jobs <-chan int, stop context.Cance
 		if ctx.Err() != nil {
 			return
 		}
-		sample := r.samples[n%len(r.samples)]
+		sample := &r.samples[n%len(r.samples)]
 		id := payloadID(sample.PayloadID, n/len(r.samples))
 		if !r.pair(ctx, sample, id) {
 			stop()
@@ -109,9 +109,9 @@ func payloadID(base string, cycle int) string {
 // pair исполняет проверку одного элемента: прямой шаг с ожиданием маски и
 // обратный шаг с ожиданием исходной строки. Возвращает false, когда прогон
 // пора останавливать.
-func (r *Runner) pair(ctx context.Context, s Sample, id string) bool {
+func (r *Runner) pair(ctx context.Context, s *Sample, id string) bool {
 	resp := r.client.Do(ctx, s.Text, id)
-	if !r.stats.Observe(resp) {
+	if !r.stats.Observe(&resp) {
 		return false
 	}
 	if resp.Outcome == outcomeAborted {
@@ -132,10 +132,10 @@ func (r *Runner) pair(ctx context.Context, s Sample, id string) bool {
 
 // maskRobustness проверяет идемпотентность прямого шага: повтор после успеха и
 // два одинаковых запроса одновременно обязаны дать ту же маску.
-func (r *Runner) maskRobustness(ctx context.Context, s Sample, id, masked string) {
+func (r *Runner) maskRobustness(ctx context.Context, s *Sample, id, masked string) {
 	if r.opts.DupAfterSuccess {
 		dup := r.client.Do(ctx, s.Text, id)
-		r.stats.ObserveProbe(dup)
+		r.stats.ObserveProbe(&dup)
 		r.stats.AddDupAfterSuccess(dup.Outcome == outcomeOK && dup.Result == masked)
 	}
 	if r.opts.ConcurrentDup {
@@ -157,7 +157,7 @@ func (r *Runner) concurrentSame(ctx context.Context, payload, id string) bool {
 	}
 	wg.Wait()
 	for _, res := range results {
-		r.stats.ObserveProbe(res)
+		r.stats.ObserveProbe(&res)
 	}
 	return results[0].Outcome == outcomeOK &&
 		results[1].Outcome == outcomeOK &&
@@ -165,9 +165,9 @@ func (r *Runner) concurrentSame(ctx context.Context, payload, id string) bool {
 }
 
 // demaskStep выполняет обратный шаг и проверки устойчивости к нему.
-func (r *Runner) demaskStep(ctx context.Context, s Sample, id, masked string) {
+func (r *Runner) demaskStep(ctx context.Context, s *Sample, id, masked string) {
 	resp := r.client.Do(ctx, masked, id)
-	if !r.stats.Observe(resp) {
+	if !r.stats.Observe(&resp) {
 		return
 	}
 	if resp.Outcome == outcomeAborted {
@@ -184,7 +184,7 @@ func (r *Runner) demaskStep(ctx context.Context, s Sample, id, masked string) {
 
 	if r.opts.DemaskRetry {
 		again := r.client.Do(ctx, masked, id)
-		r.stats.ObserveProbe(again)
+		r.stats.ObserveProbe(&again)
 		r.stats.AddDemaskRetry(again.Outcome == outcomeOK && again.Result == restored)
 	}
 	if r.opts.DemaskUnknownID {
@@ -197,7 +197,7 @@ func (r *Runner) demaskStep(ctx context.Context, s Sample, id, masked string) {
 // отвечает: важно, что ответ один и тот же и сервис не разваливается.
 func (r *Runner) unknownIDProbe(ctx context.Context, masked, id string) {
 	resp := r.client.Probe(ctx, masked, id+"~unknown")
-	r.stats.ObserveProbe(resp)
+	r.stats.ObserveProbe(&resp)
 	r.stats.AddUnknownID(fmt.Sprintf("%s/%d", resp.Outcome, resp.Status))
 }
 
@@ -269,15 +269,15 @@ func pace(ctx context.Context, jobs chan<- int, rps float64) {
 
 // pacing подбирает период тикера и размер пачки. Таймеры не дают надёжных
 // интервалов короче миллисекунды, поэтому высокая частота набирается пачками.
-func pacing(rps float64) (time.Duration, int) {
+func pacing(rps float64) (interval time.Duration, batch int) {
 	if rps <= 0 {
 		return time.Millisecond, 1
 	}
-	interval := time.Duration(float64(time.Second) / rps)
+	interval = time.Duration(float64(time.Second) / rps)
 	if interval >= time.Millisecond {
 		return interval, 1
 	}
-	batch := int(rps/1000 + 0.5)
+	batch = int(rps/1000 + 0.5)
 	if batch < 1 {
 		batch = 1
 	}

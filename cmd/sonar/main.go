@@ -34,7 +34,7 @@ type flags struct {
 
 func main() {
 	f := parseFlags()
-	if err := run(f); err != nil {
+	if err := run(&f); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
@@ -62,7 +62,7 @@ func parseFlags() flags {
 }
 
 // run выполняет прогон целиком: читает набор, подаёт нагрузку, пишет отчёты.
-func run(f flags) error {
+func run(f *flags) error {
 	if err := validate(f); err != nil {
 		return err
 	}
@@ -92,10 +92,10 @@ func run(f flags) error {
 
 	stats := NewRunner(opts, samples).Run(ctx)
 	rep := stats.BuildReport(opts, datasetReport(f.dataset, samples))
-	if err := WriteReports(f.out, rep); err != nil {
+	if err := WriteReports(f.out, &rep); err != nil {
 		return err
 	}
-	printSummary(rep, f.out)
+	printSummary(&rep, f.out)
 	if rep.StoppedByStreak {
 		return fmt.Errorf("прогон остановлен: пять невалидных ответов подряд")
 	}
@@ -103,10 +103,14 @@ func run(f flags) error {
 }
 
 // validate отсекает заведомо бессмысленные ключи запуска.
-func validate(f flags) error {
+func validate(f *flags) error {
 	switch {
 	case f.url == "":
 		return fmt.Errorf("не задан адрес сервиса")
+	// Схему проверяем не из недоверия к оператору: пропущенное http:// не
+	// уходит никуда, а в итоге прогона это читалось бы как отказ стенда.
+	case !strings.HasPrefix(f.url, "http://") && !strings.HasPrefix(f.url, "https://"):
+		return fmt.Errorf("адрес сервиса должен начинаться с http:// или https://, задано %q", f.url)
 	case f.rps <= 0:
 		return fmt.Errorf("частота запросов должна быть больше нуля")
 	case f.duration <= 0:
@@ -133,7 +137,7 @@ func datasetReport(path string, samples []Sample) DatasetReport {
 
 // printSummary печатает короткий итог в поток вывода: по нему видно результат,
 // не открывая отчёт.
-func printSummary(rep Report, dir string) {
+func printSummary(rep *Report, dir string) {
 	fmt.Printf("запросов %d, достигнуто %.1f в секунду, доля 95 задержки %.0f мс\n",
 		rep.Load.Requests, rep.Load.AchievedRPS, rep.Load.LatencyP95Ms)
 	fmt.Printf("маскирование: фрагментов %d, среднее изменение %.4f, затронуто %.1f%%, лишних байтов вне фрагментов %.4f%%\n",

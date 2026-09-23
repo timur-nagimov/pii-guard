@@ -94,7 +94,7 @@ func main() {
 // read читает файл захвата и оставляет только маскирование с текстом,
 // отбрасывая повторы одного и того же текста.
 func read(path string) ([]captureRecord, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // путь к файлу захвата задаёт оператор ключом запуска
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +185,7 @@ func short(s string) string {
 
 // write записывает набор. Метки пустые, если не просили черновик.
 func write(path string, recs []captureRecord, prefill bool) (int, error) {
-	f, err := os.Create(path)
+	f, err := os.Create(path) //nolint:gosec // путь набора задаёт оператор ключом запуска
 	if err != nil {
 		return 0, err
 	}
