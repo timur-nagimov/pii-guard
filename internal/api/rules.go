@@ -265,6 +265,13 @@ func (s *Server) applyRuleChange(c ruleChange) (config.EditResult, error) {
 // вызывает соответствующую функцию пакета config.
 type ruleOp func(path string, c ruleChange) (config.EditResult, error)
 
+// ruleErrSystemRequired — отказ для правок, адресованных системе. Вынесен в
+// константу, потому что отсутствие поля system проверяют три операции подряд —
+// set_system_types, set_system_enabled и set_system_allow_persons. Разойдись
+// формулировки между ними, на один и тот же недочёт в запросе приходили бы
+// разные ответы, и вызывающая сторона не опознала бы их как один случай.
+const ruleErrSystemRequired = "для правки системы нужно поле system"
+
 // ruleOps — таблица операций по имени. Каждая операция сама проверяет свои
 // поля и возвращает понятную ошибку, если нужного поля нет.
 var ruleOps = map[string]ruleOp{
@@ -292,7 +299,7 @@ var ruleOps = map[string]ruleOp{
 
 	"set_system_types": func(path string, c ruleChange) (config.EditResult, error) {
 		if strings.TrimSpace(c.System) == "" {
-			return config.EditResult{}, errRule("для правки системы нужно поле system")
+			return config.EditResult{}, errRule(ruleErrSystemRequired)
 		}
 		if c.Types == nil {
 			return config.EditResult{}, errRule("для правки типов системы нужно поле types")
@@ -302,7 +309,7 @@ var ruleOps = map[string]ruleOp{
 
 	"set_system_enabled": func(path string, c ruleChange) (config.EditResult, error) {
 		if strings.TrimSpace(c.System) == "" {
-			return config.EditResult{}, errRule("для правки системы нужно поле system")
+			return config.EditResult{}, errRule(ruleErrSystemRequired)
 		}
 		if c.Enabled == nil {
 			return config.EditResult{}, errRule("для включения или выключения системы нужно поле enabled")
@@ -312,7 +319,7 @@ var ruleOps = map[string]ruleOp{
 
 	"set_system_allow_persons": func(path string, c ruleChange) (config.EditResult, error) {
 		if strings.TrimSpace(c.System) == "" {
-			return config.EditResult{}, errRule("для правки системы нужно поле system")
+			return config.EditResult{}, errRule(ruleErrSystemRequired)
 		}
 		if c.Persons == nil {
 			return config.EditResult{}, errRule("для правки списка имён нужно поле persons")

@@ -673,20 +673,7 @@ func (c *Config) validateSystems() error {
 		if s.Auth.None {
 			anonymous++
 		}
-		if err := c.validateSystemPresets(name, &s); err != nil {
-			return err
-		}
-		disabled, err := c.validateSystemKey(name, &s)
-		if err != nil {
-			return err
-		}
-		if disabled {
-			continue
-		}
-		if err := validateUpstream(name, s.Upstream.URL); err != nil {
-			return err
-		}
-		if err := c.validateSystemModes(name, &s); err != nil {
+		if err := c.validateSystem(name, &s); err != nil {
 			return err
 		}
 	}
@@ -694,6 +681,32 @@ func (c *Config) validateSystems() error {
 		return errors.New("без ключа доступа может работать только одна система")
 	}
 	return nil
+}
+
+// validateSystem проверяет одну включённую систему: пресеты маскирования,
+// ключ доступа, адрес языковой модели и режимы поведения.
+//
+// Вынесено из цикла обхода систем: подсчёт анонимных систем — дело всего
+// набора, а эти проверки касаются ровно одной. Вместе они лежали в теле
+// цикла, и каждая ветвь читалась с лишним уровнем вложенности.
+//
+// Система, выключенная из-за пустого ключа, дальше не проверяется: её
+// настройки всё равно не применятся.
+func (c *Config) validateSystem(name string, s *System) error {
+	if err := c.validateSystemPresets(name, s); err != nil {
+		return err
+	}
+	disabled, err := c.validateSystemKey(name, s)
+	if err != nil {
+		return err
+	}
+	if disabled {
+		return nil
+	}
+	if err := validateUpstream(name, s.Upstream.URL); err != nil {
+		return err
+	}
+	return c.validateSystemModes(name, s)
 }
 
 // validateSystemPresets проверяет пресеты маскирования системы — и общий, и

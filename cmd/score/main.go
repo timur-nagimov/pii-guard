@@ -179,27 +179,6 @@ func scoreSliceSample(sc *scanner, s *sample, lower bool, acc *sliceStats, ex *e
 	}
 }
 
-// scoreSample — плоский вход того же замера: срезы приходят тремя отдельными
-// картами, конвейер — тремя отдельными значениями, а счётчик напечатанных
-// примеров передаётся и возвращается числом. В таком виде замер одного
-// элемента пришёл со второй ветки вместе с её проверками покрытия. Внутри он
-// собирает scanner, sliceStats и examplePrinter и зовёт scoreSliceSample:
-// второй реализации замера нет, и разойтись двум входам не на чем.
-// Возвращает число уже напечатанных примеров. Счётчик shown у этого входа
-// копился между элементами в цикле; сейчас его везде передают нулём, но
-// выбросить параметр значит сломать вход и его проверки покрытия, поэтому
-// unparam здесь заглушен осознанно.
-//
-//nolint:unparam // shown — часть формы входа со второй ветки, убирать нельзя
-func scoreSample(s sample, eng *engine.Engine, sys config.System, defs config.Defaults,
-	lower bool, examples int, onlyType string, shown int,
-	byType, byCategory, bySource map[string]*stat) int {
-	acc := &sliceStats{byType: byType, byCategory: byCategory, bySource: bySource}
-	ex := &examplePrinter{limit: examples, onlyType: onlyType, shown: shown}
-	scoreSliceSample(&scanner{eng: eng, sys: sys, defs: defs}, &s, lower, acc, ex)
-	return ex.shown
-}
-
 // runDatasets прогоняет замер по нескольким наборам и печатает общую таблицу
 // тип×набор: доля изменённого, доля затронутых, число фрагментов.
 func runDatasets(list string, minConf float64, preset mask.Preset, lower, split bool) {
@@ -257,15 +236,6 @@ func scoreSetSample(sc *scanner, s *sample, lower bool, acc *setStats, setName s
 		set.extra += extra
 		set.outside += outside
 	}
-}
-
-// scoreDatasetSample — плоский вход замера по наборам: карты тип×набор и по
-// набору приходят отдельно, конвейер — тремя значениями. Пара к scoreSample,
-// пришёл оттуда же и так же зовёт scoreSetSample.
-func scoreDatasetSample(s sample, eng *engine.Engine, sys config.System, defs config.Defaults,
-	lower bool, setName string, byType map[string]map[string]*stat, bySet map[string]*stat) {
-	acc := &setStats{byType: byType, bySet: bySet}
-	scoreSetSample(&scanner{eng: eng, sys: sys, defs: defs}, &s, lower, acc, setName)
 }
 
 // printTypeSets печатает таблицу тип×набор: по каждому типу видно, на каком

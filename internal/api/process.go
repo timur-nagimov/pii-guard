@@ -38,6 +38,13 @@ const (
 	dirUnknownMask direction = "unknown_id"
 )
 
+// headerRetryAfter — заголовок с паузой перед повтором. Вынесен в константу,
+// потому что просить повтор обязаны одинаково все три отказа /process:
+// перегрузка, полный сбой обработки и деградация в строгом режиме. Разойдись
+// написание заголовка между ветками, на одном из отказов клиент остался бы
+// без паузы и пошёл бы на повтор сразу, добивая уже нездоровый сервис.
+const headerRetryAfter = "Retry-After"
+
 // handleProcess реализует единый контракт POST /process: первый запрос с новым
 // идентификатором маскирует текст, повторный с тем же идентификатором и ранее
 // выданной маской — восстанавливает исходный текст.
@@ -85,7 +92,7 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 
 	release, ok := s.acquire(r.Context(), len(payload) >= cfg.Limits.HeavyThresholdBytes, cfg.Limits)
 	if !ok {
-		w.Header().Set("Retry-After", "1")
+		w.Header().Set(headerRetryAfter, "1")
 		s.writeError(w, r, http.StatusTooManyRequests, "overloaded", "сервис перегружен, повторите запрос")
 		return
 	}
@@ -105,7 +112,7 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 		// только на полный сбой, когда вернуть нечего, кроме открытого текста, а
 		// его отдавать нельзя.
 		took := time.Since(started)
-		w.Header().Set("Retry-After", "1")
+		w.Header().Set(headerRetryAfter, "1")
 		s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "временная ошибка обработки")
 		// Счётчиков нет: разбор не дошёл до конца, и найденное считать не по
 		// чему. В журнал и аудит событие уходит всё равно: несостоявшаяся
@@ -133,7 +140,7 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 	// ни в одном из режимов.
 	if pr.out.degraded {
 		if sys.ErrorMode(cfg.Defaults) == config.OnErrorClosed {
-			w.Header().Set("Retry-After", "1")
+			w.Header().Set(headerRetryAfter, "1")
 			s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "временная ошибка обработки")
 			return
 		}
