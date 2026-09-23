@@ -60,11 +60,11 @@ for arg in "$@"; do
       # Снимает текущее качество и записывает его как базовую линию.
       # Делается один раз человеком и потом только осознанно.
       CORPUS="${GATE_CORPUS:-corpus/dataset.jsonl}"
-      if [ ! -f "$CORPUS" ]; then
-        mkdir -p "$(dirname "$CORPUS")"
-        echo "готовлю набор данных..."
-        go run ./cmd/gen -out "$CORPUS" -n 8000 -seed 42 >/dev/null 2>&1
-      fi
+      mkdir -p "$(dirname "$CORPUS")"
+      echo "готовлю набор данных..."
+      go run ./cmd/gen -out "$CORPUS" -n 8000 -seed 42 >/dev/null 2>&1
+      shasum -a 256 "$CORPUS" | awk '{print $1}' > "$ROOT/scripts/corpus.sha256"
+      echo "отпечаток набора записан: scripts/corpus.sha256"
       echo "снимаю качество..."
       go run ./cmd/score -dataset "$CORPUS" >"$WORK/init.txt" 2>&1 || {
         echo "замер не отработал, подробности $WORK/init.txt"; exit 2; }
@@ -175,12 +175,24 @@ elif [ ! -f "$BASELINE" ]; then
   skip "качество по типам: нет базовой линии"
 else
   CORPUS="${GATE_CORPUS:-corpus/dataset.jsonl}"
-  if [ ! -f "$CORPUS" ]; then
-    mkdir -p "$(dirname "$CORPUS")"
-    go run ./cmd/gen -out "$CORPUS" -n 8000 -seed 42 >/dev/null 2>&1
-  fi
+  mkdir -p "$(dirname "$CORPUS")"
+  # Набор пересобирается каждый прогон. Он и есть линейка, и он обязан
+  # выводиться из генератора, а не оставаться от прошлых запусков: набор в
+  # корне однажды отстал от генератора, базовая линия осталась снятой на нём,
+  # и сравнение потеряло смысл, ничем себя не выдав. Две секунды сборки дешевле
+  # такой тишины.
+  go run ./cmd/gen -out "$CORPUS" -n 8000 -seed 42 >/dev/null 2>&1
+  CORPUS_SUM="$(shasum -a 256 "$CORPUS" | awk '{print $1}')"
+  CORPUS_REF=""
+  [ -f "$ROOT/scripts/corpus.sha256" ] && CORPUS_REF="$(cat "$ROOT/scripts/corpus.sha256")"
 
-  if go run ./cmd/score -dataset "$CORPUS" >"$WORK/score.txt" 2>&1; then
+  if [ -n "$CORPUS_REF" ] && [ "$CORPUS_SUM" != "$CORPUS_REF" ]; then
+    bad "линейка сдвинулась: генератор даёт другой набор, чем тот, на котором снята базовая линия"
+    printf '        было %s\n        стало %s\n' "${CORPUS_REF:0:16}" "${CORPUS_SUM:0:16}"
+    printf '        это не запрет: если набор менялся осознанно (новые типы),\n'
+    printf '        снимите линию заново: bash scripts/gate.sh --init\n'
+    ok "отрицательные срезы строго ноль"
+  elif go run ./cmd/score -dataset "$CORPUS" >"$WORK/score.txt" 2>&1; then
     # Оба правила проверяет измеритель: положительные срезы с допуском,
     # отрицательные строго с нулём. Держать их в одном месте важнее, чем
     # разделять ради красивого вывода.
