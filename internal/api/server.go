@@ -207,22 +207,36 @@ func (s *Server) acquire(ctx context.Context, heavy bool, limits config.Limits) 
 	}()
 
 	sem := s.sem
-	if !tryAcquire(sem) && !waitAcquire(ctx, sem, waiter()) {
-		return nil, false
-	}
 
+	// Тяжёлый запрос встаёт в СВОЮ очередь первым и только потом занимает
+	// общее место. Обратный порядок означал, что тяжёлый держит общее место,
+	// пока ждёт тяжёлого, ничего при этом не считая. При потоке больших
+	// текстов такие ожидающие выедали весь общий ограничитель, и лёгкий
+	// запрос на 250 байт голодал до истечения срока ожидания, хотя работы
+	// для него хватало.
+	//
+	// Порядок «тяжёлый, потом общий» ограничивает беду своим классом: тяжёлый
+	// может подождать общего места, держа тяжёлое, но тяжёлых мест всего
+	// шесть, и мешает он только себе подобным.
 	if heavy {
 		if !tryAcquire(s.heavySem) && !waitAcquire(ctx, s.heavySem, waiter()) {
-			<-sem
+			return nil, false
+		}
+		if !tryAcquire(sem) && !waitAcquire(ctx, sem, waiter()) {
+			<-s.heavySem
 			return nil, false
 		}
 		s.metrics.ObserveQueueWait(time.Since(started))
 		s.metrics.IncInflight()
 		return func() {
-			<-s.heavySem
 			<-sem
+			<-s.heavySem
 			s.metrics.DecInflight()
 		}, true
+	}
+
+	if !tryAcquire(sem) && !waitAcquire(ctx, sem, waiter()) {
+		return nil, false
 	}
 
 	s.metrics.ObserveQueueWait(time.Since(started))
