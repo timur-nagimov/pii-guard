@@ -1,9 +1,44 @@
 package main
 
 import (
+	"slices"
 	"strings"
 
 	"pii-guard/internal/pii"
+)
+
+// Куски шаблонов, которые повторяются в нескольких генераторах. Формулировка
+// якоря обязана совпадать во всех шаблонах: набор порождается один раз и
+// служит эталоном, а разъехавшиеся подписи полей стали бы разными диалектами
+// одного и того же признака.
+const (
+	anchorClientRU = "Клиент "
+	anchorClientEN = "Client "
+	anchorPassport = "passport "
+	// anchorPhoneEN идёт с ведущей запятой: телефон всюду стоит очередным
+	// полем перечисления, а не открывает предложение.
+	anchorPhoneEN = ", phone "
+)
+
+// personAnchorsRU, personAnchorsEN — якоря, которыми текст вводит человека
+// перед ФИО. Одни и те же слова нужны и зачину сложного предложения, и
+// короткой смешанной записи, поэтому перечни собираются из общего списка:
+// иначе правка в одном месте молча разошлась бы с другим.
+var (
+	personAnchorsRU = []string{anchorClientRU, "Заявитель "}
+	personAnchorsEN = []string{anchorClientEN, "Customer ", "Applicant "}
+)
+
+// Перечни, достроенные поверх общих якорей. Собираются через slices.Concat, а
+// не через append: append дописывал бы в массив общего списка, и перечни
+// незаметно перетирали бы друг друга.
+var (
+	mixedOpenings = slices.Concat(personAnchorsRU, []string{
+		"Оформляем перевод: ", "В анкете указан ",
+		"Обратился ", "Из карточки клиента: ", "Данные по заявке: ",
+	})
+	cardHolderAnchorsRU = slices.Concat(personAnchorsRU, []string{"Держатель карты "})
+	latinNameAnchors    = slices.Concat(personAnchorsEN, []string{"Cardholder ", "Name: ", "FIO: "})
 )
 
 // anySimple порождает предложение случайного однотипного шаблона.
@@ -45,17 +80,13 @@ func (g *Generator) attributesFor(p person, count int) []frag {
 // наивное разрешение пересечений.
 func genMixed(g *Generator) []frag {
 	first, second := g.person(), g.person()
-	openings := []string{
-		"Клиент ", "Заявитель ", "Оформляем перевод: ", "В анкете указан ",
-		"Обратился ", "Из карточки клиента: ", "Данные по заявке: ",
-	}
 	links := []string{
 		". Доверенное лицо: ", ". Созаёмщик ", ". Второй участник сделки — ",
 		". Получатель перевода ", ". Контактное лицо: ", ". Поручитель ",
 		". Законный представитель: ",
 	}
 	return concat(
-		frags(lit(g.pick(openings))),
+		frags(lit(g.pick(mixedOpenings))),
 		frags(val(pii.TypeFIO, g.fioVariant(first, caseNom)), lit(", ")),
 		g.attributesFor(first, 2+g.r.IntN(3)),
 		frags(lit(g.pick(links))),
@@ -102,7 +133,7 @@ func genLatin(g *Generator) []frag {
 	switch g.r.IntN(4) {
 	case 0:
 		return frags(
-			lit("Client "), val(pii.TypeFIO, name), lit(", passport "),
+			lit(anchorClientEN), val(pii.TypeFIO, name), lit(", passport "),
 			val(pii.TypePassport, g.digitsNonZero(4)+space+g.digits(6)),
 			lit(", email "), val(pii.TypeEmail, g.email(p)), lit("."),
 		)
@@ -110,7 +141,7 @@ func genLatin(g *Generator) []frag {
 		return frags(
 			lit("Cardholder "), val(pii.TypeCardHolder, strings.ToUpper(name)),
 			lit(", card number "), val(pii.TypeCard, card),
-			lit(", phone "), val(pii.TypePhone, g.phone()), lit("."),
+			lit(anchorPhoneEN), val(pii.TypePhone, g.phone()), lit("."),
 		)
 	case 2:
 		return frags(
@@ -146,13 +177,13 @@ func genLatinMixed(g *Generator) []frag {
 		// Английский якорь, русское значение.
 		return concat(
 			frags(lit("Name: ")), frags(val(pii.TypeFIO, p.full(caseNom))),
-			frags(lit(", phone ")), frags(val(pii.TypePhone, g.phoneIntl())),
+			frags(lit(anchorPhoneEN)), frags(val(pii.TypePhone, g.phoneIntl())),
 			frags(lit(", email ")), frags(val(pii.TypeEmail, g.email(p))), frags(lit(".")),
 		)
 	case 2:
 		// Имя латиницей, отчество кириллицей.
 		return concat(
-			frags(lit("Клиент ")), frags(val(pii.TypeFIO, latin)),
+			frags(lit(anchorClientRU)), frags(val(pii.TypeFIO, latin)),
 			frags(lit(" ")), frags(val(pii.TypeFIO, p.patronymicForm(caseNom))),
 			frags(lit(", ИНН ")), frags(val(pii.TypeINN, g.inn(true, true))), frags(lit(".")),
 		)
@@ -167,7 +198,7 @@ func genLatinMixed(g *Generator) []frag {
 		return concat(
 			frags(lit("Full name: ")), frags(val(pii.TypeFIO, latin)),
 			frags(lit(", date of birth ")), g.dateFrags(pii.TypeDOB, g.randomDate(1950, 2004)),
-			frags(lit(", phone ")), frags(val(pii.TypePhone, g.phoneIntl())), frags(lit(".")),
+			frags(lit(anchorPhoneEN)), frags(val(pii.TypePhone, g.phoneIntl())), frags(lit(".")),
 		)
 	}
 }
@@ -412,8 +443,7 @@ func genLatinNames(g *Generator) []frag {
 	name := titleLatin(p.name)
 	surname := titleLatin(p.surname)
 	ni, pi := latinInitial(p.name), latinInitial(p.patronymic)
-	anchors := []string{"Client ", "Customer ", "Applicant ", "Cardholder ", "Name: ", "FIO: "}
-	head := g.pick(anchors)
+	head := g.pick(latinNameAnchors)
 	switch g.r.IntN(6) {
 	case 0:
 		return frags(lit(head), val(pii.TypeFIO, surname+space+name))
@@ -446,17 +476,17 @@ func genEnglishAnchor(g *Generator) []frag {
 	switch g.r.IntN(4) {
 	case 0:
 		return frags(
-			lit("passport "), val(pii.TypePassport, g.digitsNonZero(4)+space+g.digits(6)),
+			lit(anchorPassport), val(pii.TypePassport, g.digitsNonZero(4)+space+g.digits(6)),
 			lit(", issued by "), val(pii.TypeIssuer, g.issuer()), lit("."),
 		)
 	case 1:
 		return frags(
 			lit("card number "), val(pii.TypeCard, g.cardNumber(true)),
-			lit(", phone "), val(pii.TypePhone, g.phoneIntl()), lit("."),
+			lit(anchorPhoneEN), val(pii.TypePhone, g.phoneIntl()), lit("."),
 		)
 	case 2:
 		return frags(
-			lit("passport "), val(pii.TypePassport, g.digitsNonZero(4)+space+g.digits(6)),
+			lit(anchorPassport), val(pii.TypePassport, g.digitsNonZero(4)+space+g.digits(6)),
 			lit(", card "), val(pii.TypeCard, g.cardNumber(true)), lit("."),
 		)
 	default:
@@ -477,13 +507,13 @@ func genMixedAnchor(g *Generator) []frag {
 	case 0:
 		// Русский якорь, латинское значение.
 		return frags(
-			lit(g.pick([]string{"Клиент ", "Заявитель ", "Держатель карты "})),
+			lit(g.pick(cardHolderAnchorsRU)),
 			val(pii.TypeFIO, latinName), lit("."),
 		)
 	case 1:
 		// Английский якорь, русское значение.
 		return frags(
-			lit(g.pick([]string{"Client ", "Customer ", "Applicant "})),
+			lit(g.pick(personAnchorsEN)),
 			val(pii.TypeFIO, cyrName), lit("."),
 		)
 	case 2:
@@ -494,7 +524,7 @@ func genMixedAnchor(g *Generator) []frag {
 	default:
 		// Английский якорь, русское значение паспорта.
 		return frags(
-			lit("passport "), val(pii.TypePassport, g.digitsNonZero(4)+space+g.digits(6)), lit("."),
+			lit(anchorPassport), val(pii.TypePassport, g.digitsNonZero(4)+space+g.digits(6)), lit("."),
 		)
 	}
 }
