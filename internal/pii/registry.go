@@ -148,20 +148,25 @@ var typePriority = map[Type]int{
 	TypeDOB:             60,
 	TypeIssueDate:       58,
 	TypePostcode:        50,
-	TypeAddress:         45,
-	TypeIssuer:          42,
-	TypeBirthPlace:      40,
-	TypeFIO:             35,
-	TypeCardHolder:      30,
-	TypeCitizenship:     25,
-	TypeEmail:           20,
-	TypeCVV:             15,
-	TypePIN:             14,
-	TypeAccount:         55,
-	TypeOMS:             54,
-	TypePlate:           53,
-	TypeVIN:             52,
-	TypeIPAddress:       51,
+	// Место рождения стоит выше адреса намеренно. Оно срабатывает только по
+	// явному якорю «место рождения», тогда как адрес опознаётся по форме, и
+	// на одном и том же тексте побеждал адрес: значение маскировалось, но
+	// помечалось чужим типом. Обратного риска нет — на адресе регистрации
+	// детектор места рождения молчит, ему нужен свой якорь.
+	TypeBirthPlace:  46,
+	TypeAddress:     45,
+	TypeIssuer:      42,
+	TypeFIO:         35,
+	TypeCardHolder:  30,
+	TypeCitizenship: 25,
+	TypeEmail:       20,
+	TypeCVV:         15,
+	TypePIN:         14,
+	TypeAccount:     55,
+	TypeOMS:         54,
+	TypePlate:       53,
+	TypeVIN:         52,
+	TypeIPAddress:   51,
 }
 
 // Priority возвращает приоритет типа при разрешении пересечений.
