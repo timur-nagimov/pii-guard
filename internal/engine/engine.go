@@ -295,7 +295,12 @@ func splitBounds(text string) [][2]int {
 			break
 		}
 		end = preferredBreak(text, start, end)
-		bounds = append(bounds, [2]int{start, minInt(end+chunkOverlap, len(text))})
+		// Правая граница выравнивается по руне так же, как левая. Без этого
+		// кусок обрывался посреди многобайтовой руны: end уже выровнен, а
+		// end+chunkOverlap на границу руны не попадает. На русском тексте, где
+		// буква занимает два байта, это срабатывало у каждого куска, а не в
+		// редком случае.
+		bounds = append(bounds, [2]int{start, alignRune(text, minInt(end+chunkOverlap, len(text)))})
 		start = end
 	}
 	return bounds
