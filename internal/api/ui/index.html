@@ -174,6 +174,17 @@ button.secondary { background: #fff; color: var(--accent); }
 .g0 { background: var(--g0); }
 
 .legend { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 12px; }
+
+/* Кому принадлежат данные. Каждый человек отдельной карточкой: так видно,
+   что карта осталась у своего, а не растеклась по всему тексту. */
+.subject {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 10px;
+}
+.subject-head { font-weight: 600; margin-bottom: 8px; }
+.subject-items { display: flex; flex-wrap: wrap; gap: 6px 8px; }
 .chip {
   display: inline-flex;
   align-items: center;
@@ -378,6 +389,15 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   <div id="skipped-empty" class="empty" hidden>Ничего не снято: все кандидаты остались под маской.</div>
 </section>
 
+<section class="panel" id="panel-subjects" hidden>
+  <h2>Кому принадлежат данные</h2>
+  <p class="hint">Фрагменты собираются по людям: соседство в предложении, общий якорь анкеты,
+  повтор значения. Через эти связи выражается правило задания «пин-код один не маскируем,
+  пин-код с картой маскируем»: оно о связи между фрагментами, а не о фрагменте.</p>
+  <div id="subjects"></div>
+  <div id="subjects-empty" class="empty" hidden></div>
+</section>
+
 <section class="panel" id="panel-roundtrip" hidden>
   <h2>Обратное преобразование</h2>
   <div id="roundtrip-verdict" class="verdict"></div>
@@ -501,6 +521,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     foundEmpty: el('found-empty'),
     skipped: el('skipped'),
     skippedEmpty: el('skipped-empty'),
+    subjects: el('subjects'),
+    subjectsEmpty: el('subjects-empty'),
+    panelSubjects: el('panel-subjects'),
     rtVerdict: el('roundtrip-verdict'),
     rtDetails: el('roundtrip-details'),
     covHead: el('coverage-head'),
@@ -689,6 +712,47 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     });
   }
 
+  // Пустой список субъектов почти всегда означает не отсутствие возможности,
+  // а выключенное правило сочетаний. Молчать об этом нельзя: со стороны это
+  // выглядит как неработающая возможность.
+  function renderSubjects(subjects, spans) {
+    clear(nodes.subjects);
+    var list = subjects || [];
+    nodes.panelSubjects.hidden = false;
+    nodes.subjectsEmpty.hidden = list.length > 0;
+
+    if (list.length === 0) {
+      nodes.subjectsEmpty.textContent =
+        'Связи не строились. Это не отсутствие возможности, а выключенная настройка: ' +
+        'поставьте context_rules_enabled: true в configs/config.yaml. ' +
+        'Настройки применяются без перезапуска.';
+      return;
+    }
+
+    list.forEach(function (subj, i) {
+      var box = document.createElement('div');
+      box.className = 'subject';
+
+      var head = document.createElement('div');
+      head.className = 'subject-head';
+      head.textContent = 'Человек ' + (i + 1) + ': ' + (subj.types || []).join(', ');
+      box.appendChild(head);
+
+      var items = document.createElement('div');
+      items.className = 'subject-items';
+      (subj.fragments || []).forEach(function (idx) {
+        var sp = spans && spans[idx];
+        if (!sp) { return; }
+        var chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.textContent = sp.type + ': ' + sp.value;
+        items.appendChild(chip);
+      });
+      box.appendChild(items);
+      nodes.subjects.appendChild(box);
+    });
+  }
+
   function renderPlaceholders(map) {
     clear(nodes.placeholders);
     var keys = map ? Object.keys(map) : [];
@@ -742,6 +806,7 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     renderPlaceholders(data.placeholders);
     renderFound(data.spans);
     renderSkipped(data.skipped);
+    renderSubjects(data.subjects, data.spans);
     show('panel-highlight', true);
     show('panel-masked', true);
     show('panel-found', true);
