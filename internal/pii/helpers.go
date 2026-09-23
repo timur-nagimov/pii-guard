@@ -85,56 +85,91 @@ func DigitRuns(d *Doc) []NumRun {
 		// Цифры, приклеенные к букве без пробела, — часть слова: «CVC2»,
 		// «COVID19», «дом5». Такую группу нельзя склеивать со следующим
 		// числом, иначе «CVC2 987» превращается в четырёхзначное число.
-		attached := i > 0 &&
-			(toks[i-1].Kind == KindLat || toks[i-1].Kind == KindCyr) &&
-			toks[i-1].End == toks[i].Start
-		if attached {
+		if digitAttachedToLetter(toks, i) {
 			runs = append(runs, run)
 			continue
 		}
 
 		// Ведущий знак «плюс» относим к последовательности: он значим для
 		// телефонов в международном формате.
-		if i > 0 && toks[i-1].Kind == KindPunct && d.Text[toks[i-1].Start:toks[i-1].End] == "+" {
-			run.Start = toks[i-1].Start
-			run.HasPlus = true
-		}
+		run = takeLeadingPlus(d, toks, i, run)
 
-		j := i
-		for {
-			// Между группами цифр может стоять несколько токенов-разделителей
-			// подряд: например, в записи «+7 (916) 123-45-67» между «7» и «916»
-			// идут пробел и скобка.
-			k := j + 1
-			for k < len(toks) && (toks[k].Kind == KindSpace || toks[k].Kind == KindPunct) {
-				k++
-			}
-			if k >= len(toks) || toks[k].Kind != KindDigit || k == j+1 {
-				break
-			}
-			sepText := d.Text[toks[j].End:toks[k].Start]
-			if !isNumSeparator(sepText) {
-				break
-			}
-			// Длинный разделитель почти всегда означает разрыв между
-			// сущностями, а не внутреннюю структуру номера.
-			if len([]rune(sepText)) > 3 || strings.ContainsAny(sepText, "\n\r") {
-				break
-			}
-			for _, r := range sepText {
-				if !strings.ContainsRune(run.Seps, r) {
-					run.Seps += string(r)
-				}
-			}
-			run.Digits += d.Text[toks[k].Start:toks[k].End]
-			run.Groups = append(run.Groups, toks[k].End-toks[k].Start)
-			run.End = toks[k].End
-			j = k
-		}
+		run, j := extendDigitRun(d, toks, i, run)
 		runs = append(runs, run)
 		i = j
 	}
 	return runs
+}
+
+// digitAttachedToLetter сообщает, что цифровой токен приклеен к букве без
+// пробела: «CVC2», «COVID19», «дом5». Такую группу нельзя склеивать со
+// следующим числом, иначе «CVC2 987» превращается в четырёхзначное число.
+func digitAttachedToLetter(toks []Token, i int) bool {
+	return i > 0 &&
+		(toks[i-1].Kind == KindLat || toks[i-1].Kind == KindCyr) &&
+		toks[i-1].End == toks[i].Start
+}
+
+// takeLeadingPlus относит ведущий знак «плюс» к последовательности: он значим
+// для телефонов в международном формате.
+func takeLeadingPlus(d *Doc, toks []Token, i int, run NumRun) NumRun {
+	if i > 0 && toks[i-1].Kind == KindPunct && d.Text[toks[i-1].Start:toks[i-1].End] == "+" {
+		run.Start = toks[i-1].Start
+		run.HasPlus = true
+	}
+	return run
+}
+
+// extendDigitRun приклеивает к последовательности следующие группы цифр,
+// разделённые допустимыми разделителями. Возвращает дополненную
+// последовательность и индекс последнего вошедшего токена.
+func extendDigitRun(d *Doc, toks []Token, i int, run NumRun) (NumRun, int) {
+	j := i
+	for {
+		// Между группами цифр может стоять несколько токенов-разделителей
+		// подряд: например, в записи «+7 (916) 123-45-67» между «7» и «916»
+		// идут пробел и скобка.
+		k := nextDigitToken(toks, j)
+		if k < 0 {
+			break
+		}
+		sepText := d.Text[toks[j].End:toks[k].Start]
+		// Длинный разделитель почти всегда означает разрыв между сущностями,
+		// а не внутреннюю структуру номера.
+		if !isNumSeparator(sepText) || len([]rune(sepText)) > 3 || strings.ContainsAny(sepText, "\n\r") {
+			break
+		}
+		run = appendSeparators(run, sepText)
+		run.Digits += d.Text[toks[k].Start:toks[k].End]
+		run.Groups = append(run.Groups, toks[k].End-toks[k].Start)
+		run.End = toks[k].End
+		j = k
+	}
+	return run, j
+}
+
+// nextDigitToken возвращает индекс следующего токена-цифры после j, пропуская
+// разделители, либо минус единицу, если цифры нет или она примыкает вплотную.
+func nextDigitToken(toks []Token, j int) int {
+	k := j + 1
+	for k < len(toks) && (toks[k].Kind == KindSpace || toks[k].Kind == KindPunct) {
+		k++
+	}
+	if k >= len(toks) || toks[k].Kind != KindDigit || k == j+1 {
+		return -1
+	}
+	return k
+}
+
+// appendSeparators добавляет к последовательности разделители, встреченные
+// между группами цифр, без повторов.
+func appendSeparators(run NumRun, sepText string) NumRun {
+	for _, r := range sepText {
+		if !strings.ContainsRune(run.Seps, r) {
+			run.Seps += string(r)
+		}
+	}
+	return run
 }
 
 // DigitsOnly оставляет в строке только цифры.
@@ -408,24 +443,13 @@ func (d *Doc) AnchorBefore(start int, anchors []string, maxRunes int) (string, b
 // опечатка с лишним пробелом внутри слова не теряет якорь: «поч товый» и
 // «почтовый» считаются одним словом.
 func anchorBeforeCompact(norm string, anchors []string) (string, bool) {
-	compact := strings.Map(func(r rune) rune {
-		if r == ' ' || r == '\t' || r == '\u00a0' {
-			return -1
-		}
-		return r
-	}, norm)
+	compact := compactSpaces(norm)
 	best := ""
 	for _, a := range anchors {
 		if a == "" || len(a) <= len(best) {
 			continue
 		}
-		na := FoldHomoglyphs(a)
-		naCompact := strings.Map(func(r rune) rune {
-			if r == ' ' || r == '\t' || r == '\u00a0' {
-				return -1
-			}
-			return r
-		}, na)
+		naCompact := compactSpaces(FoldHomoglyphs(a))
 		if !strings.Contains(compact, naCompact) {
 			continue
 		}
@@ -435,18 +459,32 @@ func anchorBeforeCompact(norm string, anchors []string) (string, bool) {
 		return "", false
 	}
 	// Между якорем и значением не должно быть других цифр.
-	na := FoldHomoglyphs(best)
-	naCompact := strings.Map(func(r rune) rune {
+	naCompact := compactSpaces(FoldHomoglyphs(best))
+	pos := strings.LastIndex(compact, naCompact)
+	if digitsAfter(compact, pos+len(naCompact)) {
+		return "", false
+	}
+	return best, true
+}
+
+// compactSpaces убирает из строки пробелы и табуляции: так опечатка с лишним
+// пробелом внутри слова не теряет якорь, «поч товый» и «почтовый» считаются
+// одним словом.
+func compactSpaces(s string) string {
+	return strings.Map(func(r rune) rune {
 		if r == ' ' || r == '\t' || r == '\u00a0' {
 			return -1
 		}
 		return r
-	}, na)
-	pos := strings.LastIndex(compact, naCompact)
-	for _, r := range compact[pos+len(naCompact):] {
+	}, s)
+}
+
+// digitsAfter сообщает, что в строке от указанного смещения есть цифра.
+func digitsAfter(s string, from int) bool {
+	for _, r := range s[from:] {
 		if r >= '0' && r <= '9' {
-			return "", false
+			return true
 		}
 	}
-	return best, true
+	return false
 }

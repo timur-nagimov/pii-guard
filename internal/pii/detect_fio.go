@@ -148,10 +148,8 @@ func fioCollectWords(d *Doc) (words, lower []fioWord) {
 		// fioWordEnd: там часть после дефиса обязана начинаться с заглавной
 		// буквы, иначе к любому имени приклеится обычное слово.
 		if w.roles == 0 && fioLowerSurnameCandidate(w) {
-			if hEnd, hLast, ok := fioLowerHyphenEnd(d, last, end); ok {
-				if hw := fioNewWord(d, toks[i].Start, hEnd); hw.roles != 0 || fioLowerSurnameCandidate(hw) {
-					w, last = hw, hLast
-				}
+			if hw, hLast, ok := fioLowerHyphenWord(d, i, end, last); ok {
+				w, last = hw, hLast
 			}
 		}
 		switch {
@@ -163,6 +161,21 @@ func fioCollectWords(d *Doc) (words, lower []fioWord) {
 		i = last
 	}
 	return words, lower
+}
+
+// fioLowerHyphenWord приклеивает к кандидату со строчной буквы вторую часть
+// двойной фамилии и возвращает собранное слово вместе с индексом последнего
+// токена.
+func fioLowerHyphenWord(d *Doc, i, end, last int) (fioWord, int, bool) {
+	hEnd, hLast, ok := fioLowerHyphenEnd(d, last, end)
+	if !ok {
+		return fioWord{}, 0, false
+	}
+	hw := fioNewWord(d, d.Tokens[i].Start, hEnd)
+	if hw.roles == 0 && !fioLowerSurnameCandidate(hw) {
+		return fioWord{}, 0, false
+	}
+	return hw, hLast, true
 }
 
 // fioWordEnd находит конец слова, приклеивая части через дефис: двойные
@@ -503,7 +516,7 @@ func fioAdjacent(d *Doc, a, b fioWord) bool {
 			return false
 		}
 	}
-	if comma && !(a.has(fioRoleAnySurname) && b.has(fioRoleName)) {
+	if comma && (!a.has(fioRoleAnySurname) || !b.has(fioRoleName)) {
 		return false
 	}
 	return true
