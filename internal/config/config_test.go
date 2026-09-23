@@ -689,3 +689,80 @@ systems:
 		t.Errorf("в сообщении нет обеих систем: %v", err)
 	}
 }
+
+// TestLimitOrderingChecked закрепляет проверку соотношений между сроками и
+// пределами. По отдельности каждое значение выглядит разумным, а вместе они
+// дают поведение, которое никто не закладывал, и в бою это не видно: сервис
+// работает, просто не так, как написано в документах.
+func TestLimitOrderingChecked(t *testing.T) {
+	t.Run("ожидание дольше срока записи ответа", func(t *testing.T) {
+		// Запрос успеет получить обрыв соединения раньше, чем честный отказ.
+		_, err := Parse([]byte(`
+server:
+  write_timeout: 1s
+limits:
+  inflight: 10
+  heavy_inflight: 2
+  max_wait: 2s
+systems:
+  anon:
+    enabled: true
+    auth: none
+    types: [all]
+`))
+		if err == nil {
+			t.Fatal("настройки приняты, хотя ожидание места дольше срока записи ответа")
+		}
+		if !strings.Contains(err.Error(), "обрыв соединения") {
+			t.Errorf("сообщение %q не объясняет последствие", err)
+		}
+	})
+
+	t.Run("тяжёлый предел не меньше общего", func(t *testing.T) {
+		// Это не ошибка, а бессмыслица: ограничитель ничего не ограничивает.
+		// Поэтому предупреждение, а не отказ.
+		cfg, err := Parse([]byte(`
+server:
+  write_timeout: 9s
+limits:
+  inflight: 10
+  heavy_inflight: 20
+  max_wait: 500ms
+systems:
+  anon:
+    enabled: true
+    auth: none
+    types: [all]
+`))
+		if err != nil {
+			t.Fatalf("настройки должны приниматься с предупреждением, получена ошибка: %v", err)
+		}
+		var found bool
+		for _, w := range cfg.Warnings {
+			if strings.Contains(w, "ничего не ограничивает") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("о бессмысленном ограничителе не предупредили: %v", cfg.Warnings)
+		}
+	})
+
+	t.Run("рабочие настройки принимаются", func(t *testing.T) {
+		if _, err := Parse([]byte(`
+server:
+  write_timeout: 9s
+limits:
+  inflight: 96
+  heavy_inflight: 6
+  max_wait: 500ms
+systems:
+  anon:
+    enabled: true
+    auth: none
+    types: [all]
+`)); err != nil {
+			t.Fatalf("согласованные настройки отвергнуты: %v", err)
+		}
+	})
+}
