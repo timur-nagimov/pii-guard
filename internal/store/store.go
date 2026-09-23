@@ -55,7 +55,9 @@ type Interface interface {
 	// Put сохраняет соответствие и возвращает созданную запись.
 	Put(id, original, maskText, system string, spans []SpanMeta) (*Entry, error)
 	// Get отдаёт запись по идентификатору, если она есть и не просрочена.
-	Get(id string) (*Entry, bool)
+	// Ошибка ErrNotFound означает, что записи нет; ErrCorrupted — что запись
+	// есть, но не расшифровывается (чужой ключ или испорченное значение).
+	Get(id string) (*Entry, error)
 	// Original расшифровывает исходный текст записи.
 	Original(e *Entry) (string, error)
 	// Len возвращает число записей, за которые отвечает этот экземпляр.
@@ -121,7 +123,7 @@ func (s *Store) Put(id, original, maskText, system string, spans []SpanMeta) (*E
 }
 
 // Get возвращает запись по идентификатору.
-func (s *Store) Get(id string) (*Entry, bool) { return s.backend.Get(id) }
+func (s *Store) Get(id string) (*Entry, error) { return s.backend.Get(id) }
 
 // Original расшифровывает исходный текст записи.
 func (s *Store) Original(e *Entry) (string, error) { return s.backend.Original(e) }

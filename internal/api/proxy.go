@@ -638,8 +638,8 @@ func (s *Server) saveConversation(id string, back map[string]string, sys config.
 // При отсутствии записи или ошибке возвращается пустая карта: диалог просто
 // начинается заново.
 func (s *Server) loadConversation(id string) map[string]string {
-	e, ok := s.store.Get(conversationKeyPrefix + id)
-	if !ok {
+	e, err := s.store.Get(conversationKeyPrefix + id)
+	if err != nil {
 		return nil
 	}
 	raw, err := s.store.Original(e)
