@@ -139,26 +139,9 @@ func TestUIPageHasNoExternalLinks(t *testing.T) {
 	}
 	// Встроенная страница обязана быть самодостаточной, поэтому подключений
 	// внешних файлов на ней быть не может в принципе.
-	for _, tag := range []string{"<script src", "@import"} {
+	for _, tag := range []string{"<link ", "<script src", "@import"} {
 		if strings.Contains(body, tag) {
 			t.Errorf("страница подключает внешний файл через %q", tag)
-		}
-	}
-	// Единственная ссылка на странице — значок вкладки, и он тоже обязан быть
-	// встроенным: адрес начинается с data:, то есть картинка лежит в самой
-	// разметке. Любой другой адрес в <link> означал бы поход за файлом наружу.
-	for rest := body; ; {
-		idx := strings.Index(rest, "<link ")
-		if idx < 0 {
-			break
-		}
-		rest = rest[idx+len("<link "):]
-		end := strings.Index(rest, ">")
-		if end < 0 {
-			t.Fatalf("незакрытый тег <link> на странице: %q", snippet(rest, 0))
-		}
-		if !strings.Contains(rest[:end], `href="data:`) {
-			t.Errorf("страница подключает внешний файл через <link>: %q", rest[:end])
 		}
 	}
 }

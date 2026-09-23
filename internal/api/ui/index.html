@@ -1,17 +1,8 @@
-<!-- Страница проверки PII Guard.
-     Разметка, стили и сценарий лежат одним файлом намеренно: сервис работает
-     в закрытом контуре, страница целиком попадает в двоичный файл при сборке
-     (internal/api/ui.go) и не имеет права ходить за внешними ресурсами —
-     политика Content-Security-Policy запрещает всё, кроме своего же сервиса. -->
 <!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Значок вкладки встроен строкой data: по той же причине, что и всё
-     остальное: отдельный файл пришлось бы отдавать ещё одним маршрутом,
-     а в закрытом контуре забрать его со стороны всё равно неоткуда. -->
-<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQAQMAAAAlPW0iAAAABlBMVEUvX9D////PNMm9AAAAFUlEQVR42mNgQALyP0AIhXEAhJAAAJQ9Bhtnv58rAAAAAElFTkSuQmCC">
 <title>PII Guard: страница проверки</title>
 <style>
 /* Страница самодостаточна: ни одного внешнего ресурса, сервис работает
@@ -124,10 +115,6 @@ button:disabled { opacity: 0.55; cursor: progress; }
 button.secondary { background: #fff; color: var(--accent); }
 
 .hint { margin-left: auto; color: var(--ink-soft); font-size: 13px; }
-/* Та же подсказка, но не сбоку от элементов, а отдельной строкой под
-   заголовком панели: ей нужна вся ширина и начало строки, иначе автоотступ
-   слева уводит текст вправо и он читается как продолжение заголовка. */
-.hint-lead { margin: 0 0 10px; text-align: left; }
 
 .summary {
   display: flex;
@@ -215,10 +202,6 @@ button.secondary { background: #fff; color: var(--accent); }
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--ink-soft); font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.02em; }
-/* Подпись таблицы. Заголовок раздела стоит выше отдельным блоком, и при
-   чтении с экрана таблица объявляется без него: подпись — единственное,
-   что звучит вместе с таблицей и говорит, что за значения в ней. */
-caption { caption-side: top; text-align: left; margin: 0 0 8px; font-size: 12.5px; font-weight: 500; color: var(--ink-soft); }
 tbody tr:hover { background: #f0f4fd; }
 tbody tr.active { background: #e6edfc; }
 td.value, td.masked, td.reason { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12.5px; overflow-wrap: anywhere; }
@@ -252,7 +235,7 @@ table.coverage td.demask { color: var(--ok); font-weight: 650; }
 table.coverage td.nodemask { color: var(--ink-soft); }
 table.coverage td.conf { color: var(--ink-soft); font-size: 11.5px; }
 .coverage-legend { margin-top: 10px; font-size: 12.5px; color: var(--ink-soft); }
-.coverage-legend strong { color: var(--ink); }
+.coverage-legend b { color: var(--ink); }
 .coverage-legend .hole { color: var(--bad); font-weight: 650; }
 .coverage-legend .demask { color: var(--ok); font-weight: 650; }
 .coverage-legend .custom { color: var(--accent); font-weight: 650; }
@@ -317,12 +300,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
 .compare-col h3 { margin: 0 0 8px; font-size: 13px; font-weight: 650; color: var(--ink-soft); }
 .compare-col .textview { max-height: 220px; }
 
-/* Узкий экран: парные колонки схлопываются в одну, поля страницы уже,
-   подсказка занимает всю ширину. Правила body и .hint раньше стояли за
-   закрывающей скобкой блока и применялись на любой ширине, обрывая на ней
-   же разбор стилей, — поэтому они собраны здесь. */
 @media (max-width: 720px) {
   .model-states, .compare-cols { grid-template-columns: 1fr; }
+}
   body { padding: 16px 12px 48px; }
   .hint { margin-left: 0; width: 100%; }
 }
@@ -340,7 +320,6 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   <h2>Матрица покрытия</h2>
   <div class="coverage-wrap">
     <table class="coverage">
-      <caption>Строки — типы данных, столбцы — системы, в ячейке — вид маскирования.</caption>
       <!-- Шапка перерисовывается под набор систем, но заголовки столбцов нужны
            и до первого ответа: пока их нет, чтение с экрана даёт сетку значений
            без подписей, и «выключено» непонятно к какой системе относится. -->
@@ -352,10 +331,10 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   </div>
   <div id="coverage-empty" class="empty" hidden>Настроек пока нет: матрица пуста.</div>
   <div class="coverage-legend">
-    <span><strong class="hole">Дыра</strong> — тип из задания не маскируется ни одной включённой системой.</span>
-    <span><strong class="demask">Обратное преобразование</strong> — системе разрешён demask.</span>
-    <span><strong class="custom">custom</strong> — тип добавлен настройкой через custom_types.</span>
-    <span><strong class="src">extra</strong> — тип добавлен ядром сверх задания.</span>
+    <span><b class="hole">Дыра</b> — тип из задания не маскируется ни одной включённой системой.</span>
+    <span><b class="demask">Обратное преобразование</b> — системе разрешён demask.</span>
+    <span><b class="custom">custom</b> — тип добавлен настройкой через custom_types.</span>
+    <span><b class="src">extra</b> — тип добавлен ядром сверх задания.</span>
   </div>
   <div class="coverage-meta" id="coverage-meta"></div>
 </section>
@@ -376,8 +355,8 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     <span class="rules-hint">Хранится только в этой вкладке и пропадает при обновлении страницы.</span>
   </div>
 
+  <div class="rules-sub">Свои типы</div>
   <table>
-    <caption class="rules-sub">Свои типы</caption>
     <thead>
       <tr><th>Тип</th><th>Выражение</th><th>Якоря</th><th>Контроль</th><th></th></tr>
     </thead>
@@ -483,7 +462,6 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
 <section class="panel" id="panel-found" hidden>
   <h2>Находки</h2>
   <table>
-    <caption>Что нашлось в тексте: тип, исходное значение и чем оно заменено.</caption>
     <thead>
       <tr>
         <th>Тип</th>
@@ -501,7 +479,6 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
 <section class="panel" id="panel-skipped" hidden>
   <h2>Снято с маскирования</h2>
   <table>
-    <caption>Кандидаты, оставшиеся в тексте без маски, и причина снятия.</caption>
     <thead>
       <tr>
         <th>Тип</th>
@@ -532,7 +509,7 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
 
 <section class="panel" id="panel-model" hidden>
   <h2>Путь через языковую модель</h2>
-  <p class="hint hint-lead">Текст маскируется плейсхолдерами, уходит модели, ответ возвращается с восстановленными значениями. Второе состояние показывает, что модель не видела персональных данных.</p>
+  <p class="hint" style="margin:0 0 10px;text-align:left">Текст маскируется плейсхолдерами, уходит модели, ответ возвращается с восстановленными значениями. Второе состояние показывает, что модель не видела персональных данных.</p>
   <div class="controls">
     <label for="model-prompt">Запрос модели</label>
     <input type="text" id="model-prompt" class="model-prompt" value="Перепиши текст, сохранив все плейсхолдеры вида [ТИП_N] без изменений." aria-label="Запрос языковой модели">
