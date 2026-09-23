@@ -120,7 +120,7 @@ func BenchmarkLinkSubjects(b *testing.B) {
 	for _, size := range []int{250, 500, 2048, 8192} {
 		text := benchText(size)
 		doc := pii.NewDoc(text)
-		spans := eng.detectDoc(doc)
+		spans := eng.detectDoc(doc, newDegradation())
 		b.Run(sizeName(size), func(b *testing.B) {
 			b.SetBytes(int64(size))
 			b.ReportAllocs()

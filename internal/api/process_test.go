@@ -509,3 +509,203 @@ func TestServiceEndpoints(t *testing.T) {
 		})
 	}
 }
+
+// apiPanicDetector — детектор, который падает при разборе. Нужен, чтобы
+// проверить поведение сервиса при сбое детектора на уровне контракта.
+type apiPanicDetector struct{}
+
+func (apiPanicDetector) Types() []pii.Type { return []pii.Type{pii.TypePhone} }
+
+func (apiPanicDetector) Detect(*pii.Doc) []pii.Span { panic("сбой детектора") }
+
+// newDegradedTestServer поднимает сервис с паникующим детектором телефонов.
+// Остальные детекторы исправны, поэтому текст обрабатывается частично.
+func newDegradedTestServer(t *testing.T, onError string) *httptest.Server {
+	t.Helper()
+
+	cfg, err := config.Parse([]byte(testConfigYAML()))
+	if err != nil {
+		t.Fatalf("настройки не разобрались: %v", err)
+	}
+	// Анонимной системе, которой отвечает проверяющая система, задаём нужный
+	// режим поведения при ошибке.
+	anon, ok := cfg.AnonymousSystem()
+	if !ok {
+		t.Fatal("анонимная система не найдена в настройках")
+	}
+	anon.OnError = onError
+	cfg.Systems[anon.Name] = anon
+
+	st, err := store.New(store.Config{Key: make([]byte, 32), TTL: time.Hour, MaxRecords: 10000})
+	if err != nil {
+		t.Fatalf("хранилище не создалось: %v", err)
+	}
+	t.Cleanup(st.Close)
+
+	reg := pii.NewRegistry()
+	reg.Register(pii.NewNumericDetector(), pii.NewEmailDetector(), apiPanicDetector{})
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(cfg, st, engine.New(reg), metrics.New(), log)
+
+	ts := httptest.NewServer(srv.Routes())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// TestProcessDegradedOpen проверяет щадящий режим: при сбое детектора ответ
+// несёт заголовок деградации, текст обработан остальными детекторами, а
+// исходные значения наружу не выходят.
+func TestProcessDegradedOpen(t *testing.T) {
+	ts := newDegradedTestServer(t, config.OnErrorOpen)
+	const payload = "Телефон +79161234567, почта ivan@example.com"
+	const id = "payload-degraded-open"
+
+	resp, err := ts.Client().Post(ts.URL+"/process", "application/json",
+		strings.NewReader(processBody(t, payload, id)))
+	if err != nil {
+		t.Fatalf("запрос не выполнился: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("не удалось прочитать ответ: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("щадящий режим ответил кодом %d: %s", resp.StatusCode, raw)
+	}
+	if got := resp.Header.Get("X-PII-Degraded"); got != "1" {
+		t.Fatalf("заголовок X-PII-Degraded равен %q, ожидался 1", got)
+	}
+	body := string(raw)
+	if strings.Contains(body, "+79161234567") {
+		t.Fatalf("исходное значение утекло в ответ: %s", body)
+	}
+	// Адрес почты обработан исправным детектором и замаскирован.
+	if strings.Contains(body, "ivan@example.com") {
+		t.Fatalf("исправный детектор не отработал: %s", body)
+	}
+}
+
+// TestProcessDegradedClosed проверяет строгий режим: при сбое детектора ответ
+// 503 с заголовком Retry-After, исходные значения наружу не выходят.
+func TestProcessDegradedClosed(t *testing.T) {
+	ts := newDegradedTestServer(t, config.OnErrorClosed)
+	const payload = "Телефон +79161234567, почта ivan@example.com"
+	const id = "payload-degraded-closed"
+
+	resp, err := ts.Client().Post(ts.URL+"/process", "application/json",
+		strings.NewReader(processBody(t, payload, id)))
+	if err != nil {
+		t.Fatalf("запрос не выполнился: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("не удалось прочитать ответ: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("строгий режим ответил кодом %d вместо 503: %s", resp.StatusCode, raw)
+	}
+	if got := resp.Header.Get("Retry-After"); got == "" {
+		t.Fatal("в ответе 503 нет заголовка Retry-After")
+	}
+	if strings.Contains(string(raw), "+79161234567") {
+		t.Fatalf("исходное значение утекло в ответ: %s", raw)
+	}
+}
+
+// TestProcessDegradedMetric проверяет, что сбой детектора увеличивает счётчик
+// деградации в показателях.
+func TestProcessDegradedMetric(t *testing.T) {
+	ts := newDegradedTestServer(t, config.OnErrorOpen)
+	const payload = "Телефон +79161234567"
+	const id = "payload-degraded-metric"
+
+	resp, err := ts.Client().Post(ts.URL+"/process", "application/json",
+		strings.NewReader(processBody(t, payload, id)))
+	if err != nil {
+		t.Fatalf("запрос не выполнился: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	// Показатели читаются отдельным запросом: счётчик деградации обязан
+	// появиться после ответа с признаком деградации.
+	mresp, err := ts.Client().Get(ts.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("запрос показателей не выполнился: %v", err)
+	}
+	defer func() { _ = mresp.Body.Close() }()
+	raw, err := io.ReadAll(mresp.Body)
+	if err != nil {
+		t.Fatalf("не удалось прочитать показатели: %v", err)
+	}
+	if !strings.Contains(string(raw), `pii_degraded_total{system="alfasonar"} 1`) {
+		t.Fatalf("счётчик деградации не увеличился:\n%s", raw)
+	}
+}
+
+// TestStatusWriterTracksHeader проверяет, что обёртка ответа запоминает факт
+// отправки заголовка: по этому признаку перехват сбоя решает, дописывать ли
+// ответ, и не пишет второй заголовок поверх уже отправленного.
+func TestStatusWriterTracksHeader(t *testing.T) {
+	rec := httptest.NewRecorder()
+	sw := &statusWriter{ResponseWriter: rec}
+
+	if sw.wroteHeader {
+		t.Fatal("заголовок помечен отправленным до первой записи")
+	}
+	sw.WriteHeader(http.StatusOK)
+	if !sw.wroteHeader {
+		t.Fatal("заголовок не помечен отправленным после WriteHeader")
+	}
+	// Повторный WriteHeader не меняет код и не сбрасывает признак.
+	sw.WriteHeader(http.StatusServiceUnavailable)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("код ответа %d, ожидался первый 200", rec.Code)
+	}
+	if !sw.wroteHeader {
+		t.Fatal("признак отправки заголовка сброшен")
+	}
+}
+
+// TestWithRecoverAfterWrite проверяет, что перехват сбоя не дописывает ответ,
+// если заголовок и тело уже ушли клиенту: сбой после отправки не портит
+// отправленное и не добавляет второй заголовок.
+func TestWithRecoverAfterWrite(t *testing.T) {
+	cfg, err := config.Parse([]byte(testConfigYAML()))
+	if err != nil {
+		t.Fatalf("настройки не разобрались: %v", err)
+	}
+	st, err := store.New(store.Config{Key: make([]byte, 32), TTL: time.Hour, MaxRecords: 10000})
+	if err != nil {
+		t.Fatalf("хранилище не создалось: %v", err)
+	}
+	t.Cleanup(st.Close)
+	reg := pii.NewRegistry()
+	reg.Register(pii.NewNumericDetector(), pii.NewEmailDetector())
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(cfg, st, engine.New(reg), metrics.New(), log)
+
+	// Обработчик пишет ответ, а затем падает: перехват обязан не дописать
+	// второй ответ поверх уже отправленного.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("уже отправлено"))
+		panic("сбой после отправки")
+	})
+	handler := srv.withRecover(inner)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/process", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("код ответа %d, ожидался первый 200", rec.Code)
+	}
+	if got := rec.Body.String(); got != "уже отправлено" {
+		t.Fatalf("тело ответа %q, ожидался только первый ответ", got)
+	}
+}

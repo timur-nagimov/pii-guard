@@ -90,25 +90,36 @@ func (r *Registry) OnPanic(h PanicHandler) { r.onPanic = h }
 // пропускается. Для проверяющей системы это принципиально, потому что пять
 // подряд невалидных ответов останавливают весь прогон.
 func (r *Registry) Detect(d *Doc) []Span {
+	return r.DetectWith(d, nil)
+}
+
+// DetectWith прогоняет детекторы, как Detect, и дополнительно сообщает о сбое
+// каждого детектора в переданный обработчик. Обработчик получает только имена
+// типов отказавшего детектора, без значений: так движок узнаёт, какие типы
+// пропущены, и помечает ответ признаком деградации.
+func (r *Registry) DetectWith(d *Doc, onFail func(types []Type)) []Span {
 	var spans []Span
 	for _, det := range r.detectors {
-		spans = append(spans, r.detectOne(det, d)...)
+		spans = append(spans, r.detectOne(det, d, onFail)...)
 	}
 	// Сменный слот обходится отдельно, а не через Detectors(): тот собирает
 	// новый срез, и на горячем пути это была бы лишняя выделенная память на
 	// каждый запрос.
 	if c := r.custom.Load(); c != nil {
-		spans = append(spans, r.detectOne(*c, d)...)
+		spans = append(spans, r.detectOne(*c, d, onFail)...)
 	}
 	SortSpans(spans)
 	return spans
 }
 
 // detectOne вызывает один детектор, перехватывая его сбой.
-func (r *Registry) detectOne(det Detector, d *Doc) (found []Span) {
+func (r *Registry) detectOne(det Detector, d *Doc, onFail func(types []Type)) (found []Span) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			found = nil
+			if onFail != nil {
+				onFail(det.Types())
+			}
 			if r.onPanic != nil {
 				r.onPanic(det.Types(), rec)
 			}
