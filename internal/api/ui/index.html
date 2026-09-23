@@ -872,8 +872,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   // ни одной включённой системой: её подсвечиваем отдельно.
   var SOURCE_TITLE = {
     task: 'задание',
-    extra: 'extra',
-    custom: 'custom'
+    task_part: 'часть адреса',
+    extra: 'сверх задания',
+    custom: 'настройкой'
   };
 
   function coverageCellClass(value) {
@@ -935,7 +936,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
 
       var rowCells = cells[t.name] || {};
       var maskedByAny = false;
-      var hole = t.source === 'task';
+      // Дырой считается и незакрытая часть типа задания: индекс входит в
+      // требование про адрес, поэтому пропуск по нему так же важен.
+      var hole = t.source === 'task' || t.source === 'task_part';
       systems.forEach(function (sys) {
         var value = rowCells[sys.name] || 'off';
         if (sys.enabled && value !== 'off' && value !== 'disabled') {
