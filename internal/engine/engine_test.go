@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"pii-guard/internal/config"
 	"pii-guard/internal/mask"
@@ -549,5 +550,45 @@ func TestChunkPanicHandlerSilentOnHealthyText(t *testing.T) {
 	}
 	if want := strings.Count(text, chunkPanicPhone); res.Counts[pii.TypePhone] != want {
 		t.Fatalf("замаскировано %d телефонов, ожидалось %d", res.Counts[pii.TypePhone], want)
+	}
+}
+
+// TestSplitBoundsAlignedToRunes закрепляет свойство, нарушение которого нашло
+// ночное ревью кода: обе границы куска обязаны попадать на начало руны.
+//
+// Левая граница выравнивалась, правая считалась как end+chunkOverlap и на
+// границу руны не попадала. Кусок обрывался посреди многобайтовой руны, и
+// токенизатор отдавал для неё символ замены. Кириллическая буква занимает два
+// байта, поэтому на русском тексте это срабатывает regularly, а не в
+// экзотическом случае.
+func TestSplitBoundsAlignedToRunes(t *testing.T) {
+	// Текст заведомо длиннее порога разбиения, целиком из двухбайтовых рун,
+	// чтобы граница по байтам почти никогда не совпадала с границей руны.
+	var sb strings.Builder
+	for sb.Len() < chunkThreshold*3 {
+		sb.WriteString("Клиент Иванов Иван Иванович, тел +7 916 123-45-67. ")
+	}
+	text := sb.String()
+
+	bounds := splitBounds(text)
+	if len(bounds) < 2 {
+		t.Fatalf("текст на %d байт должен был разбиться, кусков получилось %d", len(text), len(bounds))
+	}
+
+	for i, b := range bounds {
+		lo, hi := b[0], b[1]
+		if lo < 0 || hi > len(text) || lo > hi {
+			t.Fatalf("кусок %d: границы %d..%d вне текста длиной %d", i, lo, hi, len(text))
+		}
+		if lo < len(text) && !utf8.RuneStart(text[lo]) {
+			t.Errorf("кусок %d: левая граница %d стоит посреди руны", i, lo)
+		}
+		if hi < len(text) && !utf8.RuneStart(text[hi]) {
+			t.Errorf("кусок %d: правая граница %d стоит посреди руны", i, hi)
+		}
+		// Срез по границам обязан быть корректным UTF-8: именно это ломалось.
+		if !utf8.ValidString(text[lo:hi]) {
+			t.Errorf("кусок %d: срез text[%d:%d] не является корректным UTF-8", i, lo, hi)
+		}
 	}
 }
