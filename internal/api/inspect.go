@@ -194,7 +194,9 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// Ручка разбора отдаёт значения персональных данных вызывающему, пусть и
 	// его собственные. Для службы контроля это такое же обращение к данным,
 	// как маскирование, поэтому оно идёт в аудит наравне с ним.
-	s.auditProcess(r, sys, "", "inspect", out.TextBytes, out.Counts, took, "ok")
+	s.auditProcess(r, sys, processEvent{
+		dir: "inspect", size: out.TextBytes, counts: out.Counts, took: took,
+	}, "ok")
 }
 
 // inspectSubjects переводит субъектов движка в форму ответа разбора.

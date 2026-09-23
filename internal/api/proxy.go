@@ -109,7 +109,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusBadGateway, "upstream_unavailable", "языковая модель недоступна")
 		// Текст уже ушёл модели, поэтому обращение к персональным данным
 		// состоялось независимо от того, дождались мы ответа или нет.
-		s.auditProcess(r, sys, "", "proxy", bodySize, counts, time.Since(begin), "error")
+		s.auditProcess(r, sys, proxyEvent(bodySize, counts, begin), "error")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -132,7 +132,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, resp.StatusCode, "upstream_rejected",
 			"языковая модель отказала кодом "+itoa(resp.StatusCode)+" без объяснения; "+
 				"проверьте адрес и ключ доступа в разделе upstream настроек системы")
-		s.auditProcess(r, sys, "", "proxy", bodySize, counts, time.Since(begin), "error")
+		s.auditProcess(r, sys, proxyEvent(bodySize, counts, begin), "error")
 		return
 	}
 
@@ -145,7 +145,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.log.WarnContext(r.Context(), "не удалось записать ответ",
 			logging.Event(logging.EventProxy), logging.Component("proxy"), logging.Err(err))
 	}
-	s.auditProcess(r, sys, "", "proxy", bodySize, counts, time.Since(begin), "ok")
+	s.auditProcess(r, sys, proxyEvent(bodySize, counts, begin), "ok")
+}
+
+// proxyEvent описывает обращение к персональным данным через пересылку модели.
+// Идентификатора текста здесь нет: в запросе к модели его не присылают, в
+// отличие от ручки обработки. Длительность снимается в момент вызова, а не
+// заранее: у пересылки три исхода, и до какого из них дойдёт дело, заранее
+// неизвестно.
+func proxyEvent(size int, counts map[string]int, begin time.Time) processEvent {
+	return processEvent{dir: "proxy", size: size, counts: counts, took: time.Since(begin)}
 }
 
 // readChatRequest читает тело запроса и разбирает его дважды: в карту raw —
