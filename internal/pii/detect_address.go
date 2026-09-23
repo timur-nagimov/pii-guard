@@ -13,8 +13,8 @@ import (
 // только рядом с одним из них: название города само по себе персональными
 // данными не является, фраза «поехал в Казань» маскироваться не должна.
 var addrAnchors = []string{
-	"адрес", "проживает", "проживающ", "прописан", "прописка",
-	"зарегистрирован", "регистрац", "доставк", "место жительства",
+	anchorWordAddress, anchorWordLives, "проживающ", "прописан", "прописка",
+	anchorWordRegistered, "регистрац", "доставк", "место жительства",
 	"жительств", "живет", "живёт", "пребывани",
 	// Формы слова «проживание»: «город проживания», «страна проживания».
 	"проживания", "проживание", "проживанию", "проживании", "проживанием",
@@ -32,77 +32,91 @@ const addrAnchorWindow = 48
 // дальше этого расстояния относятся уже к другому адресу.
 const addrMaxRunes = 120
 
+// Виды адресных компонентов, попадающие в поле Reason. Вынесены в константы,
+// чтобы не повторять строковые литералы в таблицах типов.
+const (
+	addrKindCity     = "city"
+	addrKindRegion   = "region"
+	addrKindStreet   = "street"
+	addrKindHouse    = "house"
+	addrKindCorp     = "corp"
+	addrKindBuilding = "building"
+	addrKindFlat     = "flat"
+	addrKindOffice   = "office"
+	addrKindPremise  = "premise"
+)
+
 // addrSettlementTypes — типы населённых пунктов. Ключ задаётся в нижнем
 // регистре без точки, значение попадает в поле Reason.
 var addrSettlementTypes = map[string]string{
-	"г": "city", "гор": "city", "город": "city", "города": "city",
-	"городе": "city", "г-д": "city", "гп": "city",
-	"с": "city", "село": "city", "села": "city", "селе": "city",
-	"п": "city", "пос": "city", "поселок": "city", "посёлок": "city",
-	"поселке": "city", "посёлке": "city", "пгт": "city", "рп": "city",
-	"д": "city", "дер": "city", "деревня": "city", "деревне": "city",
-	"х": "city", "хутор": "city", "ст-ца": "city", "станица": "city",
-	"станице": "city", "снт": "city", "днп": "city", "аул": "city",
-	"улус": "city", "г-к": "city",
-	"ст": "city", "станция": "city", "станции": "city", "станцие": "city",
-	"клх": "city", "колхоз": "city", "к": "city",
-	"gorod": "city", "g": "city", "pos": "city", "derevnya": "city",
+	"г": addrKindCity, anchorWordGor: addrKindCity, "город": addrKindCity, "города": addrKindCity,
+	"городе": addrKindCity, "г-д": addrKindCity, "гп": addrKindCity,
+	"с": addrKindCity, "село": addrKindCity, "села": addrKindCity, "селе": addrKindCity,
+	"п": addrKindCity, anchorWordPos: addrKindCity, "поселок": addrKindCity, "посёлок": addrKindCity,
+	"поселке": addrKindCity, "посёлке": addrKindCity, "пгт": addrKindCity, "рп": addrKindCity,
+	"д": addrKindCity, "дер": addrKindCity, "деревня": addrKindCity, "деревне": addrKindCity,
+	"х": addrKindCity, "хутор": addrKindCity, "ст-ца": addrKindCity, "станица": addrKindCity,
+	"станице": addrKindCity, "снт": addrKindCity, "днп": addrKindCity, "аул": addrKindCity,
+	"улус": addrKindCity, "г-к": addrKindCity,
+	"ст": addrKindCity, "станция": addrKindCity, "станции": addrKindCity, "станцие": addrKindCity,
+	"клх": addrKindCity, "колхоз": addrKindCity, "к": addrKindCity,
+	"gorod": addrKindCity, "g": addrKindCity, "pos": addrKindCity, "derevnya": addrKindCity,
 }
 
 // addrRegionTypes — типы регионов и районов.
 var addrRegionTypes = map[string]string{
-	"обл": "region", "область": "region", "области": "region",
-	"край": "region", "края": "region", "крае": "region",
-	"респ": "region", "республика": "region", "республики": "region",
-	"республике": "region", "р-н": "region", "район": "region",
-	"района": "region", "районе": "region", "округ": "region",
-	"округа": "region", "ао": "region", "губерния": "region",
+	anchorWordRegion: addrKindRegion, "область": addrKindRegion, "области": addrKindRegion,
+	"край": addrKindRegion, "края": addrKindRegion, "крае": addrKindRegion,
+	anchorWordResp: addrKindRegion, "республика": addrKindRegion, "республики": addrKindRegion,
+	"республике": addrKindRegion, "р-н": addrKindRegion, "район": addrKindRegion,
+	"района": addrKindRegion, "районе": addrKindRegion, "округ": addrKindRegion,
+	"округа": addrKindRegion, "ао": addrKindRegion, "губерния": addrKindRegion,
 }
 
 // addrStreetTypes — типы улиц, включая английские сокращения.
 var addrStreetTypes = map[string]string{
-	"ул": "street", "улица": "street", "улице": "street", "улицы": "street",
-	"пр-т": "street", "пр-кт": "street", "просп": "street",
-	"проспект": "street", "проспекте": "street", "пр": "street",
-	"пер": "street", "переулок": "street", "переулке": "street",
-	"б-р": "street", "бул": "street", "бульвар": "street",
-	"ш": "street", "шоссе": "street",
-	"наб": "street", "набережная": "street", "набережной": "street",
-	"проезд": "street", "проезде": "street", "туп": "street",
-	"тупик": "street", "мкр": "street", "микрорайон": "street",
-	"кв-л": "street", "квартал": "street", "пл": "street",
-	"площадь": "street", "аллея": "street", "алл": "street",
-	"линия": "street", "тракт": "street", "просек": "street",
-	"просека": "street", "кольцо": "street", "съезд": "street",
-	"спуск": "street", "взвоз": "street", "заезд": "street",
-	"разъезд": "street", "street": "street", "st": "street", "ave": "street",
-	"avenue": "street", "rd": "street", "road": "street", "ln": "street",
-	"lane": "street", "blvd": "street", "boulevard": "street",
-	"dr": "street", "drive": "street", "sq": "street", "square": "street",
-	"hwy": "street", "highway": "street",
-	"str": "street", "strasse": "street",
-	"ul": "street", "ulitsa": "street", "prospekt": "street",
-	"pereulok": "street", "naberezhnaya": "street", "shosse": "street",
-	"proezd": "street", "bulvar": "street",
+	"ул": addrKindStreet, "улица": addrKindStreet, "улице": addrKindStreet, "улицы": addrKindStreet,
+	"пр-т": addrKindStreet, "пр-кт": addrKindStreet, anchorWordProsp: addrKindStreet,
+	"проспект": addrKindStreet, "проспекте": addrKindStreet, "пр": addrKindStreet,
+	"пер": addrKindStreet, "переулок": addrKindStreet, "переулке": addrKindStreet,
+	"б-р": addrKindStreet, "бул": addrKindStreet, "бульвар": addrKindStreet,
+	"ш": addrKindStreet, "шоссе": addrKindStreet,
+	"наб": addrKindStreet, "набережная": addrKindStreet, "набережной": addrKindStreet,
+	"проезд": addrKindStreet, "проезде": addrKindStreet, "туп": addrKindStreet,
+	"тупик": addrKindStreet, anchorWordMkr: addrKindStreet, "микрорайон": addrKindStreet,
+	"кв-л": addrKindStreet, "квартал": addrKindStreet, "пл": addrKindStreet,
+	"площадь": addrKindStreet, "аллея": addrKindStreet, "алл": addrKindStreet,
+	"линия": addrKindStreet, "тракт": addrKindStreet, "просек": addrKindStreet,
+	"просека": addrKindStreet, "кольцо": addrKindStreet, "съезд": addrKindStreet,
+	"спуск": addrKindStreet, "взвоз": addrKindStreet, "заезд": addrKindStreet,
+	"разъезд": addrKindStreet, addrKindStreet: addrKindStreet, "st": addrKindStreet, "ave": addrKindStreet,
+	"avenue": addrKindStreet, "rd": addrKindStreet, "road": addrKindStreet, "ln": addrKindStreet,
+	"lane": addrKindStreet, "blvd": addrKindStreet, "boulevard": addrKindStreet,
+	"dr": addrKindStreet, "drive": addrKindStreet, "sq": addrKindStreet, "square": addrKindStreet,
+	"hwy": addrKindStreet, "highway": addrKindStreet,
+	"str": addrKindStreet, "strasse": addrKindStreet,
+	"ul": addrKindStreet, "ulitsa": addrKindStreet, "prospekt": addrKindStreet,
+	"pereulok": addrKindStreet, "naberezhnaya": addrKindStreet, "shosse": addrKindStreet,
+	"proezd": addrKindStreet, "bulvar": addrKindStreet,
 }
 
 // addrHouseTypes — типы адресных номеров: дом, корпус, строение, квартира,
 // офис и помещение.
 var addrHouseTypes = map[string]string{
-	"д": "house", "дом": "house", "дома": "house", "доме": "house",
-	"вл": "house", "влад": "house", "владение": "house",
-	"к": "corp", "кор": "corp", "корп": "corp", "корпус": "corp",
-	"корпусе": "corp", "стр": "building", "строение": "building",
-	"строении": "building", "кв": "flat", "кварт": "flat",
-	"квартира": "flat", "квартире": "flat", "квартиры": "flat",
-	"оф": "office", "офис": "office", "офисе": "office",
-	"пом": "premise", "помещение": "premise", "помещении": "premise",
-	"лит": "premise", "литера": "premise", "эт": "premise", "этаж": "premise",
-	"apt": "flat", "apartment": "flat", "suite": "flat", "ste": "flat",
-	"unit": "flat", "room": "flat", "bld": "building", "bldg": "building",
-	"office": "office", "floor": "premise",
-	"dom": "house", "korp": "corp", "kv": "flat", "kvartira": "flat",
-	"str": "building",
+	"д": addrKindHouse, "дом": addrKindHouse, "дома": addrKindHouse, "доме": addrKindHouse,
+	"вл": addrKindHouse, "влад": addrKindHouse, "владение": addrKindHouse,
+	"к": addrKindCorp, "кор": addrKindCorp, "корп": addrKindCorp, "корпус": addrKindCorp,
+	"корпусе": addrKindCorp, "стр": addrKindBuilding, "строение": addrKindBuilding,
+	"строении": addrKindBuilding, "кв": addrKindFlat, "кварт": addrKindFlat,
+	"квартира": addrKindFlat, "квартире": addrKindFlat, "квартиры": addrKindFlat,
+	"оф": addrKindOffice, "офис": addrKindOffice, "офисе": addrKindOffice,
+	"пом": addrKindPremise, "помещение": addrKindPremise, "помещении": addrKindPremise,
+	"лит": addrKindPremise, "литера": addrKindPremise, "эт": addrKindPremise, "этаж": addrKindPremise,
+	"apt": addrKindFlat, "apartment": addrKindFlat, "suite": addrKindFlat, "ste": addrKindFlat,
+	"unit": addrKindFlat, "room": addrKindFlat, "bld": addrKindBuilding, "bldg": addrKindBuilding,
+	addrKindOffice: addrKindOffice, "floor": addrKindPremise,
+	"dom": addrKindHouse, "korp": addrKindCorp, "kv": addrKindFlat, "kvartira": addrKindFlat,
+	"str": addrKindBuilding,
 }
 
 // addrHouseWords — полные слова для номера дома. Только с ними одиночный
@@ -116,10 +130,10 @@ var addrHouseWords = map[string]bool{
 // Без них якорное слово из соседнего предложения попадает во фрагмент.
 var addrStopNames = map[string]bool{
 	"и": true, "или": true, "а": true, "но": true, "не": true, "что": true,
-	"это": true, "же": true, "тел": true, "телефон": true, "паспорт": true,
-	"инн": true, "снилс": true, "email": true, "почта": true, "дата": true,
-	"серия": true, "номер": true, "выдан": true, "код": true, "сумма": true,
-	"заказ": true, "договор": true, "банк": true, "отделение": true,
+	"это": true, "же": true, anchorWordTel: true, anchorWordPhone: true, anchorWordPassport: true,
+	anchorWordInn: true, anchorWordSNILS: true, "email": true, "почта": true, "дата": true,
+	anchorWordSeriesFull: true, "номер": true, anchorWordIssued: true, "код": true, "сумма": true,
+	"заказ": true, anchorWordContract: true, "банк": true, "отделение": true,
 	"филиал": true, "рождения": true, "рожд": true, "год": true,
 	"года": true, "году": true, "лет": true, "руб": true, "рублей": true,
 }
@@ -162,13 +176,13 @@ type addrWord struct {
 // Менделеева», «поехал в город Казань»), и одного такого слова для адреса
 // мало, ему по-прежнему нужен второй компонент или якорь.
 var addrSoloTypes = map[string]bool{
-	"г": true, "гор": true, "г-д": true, "г-к": true, "гп": true,
-	"с": true, "д": true, "дер": true, "п": true, "пос": true,
+	"г": true, anchorWordGor: true, "г-д": true, "г-к": true, "гп": true,
+	"с": true, "д": true, "дер": true, "п": true, anchorWordPos: true,
 	"пгт": true, "рп": true, "ст": true, "ст-ца": true, "х": true,
-	"клх": true, "к": true, "снт": true, "днп": true, "мкр": true,
+	"клх": true, "к": true, "снт": true, "днп": true, anchorWordMkr: true,
 	"кв-л": true,
 	"ул":   true, "пер": true, "пр": true, "пр-т": true, "пр-кт": true,
-	"просп": true, "пл": true, "наб": true, "ш": true, "б-р": true,
+	anchorWordProsp: true, "пл": true, "наб": true, "ш": true, "б-р": true,
 	"бул": true, "алл": true, "туп": true,
 }
 
@@ -212,7 +226,7 @@ func addrWithLatinCity(d *Doc, ws []addrWord, comps []addrComp) []addrComp {
 			continue
 		}
 		comps[i].start = ws[p].start
-		comps[i].kinds = append([]string{"city"}, comps[i].kinds...)
+		comps[i].kinds = append([]string{addrKindCity}, comps[i].kinds...)
 	}
 	return comps
 }
@@ -221,7 +235,7 @@ func addrWithLatinCity(d *Doc, ws []addrWord, comps []addrComp) []addrComp {
 // Слово должно стоять само по себе: в записи «John Smith, Druzhby str.»
 // фамилия отделена от имени пробелом, и населённым пунктом не считается.
 func addrLatinCityBefore(d *Doc, ws []addrWord, c addrComp) (int, bool) {
-	if !addrHasKind(c, "street") || addrHasKind(c, "city") {
+	if !addrHasKind(c, addrKindStreet) || addrHasKind(c, addrKindCity) {
 		return 0, false
 	}
 	p := -1
@@ -357,7 +371,7 @@ func addrAttachHouseNumber(d *Doc, ws []addrWord, c addrComp, next int) (addrCom
 	if next >= len(ws) || ws[next].kind != KindDigit || len(ws[next].lower) > 4 {
 		return c, next
 	}
-	if !addrHasKind(c, "street") || addrHasKind(c, "house") {
+	if !addrHasKind(c, addrKindStreet) || addrHasKind(c, addrKindHouse) {
 		return c, next
 	}
 	gap := d.Text[c.end:ws[next].start]
@@ -371,7 +385,7 @@ func addrAttachHouseNumber(d *Doc, ws []addrWord, c addrComp, next int) (addrCom
 	}
 	end, last := addrNumberEnd(d, ws, next)
 	c.end = end
-	c.kinds = append(c.kinds, "house")
+	c.kinds = append(c.kinds, addrKindHouse)
 	return c, last + 1
 }
 
@@ -381,7 +395,7 @@ func addrAttachHouseNumber(d *Doc, ws []addrWord, c addrComp, next int) (addrCom
 // допускается ровно одно сокращённое слово с заглавной буквы: развёрнутый
 // комментарий вроде «(заявка принята)» к адресу не относится.
 func addrRegionTail(d *Doc, ws []addrWord, c addrComp, next int) (addrComp, int) {
-	if !addrHasKind(c, "city") || next >= len(ws) {
+	if !addrHasKind(c, addrKindCity) || next >= len(ws) {
 		return c, next
 	}
 	if strings.TrimLeft(d.Text[c.end:ws[next].start], " ") != "(" {
@@ -695,7 +709,7 @@ func addrMatchNameFirst(d *Doc, ws []addrWord, i int, types map[string]string) (
 	// «Москва ул. Ленина» город относится к себе. Для региона оговорка не
 	// действует, иначе опечатка «Свердловска область» теряла бы слово
 	// «область» и разрывала адрес.
-	if _, known := dict.Place(ws[i].lower); known && kind != "region" {
+	if _, known := dict.Place(ws[i].lower); known && kind != addrKindRegion {
 		return addrComp{}, 0, false
 	}
 	// За типом стоит собственное название — значит тип относится к нему, а не
@@ -713,7 +727,7 @@ func addrMatchNameFirst(d *Doc, ws []addrWord, i int, types map[string]string) (
 // за ним стоит имя собственное. Число после сокращения имя не образует, этим
 // «д. 5» отличается от «д. Касимов».
 func addrSoloComp(d *Doc, ws []addrWord, i, name int, kind string) bool {
-	if kind != "city" && kind != "street" {
+	if kind != addrKindCity && kind != addrKindStreet {
 		return false
 	}
 	if !addrSoloTypes[d.Lower[ws[i].start:ws[name-1].end]] {
@@ -741,11 +755,11 @@ func addrMatchHouse(d *Doc, ws []addrWord, i int) (addrComp, int, bool) {
 	// не засчитывается, оно слишком многозначно, а корпус, квартира и офис в
 	// одиночку значат номер помещения, а не место жительства.
 	c := addrComp{start: ws[i].start, end: end, kinds: []string{kind}}
-	c.solo = kind == "house" && addrHouseWords[ws[i].lower]
+	c.solo = kind == addrKindHouse && addrHouseWords[ws[i].lower]
 	// Квартира полным словом отдельно это адрес, если после номера нет
 	// продолжения: «квартира 12» маскируется, а «квартира 12 в доме напротив»
 	// это разговорное описание, а не адресная запись.
-	if kind == "flat" && ws[i].lower == "квартира" && addrFlatSolo(d, ws, last) {
+	if kind == addrKindFlat && ws[i].lower == "квартира" && addrFlatSolo(ws, last) {
 		c.solo = true
 	}
 	return c, last + 1, true
@@ -754,7 +768,7 @@ func addrMatchHouse(d *Doc, ws []addrWord, i int) (addrComp, int, bool) {
 // addrFlatSolo сообщает, что после номера квартиры нет продолжения адреса
 // словом: «квартира 12» в конце строки это адрес, а «квартира 12 в доме
 // напротив» — описание местоположения.
-func addrFlatSolo(d *Doc, ws []addrWord, last int) bool {
+func addrFlatSolo(ws []addrWord, last int) bool {
 	if last+1 >= len(ws) {
 		return true
 	}
@@ -804,7 +818,7 @@ func addrMatchBareStreet(d *Doc, ws []addrWord, i int) (addrComp, int, bool) {
 		return addrComp{}, 0, false
 	}
 	end, last := addrNumberEnd(d, ws, j)
-	return addrComp{start: w.start, end: end, kinds: []string{"street", "house"}}, last + 1, true
+	return addrComp{start: w.start, end: end, kinds: []string{addrKindStreet, addrKindHouse}}, last + 1, true
 }
 
 // addrHasStreetSuffix проверяет улично-прилагательное окончание названия.
@@ -832,7 +846,7 @@ func addrMatchNumberStreet(d *Doc, ws []addrWord, i int) (addrComp, int, bool) {
 		return addrComp{}, 0, false
 	}
 	c.start = ws[i].start
-	c.kinds = append([]string{"house"}, c.kinds...)
+	c.kinds = append([]string{addrKindHouse}, c.kinds...)
 	return c, next, true
 }
 
@@ -1124,13 +1138,13 @@ var birthPrepositions = map[string]bool{
 // birthStopWords — слова, на которых место рождения заканчивается: якоря
 // других типов и глаголы следующего утверждения.
 var birthStopWords = map[string]bool{
-	"паспорт": true, "паспорта": true, "гражданство": true,
-	"гражданства": true, "гражданин": true, "гражданка": true, "дата": true,
-	"серия": true, "серии": true, "номер": true, "выдан": true,
-	"выдано": true, "выдана": true, "адрес": true, "адресу": true,
-	"прописан": true, "прописка": true, "зарегистрирован": true,
-	"проживает": true, "проживающий": true, "живет": true, "живёт": true,
-	"тел": true, "телефон": true, "инн": true, "снилс": true, "email": true,
+	anchorWordPassport: true, "паспорта": true, "гражданство": true,
+	"гражданства": true, anchorWordCitizen: true, "гражданка": true, "дата": true,
+	anchorWordSeriesFull: true, anchorWordSeries: true, "номер": true, anchorWordIssued: true,
+	"выдано": true, "выдана": true, anchorWordAddress: true, "адресу": true,
+	"прописан": true, "прописка": true, anchorWordRegistered: true,
+	anchorWordLives: true, "проживающий": true, "живет": true, "живёт": true,
+	anchorWordTel: true, anchorWordPhone: true, anchorWordInn: true, anchorWordSNILS: true, "email": true,
 	"почта": true, "пол": true, "образование": true, "работает": true,
 	"учился": true, "переехал": true, "затем": true, "потом": true,
 	"где": true, "и": true, "а": true, "но": true, "место": true,
@@ -1145,8 +1159,8 @@ const birthBreakRunes = "—–()[]{}«»\"|/"
 
 // birthAbbrev — сокращения, после которых точка не заканчивает предложение.
 var birthAbbrev = map[string]bool{
-	"г": true, "гор": true, "с": true, "п": true, "пос": true, "пгт": true,
-	"д": true, "дер": true, "обл": true, "респ": true, "кр": true,
+	"г": true, anchorWordGor: true, "с": true, "п": true, anchorWordPos: true, "пгт": true,
+	"д": true, "дер": true, anchorWordRegion: true, anchorWordResp: true, "кр": true,
 	"ст": true, "х": true, "им": true, "р": true, "н": true,
 }
 

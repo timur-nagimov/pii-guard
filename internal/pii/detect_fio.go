@@ -503,7 +503,7 @@ func fioAdjacent(d *Doc, a, b fioWord) bool {
 			return false
 		}
 	}
-	if comma && !(a.has(fioRoleAnySurname) && b.has(fioRoleName)) {
+	if comma && (!a.has(fioRoleAnySurname) || !b.has(fioRoleName)) {
 		return false
 	}
 	return true
