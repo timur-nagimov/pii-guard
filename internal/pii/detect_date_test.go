@@ -575,3 +575,37 @@ func TestDateValidDayMonth(t *testing.T) {
 		}
 	}
 }
+
+// TestDateFormsFromCorpus закрепляет записи дат, которые набор показал как
+// пропущенные: канцелярская форма с днём в кавычках и якоря, которых не было
+// в списке признаков даты выдачи.
+func TestDateFormsFromCorpus(t *testing.T) {
+	det := NewDateDetector("")
+	cases := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{"день в кавычках", "Дата выдачи: «12» июля 2017 г.", []string{"12» июля 2017"}},
+		{"кавычки и двойные пробелы", "Дата выдачи:  «11»  января  2011  г.", []string{"11»  января  2011"}},
+		{"якорь дата оформления", "Дата оформления: 28/07/16.", []string{"28/07/16"}},
+		{"якорь начала действия", "Дата начала действия: 26.03.05.", []string{"26.03.05"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := det.Detect(NewDoc(c.text))
+			var vals []string
+			for _, s := range got {
+				vals = append(vals, c.text[s.Start:s.End])
+			}
+			if len(vals) != len(c.want) {
+				t.Fatalf("получено %q, ожидалось %q", vals, c.want)
+			}
+			for i := range vals {
+				if vals[i] != c.want[i] {
+					t.Fatalf("фрагмент %d: %q, ожидалось %q", i, vals[i], c.want[i])
+				}
+			}
+		})
+	}
+}
