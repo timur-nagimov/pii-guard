@@ -164,6 +164,49 @@ func TestUIPageBuildsNoMarkupFromInput(t *testing.T) {
 	}
 }
 
+// TestUIPageHasRuleManagement закрепляет раздел управления правилами: свои
+// типы, их удаление и выбор типов у каждой системы.
+//
+// Раздел легко потерять при правке страницы, а без него матрица покрытия
+// только показывает дыры, но не даёт их закрыть.
+func TestUIPageHasRuleManagement(t *testing.T) {
+	body := uiBody(t)
+
+	required := []string{
+		`id="panel-rules"`,
+		`id="rules-custom"`,  // перечень своих типов
+		`id="rules-systems"`, // типы у каждой системы
+		`id="rule-add"`,      // добавление типа
+		`id="rule-pattern"`,  // выражение нового типа
+		`id="rules-state"`,   // видно ли, что правка недоступна
+		`id="rules-token-input"`,
+		`'/v1/rules'`,
+		`op: 'add_type'`,
+		`op: 'remove_type'`,
+		`op: 'set_system_types'`,
+		`op: 'set_system_enabled'`,
+		`X-Admin-Token`,
+	}
+	for _, needle := range required {
+		if !strings.Contains(body, needle) {
+			t.Errorf("в разделе правил нет обязательного элемента %q", needle)
+		}
+	}
+}
+
+// TestUIPageKeepsAdminTokenOutOfBrowserStorage закрепляет обращение с
+// признаком управления: он секрет, и хранилищу браузера его доверять нельзя —
+// оно переживает закрытие вкладки и доступно любому сценарию на странице.
+func TestUIPageKeepsAdminTokenOutOfBrowserStorage(t *testing.T) {
+	body := uiBody(t)
+
+	for _, storage := range []string{"localStorage", "sessionStorage", "document.cookie"} {
+		if strings.Contains(body, storage) {
+			t.Errorf("страница обращается к %q: признак управления может там осесть", storage)
+		}
+	}
+}
+
 // uiBody возвращает тело страницы так, как его получает браузер.
 func uiBody(t *testing.T) string {
 	t.Helper()

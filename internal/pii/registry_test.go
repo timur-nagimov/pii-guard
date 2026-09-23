@@ -3,6 +3,7 @@ package pii
 import (
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -305,4 +306,103 @@ func TestAllTypesUnique(t *testing.T) {
 	if len(seen) != 18 {
 		t.Fatalf("обязательных типов %d, ожидалось 18", len(seen))
 	}
+}
+
+// Детектор типов из настроек обязан подменяться на ходу.
+//
+// До сменного слота он собирался один раз при запуске, и добавленный в
+// настройки тип не действовал до перезапуска: журнал писал «настройки
+// применены», сервис отвечал успехом, а нового типа в ответе не было.
+func TestRegistrySetCustomTakesEffectImmediately(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(NewEmailDetector())
+
+	doc := NewDoc("пропуск 123456 и почта a@b.ru")
+	if got := len(reg.Detect(doc)); got != 1 {
+		t.Fatalf("до подмены найдено фрагментов: %d, ожидался один (почта)", got)
+	}
+
+	badge, err := NewCustomDetector([]CustomRule{{
+		Name: "BADGE", Pattern: `(\d{6})`, Group: 1,
+		Anchors: []string{"пропуск"}, RequireAnchor: true,
+	}})
+	if err != nil {
+		t.Fatalf("правило не собралось: %v", err)
+	}
+	reg.SetCustom(badge)
+
+	spans := reg.Detect(doc)
+	if len(spans) != 2 {
+		t.Fatalf("после подмены найдено фрагментов: %d, ожидалось два\n%+v", len(spans), spans)
+	}
+	var seen bool
+	for _, s := range spans {
+		if s.Type == "BADGE" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Errorf("добавленный тип не найден: %+v", spans)
+	}
+	// Новый тип обязан быть виден и в перечне типов: по нему строится охват.
+	var listed bool
+	for _, tp := range reg.Types() {
+		if tp == "BADGE" {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Errorf("добавленный тип не попал в перечень: %v", reg.Types())
+	}
+
+	// Снятие слота возвращает набор к исходному состоянию.
+	reg.SetCustom(nil)
+	if got := len(reg.Detect(doc)); got != 1 {
+		t.Errorf("после снятия найдено фрагментов: %d, ожидался один", got)
+	}
+	for _, tp := range reg.Types() {
+		if tp == "BADGE" {
+			t.Error("снятый тип остался в перечне")
+		}
+	}
+}
+
+// Слот читают обработчики запросов, а меняет его наблюдение за файлом
+// настроек. Проверка под -race.
+func TestRegistrySetCustomIsRaceFree(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(NewEmailDetector())
+	rule := []CustomRule{{Name: "BADGE", Pattern: `(\d{6})`, Group: 1}}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			doc := NewDoc("пропуск 123456 и почта a@b.ru")
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					reg.Detect(doc)
+					reg.Types()
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < 200; i++ {
+		d, err := NewCustomDetector(rule)
+		if err != nil {
+			t.Errorf("правило не собралось: %v", err)
+			break
+		}
+		reg.SetCustom(d)
+		reg.SetCustom(nil)
+	}
+	close(stop)
+	wg.Wait()
 }

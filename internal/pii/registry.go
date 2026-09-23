@@ -1,16 +1,35 @@
 package pii
 
-import "sort"
+import (
+	"sort"
+	"sync/atomic"
+)
 
-// Registry — набор зарегистрированных детекторов. Пополняется при старте
-// сервиса и дальше только читается, поэтому безопасен для параллельных
-// запросов без блокировок.
+// Registry — набор зарегистрированных детекторов. Встроенные детекторы
+// добавляются при старте сервиса и дальше только читаются, поэтому обходятся
+// без блокировок.
+//
+// Детектор типов из настроек стоит особняком, в сменном слоте: его
+// пересобирают при каждом перечитывании настроек, пока сервис обслуживает
+// запросы. Замена атомарная, см. поле custom.
 //
 // Новый тип персональных данных добавляется регистрацией ещё одного детектора
 // или записью в раздел custom_types конфигурации — ядро при этом не меняется.
 type Registry struct {
 	detectors []Detector
-	onPanic   PanicHandler
+
+	// custom — детектор типов из настроек, вынесенный в отдельный сменный
+	// слот. Остальные детекторы встроены в сборку и после запуска не
+	// меняются, а этот пересобирается при каждом перечитывании настроек:
+	// иначе добавленный тип не действовал бы до перезапуска сервиса.
+	//
+	// Замена атомарная, потому что читают слот на горячем пути, из всех
+	// обработчиков сразу, а меняет его отдельная горутина наблюдения за
+	// файлом. Хранится указатель на интерфейс, а не сам интерфейс: пустое
+	// значение должно отличаться от «детектора нет».
+	custom atomic.Pointer[Detector]
+
+	onPanic PanicHandler
 }
 
 // NewRegistry создаёт пустой набор детекторов.
@@ -21,14 +40,31 @@ func (r *Registry) Register(d ...Detector) {
 	r.detectors = append(r.detectors, d...)
 }
 
-// Detectors возвращает зарегистрированные детекторы.
-func (r *Registry) Detectors() []Detector { return r.detectors }
+// SetCustom подменяет детектор типов из настроек. Пустое значение убирает его.
+//
+// Вызывается при запуске и при каждом применении новых настроек. Уже идущие
+// запросы дорабатывают прежним детектором: замена указателя их не касается.
+func (r *Registry) SetCustom(d Detector) {
+	if d == nil {
+		r.custom.Store(nil)
+		return
+	}
+	r.custom.Store(&d)
+}
+
+// Detectors возвращает зарегистрированные детекторы, включая сменный.
+func (r *Registry) Detectors() []Detector {
+	if c := r.custom.Load(); c != nil {
+		return append(append([]Detector(nil), r.detectors...), *c)
+	}
+	return r.detectors
+}
 
 // Types перечисляет все типы, которые умеет находить набор.
 func (r *Registry) Types() []Type {
 	seen := make(map[Type]bool)
 	var out []Type
-	for _, d := range r.detectors {
+	for _, d := range r.Detectors() {
 		for _, t := range d.Types() {
 			if !seen[t] {
 				seen[t] = true
@@ -57,6 +93,12 @@ func (r *Registry) Detect(d *Doc) []Span {
 	var spans []Span
 	for _, det := range r.detectors {
 		spans = append(spans, r.detectOne(det, d)...)
+	}
+	// Сменный слот обходится отдельно, а не через Detectors(): тот собирает
+	// новый срез, и на горячем пути это была бы лишняя выделенная память на
+	// каждый запрос.
+	if c := r.custom.Load(); c != nil {
+		spans = append(spans, r.detectOne(*c, d)...)
 	}
 	SortSpans(spans)
 	return spans
