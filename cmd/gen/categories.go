@@ -44,6 +44,7 @@ func compositeCategories() []categorySpec {
 		{name: "noise", weight: 4, gen: genNoise},
 		{name: "latin_mixed", weight: 4, gen: genLatinMixed},
 		{name: "long_64k", weight: 2, gen: genLong64k},
+		{name: "lowercase_fio", weight: 4, gen: genLowercaseFIO},
 	}
 }
 

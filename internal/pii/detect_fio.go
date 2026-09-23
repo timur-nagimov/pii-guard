@@ -161,8 +161,9 @@ func fioCollectWords(d *Doc) (words, lower []fioWord) {
 
 // fioWordEnd находит конец слова, приклеивая части через дефис: двойные
 // фамилии вроде Петров-Водкин и составные имена вроде Анна-Мария это один
-// компонент. Часть после дефиса обязана начинаться с заглавной буквы, иначе
-// к имени приклеится обычное слово.
+// компонент. Часть после дефиса обязана начинаться с заглавной буквы либо
+// быть похожей на фамилию: «Петров-Водкин» и «петров-водкин» это одна
+// фамилия, а «иванов-то» и «нагимов-банк» — нет.
 func fioWordEnd(d *Doc, i int) (int, int) {
 	toks := d.Tokens
 	end, last := toks[i].End, i
@@ -175,7 +176,10 @@ func fioWordEnd(d *Doc, i int) (int, int) {
 			break
 		}
 		if !fioStartsUpper(d.Text[next.Start:next.End]) {
-			break
+			part := fioNewWord(d, next.Start, next.End)
+			if part.capital || !fioLowerSurnamePart(part) {
+				break
+			}
 		}
 		end, last = next.End, last+2
 	}
@@ -287,7 +291,13 @@ func fioLowerSurnamePart(w fioWord) bool {
 // по отдельности: достаточно, чтобы имени соответствовала любая из них.
 func fioWordRoles(w fioWord) fioRole {
 	if fioRuneCount(w.norm) == 1 {
-		if w.capital {
+		// Инициалом считается одиночная буква с точкой независимо от регистра:
+		// «Иванов И. И.» и «иванов и. и.» это одно и то же имя. Сокращения
+		// вроде «ул.», «пл.», «им.» инициалами не бывают: они помечают адрес,
+		// а не человека. Служебные «г.», «т.» инициалами становятся только в
+		// паре с другим инициалом, поэтому отдельно они отсекаются в
+		// fioInitialsPair.
+		if w.capital || (w.dot && !fioAddressMarkers[w.norm]) {
 			return fioRoleInitial
 		}
 		return 0
@@ -584,6 +594,15 @@ func fioInitialsPair(a, b fioWord) bool {
 	if a.latin != b.latin {
 		return false
 	}
+	// Фамилия из списка исключений это город или обычное слово: «г. Ростов»
+	// и «ул. Пушкина» не должны маскироваться. В тройке с двумя инициалами
+	// такое слово безопасно, поэтому здесь отсекается только пара.
+	if a.has(fioRoleAnySurname) && fioStopWords[a.norm] {
+		return false
+	}
+	if b.has(fioRoleAnySurname) && fioStopWords[b.norm] {
+		return false
+	}
 	if a.has(fioRoleAnySurname) && b.isInitial() {
 		return true
 	}
@@ -604,18 +623,23 @@ func fioSingleShape(d *Doc, w fioWord) (float64, string, bool) {
 	if _, ok := fioMarkerBefore(d, w.start, fioAnchors); ok {
 		return ConfAnchored, "fio:anchor", true
 	}
-	// Дальше решение принимается без якоря, поэтому одиночная латиница и
-	// слова со строчной буквы отбрасываются, а обычные слова с фамильными
-	// окончаниями отсекаются списком исключений.
-	if !w.capital || w.latin || fioStopWords[w.norm] {
+	// Дальше решение принимается без якоря. Одиночная латиница и обычные
+	// слова с фамильными окончаниями отсекаются списком исключений. Имя из
+	// словаря опознаётся независимо от регистра: «анастасия» в чате это то же
+	// имя, что «Анастасия» в анкете. Фамилия по одному слову требует заглавной
+	// буквы: иначе фамилией станет «иванов» в «сто иванов».
+	if w.latin || fioStopWords[w.norm] {
 		return 0, "", false
 	}
 	switch {
 	case w.has(fioRoleSurnameDict):
+		if !w.capital {
+			return 0, "", false
+		}
 		return ConfAnchored, "fio:surname", true
 	case w.has(fioRoleName) && !fioHomonyms[w.norm]:
 		return ConfAnchored, "fio:name", true
-	case w.has(fioRoleSurnameStrong) && !fioAtSentenceStart(d, w.start):
+	case w.has(fioRoleSurnameStrong) && w.capital && !fioAtSentenceStart(d, w.start):
 		return ConfMedium, "fio:surname_suffix", true
 	}
 	return 0, "", false
@@ -1311,6 +1335,13 @@ var fioStopWords = fioWordSet(
 	"операторов", "случаев", "платежей", "средств", "рублев",
 	"ростов", "саратов", "тамбов", "киров", "псков", "азов", "львов", "харьков",
 	"чернигов", "кишинев", "ковров", "серпухов", "пушкин", "гагарин",
+	// Падежные формы месяцев: «в августе», «к марту» — это не имена.
+	"январе", "январю", "феврале", "февралю", "марте", "марту", "апреле",
+	"апрелю", "мае", "маю", "июне", "июню", "июле", "июлю", "августе",
+	"августу", "сентябре", "сентябрю", "октябре", "октябрю", "ноябре",
+	"ноябрю", "декабре", "декабрю",
+	// «Марка» и её падежные формы: марка автомобиля, почтовая марка.
+	"марк", "марка", "марки", "марку", "марке", "маркой",
 	// Слова, совпадающие с редкими именами из словаря.
 	"викторина", "викторины", "викторине", "забава", "забавы", "забаву",
 	"улита", "улиты", "мина", "мины", "мине", "мину", "сила", "силы", "силу",
