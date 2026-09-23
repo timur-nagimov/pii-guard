@@ -32,6 +32,7 @@ while [ $# -gt 0 ]; do
     --jobs)  JOBS="$2"; shift ;;
     --until) UNTIL="$2"; shift ;;
     --model) MODEL="$2"; shift ;;
+    --no-merge) NO_MERGE=1 ;;
     *) echo "неизвестный ключ: $1"; exit 2 ;;
   esac
   shift
@@ -200,7 +201,9 @@ while ! should_stop; do
   for entry in "${TARGETS[@]}"; do
     type="${entry%%:*}"
     name="$(printf '%s' "$type" | tr 'A-Z_' 'a-z-')-r$ROUND"
-    if [ -f "$NIGHT/passed/$name.ok" ]; then
+    if [ -f "$NIGHT/passed/$name.ok" ] && [ "${NO_MERGE:-0}" = "1" ]; then
+      printf '  ветка %s прошла ворота и ждёт просмотра: git merge night/%s\n' "$name" "$name"
+    elif [ -f "$NIGHT/passed/$name.ok" ]; then
       if git -C "$ROOT" merge --no-ff --no-edit "night/$name" >/dev/null 2>&1; then
         printf '  влито: %s\n' "$name"
       else
@@ -208,7 +211,8 @@ while ! should_stop; do
         printf '  конфликт при слиянии %s, ветка оставлена на разбор\n' "$name"
       fi
     fi
-    git -C "$ROOT" worktree remove --force "$NIGHT/work/$name" 2>/dev/null
+    # Без слияния копия остаётся: по ней смотрят, что именно сделал агент.
+    [ "${NO_MERGE:-0}" = "1" ] || git -C "$ROOT" worktree remove --force "$NIGHT/work/$name" 2>/dev/null
   done
 
   say "состояние после круга $ROUND"
