@@ -17,6 +17,12 @@
 //   K6_PROMETHEUS_RW_TREND_STATS=p(95),p(99),max \
 //   k6 run -o experimental-prometheus-rw pii-guard.js
 // На стороне Prometheus нужен ключ запуска --web.enable-remote-write-receiver.
+
+// __ENV заводит сам k6 в момент прогона, в исходнике объявления нет, поэтому
+// статический анализатор считает имя неизвестным и ругается на него. Объявляем
+// глобаль для анализаторов: на сам сценарий строка ниже никак не влияет.
+/* global __ENV */
+
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
@@ -28,21 +34,43 @@ import exec from 'k6/execution';
 // проверяет конец строки, и разбор растёт квадратом от длины адреса.
 function trimTrailingSlashes(url) {
   let end = url.length;
-  while (end > 0 && url[end - 1] === '/') end -= 1;
+  while (end > 0 && url[end - 1] === '/') {
+    end -= 1;
+  }
   return url.slice(0, end);
 }
 
+// Значения настроек по умолчанию названы именами: рядом с вызовом Number
+// голое число не говорит, какую величину задаёт и в чём она измеряется.
+// Строковые значения оставлены по месту, они читаются сами.
+const DEFAULT_RPS = 200;
+const DEFAULT_PAYLOAD_SIZE = 250;
+const DEFAULT_P99_MS = 50;
+const DEFAULT_ERROR_RATE = 0.01;
+const DEFAULT_RETRIES = 2;
+
+// Коды ответов из контракта сервиса и шаг паузы перед повтором в секундах.
+const HTTP_OK = 200;
+const HTTP_TOO_MANY_REQUESTS = 429;
+const RETRY_PAUSE_SEC = 0.2;
+
 const BASE_URL = trimTrailingSlashes(__ENV.BASE_URL || 'http://127.0.0.1:8080');
-const RPS = Number(__ENV.RPS || 200);
+const RPS = Number(__ENV.RPS || DEFAULT_RPS);
 const DURATION = __ENV.DURATION || '1m';
-const PAYLOAD_SIZE = Number(__ENV.PAYLOAD_SIZE || 250);
+const PAYLOAD_SIZE = Number(__ENV.PAYLOAD_SIZE || DEFAULT_PAYLOAD_SIZE);
 const SYSTEM_KEY = __ENV.SYSTEM_KEY || '';
-const P99_MS = Number(__ENV.P99_MS || 50);
-const ERROR_RATE = Number(__ENV.ERROR_RATE || 0.01);
-const RETRIES = Number(__ENV.RETRIES || 2);
+const P99_MS = Number(__ENV.P99_MS || DEFAULT_P99_MS);
+const ERROR_RATE = Number(__ENV.ERROR_RATE || DEFAULT_ERROR_RATE);
+const RETRIES = Number(__ENV.RETRIES || DEFAULT_RETRIES);
 // Отправителей берём с запасом: при частоте в тысячу пар и задержке в
 // миллисекунду хватает десятков, но запас спасает от всплесков задержки.
-const VUS = Number(__ENV.VUS || Math.max(50, Math.ceil(RPS / 5)));
+// MIN_VUS это нижняя граница запаса, RPS_PER_VU сколько пар в секунду
+// вытягивает один отправитель, MAX_VUS_FACTOR во сколько раз k6 разрешено
+// добрать отправителей сверх выделенных заранее, если задержка подскочила.
+const MIN_VUS = 50;
+const RPS_PER_VU = 5;
+const MAX_VUS_FACTOR = 4;
+const VUS = Number(__ENV.VUS || Math.max(MIN_VUS, Math.ceil(RPS / RPS_PER_VU)));
 
 // Собственные показатели: доля верных масок, доля точного восстановления
 // и число ответов с просьбой повторить.
@@ -63,19 +91,30 @@ export const options = {
       timeUnit: '1s',
       duration: DURATION,
       preAllocatedVUs: VUS,
-      maxVUs: VUS * 4,
-    },
+      maxVUs: VUS * MAX_VUS_FACTOR
+    }
   },
   thresholds: {
     'http_req_failed': [`rate<${ERROR_RATE}`],
     'http_req_duration{step:mask}': [`p(99)<${P99_MS}`],
     'http_req_duration{step:demask}': [`p(99)<${P99_MS}`],
     'pii_mask_changed': ['rate>0.99'],
-    'pii_demask_exact': ['rate>0.99'],
+    'pii_demask_exact': ['rate>0.99']
   },
   summaryTrendStats: ['avg', 'min', 'med', 'p(95)', 'p(99)', 'max'],
-  noConnectionReuse: false,
+  noConnectionReuse: false
 };
+
+// Границы диапазонов кодировки UTF-8 и вес символа в байтах. Числа вынесены
+// в имена: в самом счёте 0x800 и 3 не объясняют, откуда взялись, а так видно,
+// что это устройство кодировки, а не подобранные под задачу значения.
+const UTF8_TWO_BYTE_MIN = 0x80;
+const UTF8_THREE_BYTE_MIN = 0x800;
+const UTF8_FOUR_BYTE_MIN = 0x10000;
+const UTF8_ONE_BYTE = 1;
+const UTF8_TWO_BYTES = 2;
+const UTF8_THREE_BYTES = 3;
+const UTF8_FOUR_BYTES = 4;
 
 // byteLength считает длину строки в байтах кодировки UTF-8: размер текста
 // в задании задан в байтах, а кириллическая буква занимает два.
@@ -83,22 +122,37 @@ function byteLength(text) {
   let n = 0;
   for (const ch of text) {
     const code = ch.codePointAt(0);
-    if (code < 0x80) n += 1;
-    else if (code < 0x800) n += 2;
-    else if (code < 0x10000) n += 3;
-    else n += 4;
+    if (code < UTF8_TWO_BYTE_MIN) {
+      n += UTF8_ONE_BYTE;
+    } else if (code < UTF8_THREE_BYTE_MIN) {
+      n += UTF8_TWO_BYTES;
+    } else if (code < UTF8_FOUR_BYTE_MIN) {
+      n += UTF8_THREE_BYTES;
+    } else {
+      n += UTF8_FOUR_BYTES;
+    }
   }
   return n;
 }
 
+// Хвост номера паспорта: от какого числа считаем, сколько разных хвостов
+// перебираем и сколько цифр оставляем. Номер обязан остаться из четырёх цифр,
+// иначе текст перестанет быть похожим на настоящий.
+const PASSPORT_TAIL_BASE = 3400;
+const PASSPORT_TAIL_SPAN = 100;
+const PASSPORT_TAIL_LEN = 4;
+
 // makeText собирает текст нужного размера с персональными данными внутри.
 // Номер итерации попадает в текст, чтобы запросы не были копиями друг друга.
 function makeText(seq, size) {
+  const tail = String(PASSPORT_TAIL_BASE + (seq % PASSPORT_TAIL_SPAN)).slice(0, PASSPORT_TAIL_LEN);
   const base =
-    `Клиент Иванов Иван Иванович, паспорт 4509 12${String(3400 + (seq % 100)).slice(0, 4)}, ` +
+    `Клиент Иванов Иван Иванович, паспорт 4509 12${tail}, ` +
     `тел. +7 916 123-45-67, ИНН 500100732259, карта 4111 1111 1111 1111. `;
   let text = base;
-  while (byteLength(text) < size) text += base;
+  while (byteLength(text) < size) {
+    text += base;
+  }
   return text;
 }
 
@@ -107,25 +161,34 @@ function makeText(seq, size) {
 // не ошибку, а просьбу прийти позже.
 function postProcess(payload, payloadID, step) {
   const headers = { 'Content-Type': 'application/json' };
-  if (SYSTEM_KEY) headers['X-System-Key'] = SYSTEM_KEY;
+  if (SYSTEM_KEY) {
+    headers['X-System-Key'] = SYSTEM_KEY;
+  }
   const params = { headers, tags: { step }, timeout: '10s' };
-  const body = JSON.stringify({ payload: payload, payload_id: payloadID });
+  const body = JSON.stringify({ payload, payload_id: payloadID });
 
   for (let attempt = 0; attempt <= RETRIES; attempt++) {
     const res = http.post(`${BASE_URL}/process`, body, params);
-    if (res.status !== 429) return res;
+    if (res.status !== HTTP_TOO_MANY_REQUESTS) {
+      return res;
+    }
     throttled.add(1, { step });
-    sleep(0.2 * (attempt + 1));
+    sleep(RETRY_PAUSE_SEC * (attempt + 1));
   }
   return null;
 }
 
 // resultOf достаёт поле result из ответа, не роняя прогон на чужом теле.
 function resultOf(res) {
-  if (res?.status !== 200) return null;
+  if (res?.status !== HTTP_OK) {
+    return null;
+  }
   try {
     const parsed = res.json();
-    return typeof parsed.result === 'string' ? parsed.result : null;
+    if (typeof parsed.result === 'string') {
+      return parsed.result;
+    }
+    return null;
   } catch (err) {
     // Причину не печатаем намеренно: на тысяче пар в секунду вывод разбора сам
     // станет узким местом и исказит то, что мы измеряем. Но и терять событие
@@ -146,17 +209,19 @@ export default function pairIteration() {
   const maskRes = postProcess(original, payloadID, 'mask');
   const masked = resultOf(maskRes);
   const maskOK = check(maskRes, {
-    'прямой шаг: код 200': (r) => r !== null && r.status === 200,
-    'прямой шаг: текст изменён': () => masked !== null && masked !== original,
+    'прямой шаг: код 200': r => r !== null && r.status === HTTP_OK,
+    'прямой шаг: текст изменён': () => masked !== null && masked !== original
   });
   maskChanged.add(maskOK);
-  if (!maskOK || masked === null) return;
+  if (!maskOK || masked === null) {
+    return;
+  }
 
   const backRes = postProcess(masked, payloadID, 'demask');
   const restored = resultOf(backRes);
   const backOK = check(backRes, {
-    'обратный шаг: код 200': (r) => r !== null && r.status === 200,
-    'обратный шаг: совпало с исходным': () => restored === original,
+    'обратный шаг: код 200': r => r !== null && r.status === HTTP_OK,
+    'обратный шаг: совпало с исходным': () => restored === original
   });
   demaskExact.add(backOK);
   pairDuration.add(Date.now() - started);
