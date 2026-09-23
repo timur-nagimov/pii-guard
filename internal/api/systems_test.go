@@ -13,7 +13,7 @@ import (
 func TestSystemsListsEnabledSystems(t *testing.T) {
 	h := newInspectServer(t)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/systems", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/systems", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("ожидался код 200, получен %d, тело %s", rec.Code, rec.Body.String())
@@ -42,7 +42,7 @@ func TestSystemsRejectsNonGet(t *testing.T) {
 	h := newInspectServer(t)
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(method, "/v1/systems", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), method, "/v1/systems", nil))
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("метод %s дал код %d, ожидался 405", method, rec.Code)
 		}
@@ -58,7 +58,7 @@ func TestInspectSystemOverride(t *testing.T) {
 	// Имя системы задано — разбор выполняется от её имени.
 	rec := httptest.NewRecorder()
 	body, _ := json.Marshal(map[string]any{"text": text, "system": "alfasonar"})
-	req := httptest.NewRequest(http.MethodPost, "/v1/inspect", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/inspect", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -75,7 +75,7 @@ func TestInspectSystemOverride(t *testing.T) {
 	// Неизвестное имя — отказ, а не молчаливый возврат к системе по ключу.
 	rec = httptest.NewRecorder()
 	body, _ = json.Marshal(map[string]any{"text": text, "system": "неттакой"})
-	req = httptest.NewRequest(http.MethodPost, "/v1/inspect", bytes.NewReader(body))
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/inspect", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {

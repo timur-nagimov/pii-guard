@@ -419,7 +419,7 @@ func dedupSpans(parts [][]pii.Span) []pii.Span {
 	var out []pii.Span
 	for _, part := range parts {
 		for _, s := range part {
-			key := [3]int{s.Start, s.End, int(pii.Priority(s.Type))}
+			key := [3]int{s.Start, s.End, pii.Priority(s.Type)}
 			if seen[key] {
 				continue
 			}

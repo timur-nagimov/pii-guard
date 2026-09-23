@@ -235,17 +235,17 @@ func round(v float64, digits int) float64 {
 
 // WriteReports кладёт отчёт в два файла: удобный для чтения и машинный.
 func WriteReports(dir string, rep Report) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("не удалось создать каталог отчёта: %w", err)
 	}
 	data, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {
 		return fmt.Errorf("не удалось собрать машинный отчёт: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "report.json"), append(data, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "report.json"), append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("не удалось записать report.json: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte(RenderMarkdown(rep)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte(RenderMarkdown(rep)), 0o600); err != nil {
 		return fmt.Errorf("не удалось записать report.md: %w", err)
 	}
 	return nil

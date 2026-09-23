@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -296,5 +297,200 @@ func writeLines(t *testing.T, path string, lines []string) {
 	t.Helper()
 	if err := writeFile(path, strings.Join(lines, "\n")+"\n"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestInjectCategory проверяет выбор категории по виду носителя.
+func TestInjectCategory(t *testing.T) {
+	cases := []struct {
+		source, override, want string
+	}{
+		{sourceWikipedia, "", "wiki_injected"},
+		{sourceReviews, "", "informal_injected"},
+		{"", "", "injected"},
+		{"hf_ru_pii", "", "hf_ru_pii_injected"},
+		{"anything", "своя", "своя"},
+	}
+	for _, c := range cases {
+		if got := injectCategory(c.source, c.override); got != c.want {
+			t.Fatalf("injectCategory(%q, %q) = %q, ожидалось %q", c.source, c.override, got, c.want)
+		}
+	}
+}
+
+// TestPrintCounts проверяет печать счётчиков по убыванию.
+func TestPrintCounts(t *testing.T) {
+	var b strings.Builder
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	printCounts("Заголовок", tally{"b": 2, "a": 3, "c": 0})
+	_ = w.Close()
+	os.Stdout = old
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	_ = r.Close()
+	out := string(buf[:n])
+	_ = b
+	if !strings.Contains(out, "Заголовок") || !strings.Contains(out, "a") {
+		t.Fatalf("сводка не напечатана:\n%s", out)
+	}
+	// Нулевой счётчик не печатается.
+	if strings.Contains(out, "c") {
+		t.Fatalf("нулевой счётчик напечатан:\n%s", out)
+	}
+	// Пустая сводка ничего не печатает.
+	printCounts("Пусто", tally{})
+}
+
+// TestSummary проверяет сводку сборки.
+func TestSummary(t *testing.T) {
+	mg := newMerger(sourceSynthetic)
+	mg.add(Record{ID: "a", Source: sourceSynthetic, Text: "текст", Spans: []Span{{0, 4, "FIO"}}, PartialLabels: true})
+	mg.add(Record{ID: "b", Source: sourceSynthetic, Text: "текст", Spans: []Span{}})
+	mg.add(Record{ID: "a", Source: sourceSynthetic, Text: "текст", Spans: []Span{}})
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	mg.summary("out.jsonl")
+	_ = w.Close()
+	os.Stdout = old
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	_ = r.Close()
+	out := string(buf[:n])
+	if !strings.Contains(out, "элементов 2") || !strings.Contains(out, "отброшено 1") {
+		t.Fatalf("сводка неверна:\n%s", out)
+	}
+	if mg.total(mg.dropped) != 1 {
+		t.Fatalf("итог отброшенных: %d", mg.total(mg.dropped))
+	}
+}
+
+// TestSampleRecords проверяет отбор пробы поровну от каждого источника.
+func TestSampleRecords(t *testing.T) {
+	recs := []Record{
+		{ID: "a1", Source: "a", Text: "1"},
+		{ID: "a2", Source: "a", Text: "2"},
+		{ID: "b1", Source: "b", Text: "3"},
+	}
+	// Проба больше набора: возвращается весь набор.
+	if got := sampleRecords(recs, 10); len(got) != 3 {
+		t.Fatalf("проба больше набора: %d", len(got))
+	}
+	// Проба меньше набора: по одному от каждого источника.
+	got := sampleRecords(recs, 2)
+	if len(got) != 2 {
+		t.Fatalf("проба: %d", len(got))
+	}
+	// Нулевая проба возвращает весь набор.
+	if got := sampleRecords(recs, 0); len(got) != 3 {
+		t.Fatalf("нулевая проба: %d", len(got))
+	}
+}
+
+// TestNumNZ проверяет, что число не начинается с нуля.
+func TestNumNZ(t *testing.T) {
+	m := newMaker(1)
+	for i := 0; i < 100; i++ {
+		got := m.numNZ(5)
+		if len(got) != 5 || got[0] == '0' {
+			t.Fatalf("numNZ(5) = %q", got)
+		}
+	}
+	if got := m.numNZ(0); got != "" {
+		t.Fatalf("numNZ(0) = %q", got)
+	}
+}
+
+// TestInitial проверяет первую букву с точкой.
+func TestInitial(t *testing.T) {
+	if got := initial("Иван"); got != "И." {
+		t.Fatalf("initial(Иван) = %q", got)
+	}
+	if got := initial(""); got != "" {
+		t.Fatalf("initial(пусто) = %q", got)
+	}
+}
+
+// TestSnils проверяет контрольную сумму страхового номера.
+func TestSnils(t *testing.T) {
+	m := newMaker(2)
+	for i := 0; i < 100; i++ {
+		got := m.snils()
+		digits := strings.NewReplacer(" ", "", "-", "").Replace(got)
+		if len(digits) != 11 {
+			t.Fatalf("длина СНИЛС: %q", got)
+		}
+		body := digits[:9]
+		ctrl := weighted(body, []int{9, 8, 7, 6, 5, 4, 3, 2, 1}, 101)
+		if ctrl >= 100 {
+			ctrl = 0
+		}
+		if digits[9:] != fmt.Sprintf("%02d", ctrl) {
+			t.Fatalf("контрольная сумма СНИЛС неверна: %q", got)
+		}
+	}
+}
+
+// TestVerifySpans проверяет проверку границ фрагментов.
+func TestVerifySpans(t *testing.T) {
+	if err := verifySpans("текст", []Span{{0, 10, "FIO"}}, []string{"текст"}); err != nil {
+		t.Fatalf("годные границы отвергнуты: %v", err)
+	}
+	if err := verifySpans("текст", []Span{{0, 99, "FIO"}}, []string{"текст"}); err == nil {
+		t.Fatal("границы за текстом приняты")
+	}
+	if err := verifySpans("текст", []Span{{0, 10, "FIO"}}, []string{"другое"}); err == nil {
+		t.Fatal("несовпадение значения принято")
+	}
+}
+
+// TestRunMerge проверяет подкоманду merge целиком.
+func TestRunMerge(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.jsonl")
+	out := filepath.Join(dir, "out.jsonl")
+	writeLines(t, in, []string{
+		`{"id":"a","category":"c","source":"wikipedia","text":"Пётр","spans":[{"start":0,"end":8,"type":"FIO"}]}`,
+		`{"id":"b","category":"c","source":"reviews","text":"Телефон 89990001122","spans":[{"start":15,"end":26,"type":"PHONE"}]}`,
+	})
+	if err := runMerge([]string{"-out", out, "-seed", "1", in}); err != nil {
+		t.Fatalf("merge не отработал: %v", err)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Fatalf("результат не записан: %v", err)
+	}
+	// Без файлов — ошибка.
+	if err := runMerge([]string{"-out", out}); err == nil {
+		t.Fatal("merge без файлов не дал ошибку")
+	}
+	// Неизвестный источник — ошибка.
+	if err := runMerge([]string{"-out", out, "-default-source", "чужой", in}); err == nil {
+		t.Fatal("merge с чужим источником не дал ошибку")
+	}
+}
+
+// TestRunInject проверяет подкоманду inject целиком.
+func TestRunInject(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.jsonl")
+	out := filepath.Join(dir, "out.jsonl")
+	writeLines(t, in, []string{
+		`{"id":"a","category":"c","source":"wikipedia","text":"Пётр Ильич родился в 1840 году.","spans":[],"partial_labels":true}`,
+	})
+	if err := runInject([]string{"-in", in, "-out", out, "-seed", "1", "-max-values", "2"}); err != nil {
+		t.Fatalf("inject не отработал: %v", err)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Fatalf("результат не записан: %v", err)
+	}
+	// Без флагов — ошибка.
+	if err := runInject([]string{}); err == nil {
+		t.Fatal("inject без флагов не дал ошибку")
+	}
+	// Нулевой предел значений — ошибка.
+	if err := runInject([]string{"-in", in, "-out", out, "-max-values", "0"}); err == nil {
+		t.Fatal("inject с нулевым пределом не дал ошибку")
 	}
 }

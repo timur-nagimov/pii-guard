@@ -412,7 +412,7 @@ func TestLoadDatasetRejectsBrokenMarkup(t *testing.T) {
 // TestRunnerPairFlow прогоняет имитатор против простого сервиса и проверяет,
 // что пара «маска и восстановление» считается целиком.
 func TestRunnerPairFlow(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(maskingStub()))
+	srv := httptest.NewServer(maskingStub())
 	defer srv.Close()
 
 	samples := []Sample{{
@@ -594,7 +594,7 @@ func maskingStub() http.HandlerFunc {
 	var store atomic.Pointer[map[string]entry]
 	initial := map[string]entry{}
 	store.Store(&initial)
-	var mu chanMutex = make(chanMutex, 1)
+	mu := make(chanMutex, 1)
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req processRequest
@@ -684,5 +684,212 @@ func TestRunnerAbortedOnDeadline(t *testing.T) {
 	rep := stats.BuildReport(opts, datasetReport("тест", samples))
 	if rep.StoppedByStreak || rep.Load.Invalid != 0 {
 		t.Fatalf("обрыв по концу прогона не должен считаться отказом сервиса: %+v", rep.Load)
+	}
+}
+
+// TestOutcomeKindString проверяет имена исходов для отчёта.
+func TestOutcomeKindString(t *testing.T) {
+	cases := []struct {
+		kind outcomeKind
+		want string
+	}{
+		{outcomeOK, "ok"},
+		{outcomeThrottled, "throttled"},
+		{outcomeAborted, "aborted"},
+		{outcomeInvalid, "invalid"},
+		{outcomeKind(99), "invalid"},
+	}
+	for _, c := range cases {
+		if got := c.kind.String(); got != c.want {
+			t.Fatalf("String(%d) = %q, ожидалось %q", c.kind, got, c.want)
+		}
+	}
+}
+
+// TestResponseLatency проверяет длительность последней попытки.
+func TestResponseLatency(t *testing.T) {
+	if got := (Response{}).Latency(); got != 0 {
+		t.Fatalf("пустой ответ: %v", got)
+	}
+	r := Response{Attempts: []Attempt{{Latency: time.Millisecond}, {Latency: 2 * time.Millisecond}}}
+	if got := r.Latency(); got != 2*time.Millisecond {
+		t.Fatalf("длительность последней попытки: %v", got)
+	}
+}
+
+// TestProbe проверяет одиночную попытку без повторов.
+func TestProbe(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	client := NewClient(srv.URL, time.Second, 1)
+	resp := client.Probe(context.Background(), "текст", "id")
+	if resp.Outcome != outcomeThrottled || resp.Throttle != 1 {
+		t.Fatalf("исход = %s, перегрузок %d", resp.Outcome, resp.Throttle)
+	}
+}
+
+// TestValidate проверяет отсечение бессмысленных ключей запуска.
+func TestValidate(t *testing.T) {
+	good := flags{url: "http://x/process", rps: 10, duration: time.Second, workers: 2, timeout: time.Second}
+	if err := validate(good); err != nil {
+		t.Fatalf("годные ключи отвергнуты: %v", err)
+	}
+	cases := []struct {
+		name string
+		f    flags
+	}{
+		{"без адреса", flags{rps: 10, duration: time.Second, workers: 2, timeout: time.Second}},
+		{"нулевая частота", flags{url: "x", rps: 0, duration: time.Second, workers: 2, timeout: time.Second}},
+		{"нулевая длительность", flags{url: "x", rps: 10, duration: 0, workers: 2, timeout: time.Second}},
+		{"нулевые отправители", flags{url: "x", rps: 10, duration: time.Second, workers: 0, timeout: time.Second}},
+		{"нулевой таймаут", flags{url: "x", rps: 10, duration: time.Second, workers: 2, timeout: 0}},
+		{"отрицательный тяжёлый запрос", flags{url: "x", rps: 10, duration: time.Second, workers: 2, timeout: time.Second, bigPayload: -1}},
+	}
+	for _, c := range cases {
+		if err := validate(c.f); err == nil {
+			t.Fatalf("%s: ключи приняты", c.name)
+		}
+	}
+}
+
+// TestNormalizeURL проверяет дописывание пути ручки.
+func TestNormalizeURL(t *testing.T) {
+	if got := normalizeURL("http://127.0.0.1:8080"); got != "http://127.0.0.1:8080/process" {
+		t.Fatalf("адрес без пути: %q", got)
+	}
+	if got := normalizeURL("http://127.0.0.1:8080/"); got != "http://127.0.0.1:8080/process" {
+		t.Fatalf("адрес с косой чертой: %q", got)
+	}
+	if got := normalizeURL("http://127.0.0.1:8080/process"); got != "http://127.0.0.1:8080/process" {
+		t.Fatalf("адрес с путём: %q", got)
+	}
+}
+
+// TestDatasetReport проверяет описание набора для отчёта.
+func TestDatasetReport(t *testing.T) {
+	samples := []Sample{
+		{PayloadID: "a", Fragments: []Fragment{{}, {}}},
+		{PayloadID: "b", Fragments: []Fragment{{}}},
+	}
+	rep := datasetReport("набор.jsonl", samples)
+	if rep.Samples != 2 || rep.Fragments != 3 || rep.Path != "набор.jsonl" {
+		t.Fatalf("описание набора неверно: %+v", rep)
+	}
+}
+
+// TestPrintSummary проверяет печать короткого итога.
+func TestPrintSummary(t *testing.T) {
+	rep := Report{
+		Load:    LoadReport{Requests: 10, AchievedRPS: 5, LatencyP95Ms: 12},
+		Masking: MaskingReport{Fragments: 3, AvgDistance: 0.9, ChangedShare: 0.8, OutsideChangedShare: 0.01},
+		Demask:  DemaskReport{Total: 2, ExactShare: 1},
+	}
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	printSummary(rep, "out")
+	_ = w.Close()
+	os.Stdout = old
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	_ = r.Close()
+	out := string(buf[:n])
+	for _, want := range []string{"запросов 10", "маскирование", "обратный шаг", "отчёты"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("в итоге нет %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestScoreHeuristic проверяет приблизительную оценку длинного ответа.
+func TestScoreHeuristic(t *testing.T) {
+	s := Sample{Fragments: []Fragment{{Type: "FIO", Value: "Иванов"}, {Type: "PHONE", Value: "+79991234567"}}}
+	// Значение уцелело в тексте.
+	sc := scoreHeuristic(s, "текст Иванов и телефон")
+	if sc.Fragments[0].Changed || sc.Fragments[0].Distance != 0 {
+		t.Fatalf("уцелевшее значение посчитано изменённым: %+v", sc.Fragments[0])
+	}
+	// Значение не уцелело.
+	sc = scoreHeuristic(s, "текст без данных")
+	if !sc.Fragments[1].Changed || sc.Fragments[1].Distance != 1 {
+		t.Fatalf("пропавшее значение не посчитано изменённым: %+v", sc.Fragments[1])
+	}
+}
+
+// TestAddDemaskThrottled проверяет учёт элемента, упёршегося в 429.
+func TestAddDemaskThrottled(t *testing.T) {
+	stats := NewStats()
+	stats.AddDemaskThrottled()
+	rep := stats.BuildReport(Options{}, DatasetReport{})
+	if rep.Demask.Total != 1 || rep.Demask.Throttled != 1 {
+		t.Fatalf("перегрузка обратного шага не учтена: %+v", rep.Demask)
+	}
+}
+
+// TestSetBig проверяет сохранение итога тяжёлого запроса.
+func TestSetBig(t *testing.T) {
+	stats := NewStats()
+	stats.SetBig(bigResult{Bytes: 100, Status: 200, Outcome: "ok", Latency: time.Millisecond, Masked: true})
+	rep := stats.BuildReport(Options{}, DatasetReport{})
+	if rep.Robustness.BigPayload == nil || rep.Robustness.BigPayload.Bytes != 100 {
+		t.Fatalf("итог тяжёлого запроса не сохранён: %+v", rep.Robustness.BigPayload)
+	}
+}
+
+// TestRenderStatuses проверяет вывод распределения кодов ответа.
+func TestRenderStatuses(t *testing.T) {
+	var b strings.Builder
+	renderStatuses(&b, map[string]int{"200": 5, "429": 2})
+	if !strings.Contains(b.String(), "200: 5") || !strings.Contains(b.String(), "429: 2") {
+		t.Fatalf("распределение кодов не выведено:\n%s", b.String())
+	}
+	// Пустая карта ничего не выводит.
+	b.Reset()
+	renderStatuses(&b, nil)
+	if b.Len() != 0 {
+		t.Fatalf("пустая карта дала вывод:\n%s", b.String())
+	}
+}
+
+// TestRenderRobustness проверяет вывод итогов проверок устойчивости.
+func TestRenderRobustness(t *testing.T) {
+	var b strings.Builder
+	renderRobustness(&b, RobustnessReport{
+		DupAfterSuccess: pairCounter{Total: 1, Stable: 1},
+		ConcurrentDup:   pairCounter{Total: 1, Stable: 1},
+		DemaskRetry:     pairCounter{Total: 1, Stable: 1},
+		UnknownID:       map[string]int{"invalid/403": 1},
+		BigPayload:      &bigResult{Bytes: 100, Outcome: "ok", Status: 200, Latency: time.Millisecond, Masked: true},
+	})
+	for _, want := range []string{"Устойчивость", "Повтор прямого запроса", "неизвестным идентификатором", "Тяжёлый запрос"} {
+		if !strings.Contains(b.String(), want) {
+			t.Fatalf("в выводе нет %q:\n%s", want, b.String())
+		}
+	}
+}
+
+// TestSortedKeys проверяет сортировку ключей карты.
+func TestSortedKeys(t *testing.T) {
+	got := sortedKeys(map[string]int{"b": 1, "a": 2, "c": 3})
+	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Fatalf("сортировка неверна: %v", got)
+	}
+}
+
+// TestBigPayloadCheck проверяет тяжёлый запрос после основного прогона.
+func TestBigPayloadCheck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeResult(w, "маска")
+	}))
+	defer srv.Close()
+	samples := []Sample{{PayloadID: "p1", Text: "текст", Category: "прочее"}}
+	opts := Options{URL: srv.URL, RPS: 10, Duration: 50 * time.Millisecond, Workers: 1, Timeout: time.Second, BigPayload: 1024}
+	runner := NewRunner(opts, samples)
+	runner.bigPayloadCheck(context.Background())
+	rep := runner.stats.BuildReport(opts, datasetReport("тест", samples))
+	if rep.Robustness.BigPayload == nil {
+		t.Fatal("итог тяжёлого запроса не сохранён")
 	}
 }

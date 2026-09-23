@@ -41,7 +41,7 @@ func getUI(t *testing.T, method string) *http.Response {
 
 	srv := newUIServer(t)
 	rec := httptest.NewRecorder()
-	srv.handleUI(rec, httptest.NewRequest(method, "/ui", nil))
+	srv.handleUI(rec, httptest.NewRequestWithContext(t.Context(), method, "/ui", nil))
 	return rec.Result()
 }
 
@@ -49,7 +49,7 @@ func getUI(t *testing.T, method string) *http.Response {
 // как разметка и не оседает в кеше.
 func TestUIPageServed(t *testing.T) {
 	resp := getUI(t, http.MethodGet)
-	defer resp.Body.Close()
+	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("код ответа %d, ожидался 200", resp.StatusCode)
@@ -111,7 +111,7 @@ func TestUIRejectsNonGet(t *testing.T) {
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
 		resp := getUI(t, method)
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if resp.StatusCode != http.StatusMethodNotAllowed {
 			t.Errorf("метод %s дал код %d, ожидался 405", method, resp.StatusCode)
@@ -212,7 +212,7 @@ func uiBody(t *testing.T) string {
 	t.Helper()
 
 	resp := getUI(t, http.MethodGet)
-	defer resp.Body.Close()
+	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

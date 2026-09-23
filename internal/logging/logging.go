@@ -30,6 +30,10 @@ const (
 	FormatText = "text"
 )
 
+// levelInfo — имя уровня журнала по умолчанию. Повторяется в настройках и в
+// разборе имени уровня, поэтому вынесено в константу.
+const levelInfo = "info"
+
 // Имена обязательных и часто встречающихся полей. Имя поля задаётся здесь и
 // нигде больше: разнобой в именах делает журнал непригодным для поиска.
 const (
@@ -114,7 +118,7 @@ type Config struct {
 // DefaultConfig возвращает настройки по умолчанию.
 func DefaultConfig() Config {
 	return Config{
-		Level:          "info",
+		Level:          levelInfo,
 		Format:         FormatJSON,
 		Redact:         true,
 		RepeatWindow:   10 * time.Second,
@@ -212,7 +216,7 @@ func ParseLevel(s string) (slog.Level, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "debug":
 		return slog.LevelDebug, nil
-	case "", "info":
+	case "", levelInfo:
 		return slog.LevelInfo, nil
 	case "warn", "warning":
 		return slog.LevelWarn, nil
@@ -229,7 +233,7 @@ func LevelName(l slog.Level) string {
 	case l <= slog.LevelDebug:
 		return "debug"
 	case l < slog.LevelWarn:
-		return "info"
+		return levelInfo
 	case l < slog.LevelError:
 		return "warn"
 	default:
@@ -257,7 +261,7 @@ type Logger struct {
 // остановке сервиса, иначе последние записи аудита могут не дойти до файла.
 func New(cfg Config) (*Logger, error) {
 	if cfg.Level == "" {
-		cfg.Level = "info"
+		cfg.Level = levelInfo
 	}
 	if cfg.Format == "" {
 		cfg.Format = FormatJSON

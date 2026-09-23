@@ -60,7 +60,7 @@ var knownTypes = map[string]bool{
 	"FIO": true, "DOB": true, "BIRTH_PLACE": true, "PASSPORT": true,
 	"CITIZENSHIP": true, "ISSUER": true, "DEPT_CODE": true, "ISSUE_DATE": true,
 	"DRIVER_LICENSE": true, "ADDRESS": true, "POSTCODE": true, "EMAIL": true,
-	"PHONE": true, "INN": true, "CARD": true, "CVV": true, "PIN": true,
+	"PHONE": true, "INN": true, "CARD": true, typeCVV: true, "PIN": true,
 	"CARDHOLDER": true, "SNILS": true, "FOREIGN_PASSPORT": true,
 	"RESIDENCE_PERMIT": true, "BIRTH_CERT": true, "MILITARY_ID": true,
 }
