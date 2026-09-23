@@ -31,7 +31,6 @@ func TestPresetsOnTypicalValues(t *testing.T) {
 		{"имя частично", pii.TypeFIO, "Иванов Иван Иванович", PresetPartial, "Ив**** **** ******ич"},
 		{"имя инициалами", pii.TypeFIO, "Иванов Иван Иванович", PresetInitials, "И. И. И."},
 		{"имя плейсхолдером", pii.TypeFIO, "Иванов Иван Иванович", PresetToken, "[FIO_1]"},
-		{"имя правдоподобной подстановкой", pii.TypeFIO, "Иванов Иван Иванович", PresetSynthetic, "********************"},
 
 		{"телефон целиком", pii.TypePhone, "+7 (916) 123-45-67", PresetFull, "******************"},
 		{"телефон с пробелами", pii.TypePhone, "+7 (916) 123-45-67", PresetFullWS, "** ***** *********"},

@@ -23,9 +23,10 @@ import (
 // Ключи систем-потребителей для тестов. В настройки попадают только их хеши,
 // сами ключи живут рядом с тестом и никуда не уходят.
 const (
-	testKeyDemask   = "ключ-системы-с-демаскированием"
-	testKeyNoDemask = "ключ-системы-без-демаскирования"
-	maxBodyBytes    = 4096
+	testKeyDemask    = "ключ-системы-с-демаскированием"
+	testKeyNoDemask  = "ключ-системы-без-демаскирования"
+	testKeySynthetic = "ключ-системы-с-подстановкой"
+	maxBodyBytes     = 4096
 )
 
 // hashKey повторяет способ, которым сервис сверяет ключ доступа.
@@ -206,6 +207,67 @@ func TestProcessLifecycle(t *testing.T) {
 	// Обратное преобразование: присылаем ранее выданную маску с тем же
 	// идентификатором.
 	code, body = do(t, ts, processCall{body: processBody(t, masked, id)})
+	if code != http.StatusOK {
+		t.Fatalf("обратное преобразование ответило кодом %d: %s", code, body)
+	}
+	if got := resultOf(t, body); got != payload {
+		t.Fatalf("восстановлен текст %q вместо %q", got, payload)
+	}
+}
+
+// TestProcessSyntheticLifecycle проверяет жизненный цикл с видом маскирования
+// synthetic: маскирование правдоподобной подстановкой и обратное
+// преобразование по ранее выданной подстановке.
+func TestProcessSyntheticLifecycle(t *testing.T) {
+	cfg, err := config.Parse([]byte(testConfigYAML() + `
+  synthetic:
+    enabled: true
+    auth:
+      header: X-Synthetic-Key
+      key_sha256: "` + hashKey(testKeySynthetic) + `"
+    types: [all]
+    demask: true
+    preset: synthetic
+`))
+	if err != nil {
+		t.Fatalf("настройки не разобрались: %v", err)
+	}
+	st, err := store.New(store.Config{Key: make([]byte, 32), TTL: time.Hour, MaxRecords: 10000})
+	if err != nil {
+		t.Fatalf("хранилище не создалось: %v", err)
+	}
+	t.Cleanup(st.Close)
+	reg := pii.NewRegistry()
+	reg.Register(pii.NewNumericDetector(), pii.NewEmailDetector(), pii.NewFIODetector())
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(cfg, st, engine.New(reg), metrics.New(), log)
+	ts := httptest.NewServer(srv.Routes())
+	t.Cleanup(ts.Close)
+
+	const payload = "Иванов Иван, телефон +79161234567"
+	const id = "payload-synthetic"
+
+	code, body := do(t, ts, processCall{
+		body:    processBody(t, payload, id),
+		headers: map[string]string{"X-Synthetic-Key": testKeySynthetic},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("маскирование ответило кодом %d: %s", code, body)
+	}
+	masked := resultOf(t, body)
+	if masked == payload {
+		t.Fatal("текст вернулся без изменений, персональные данные не найдены")
+	}
+	if strings.Contains(masked, "Иванов") || strings.Contains(masked, "+79161234567") {
+		t.Fatalf("персональные данные остались в ответе: %q", masked)
+	}
+
+	// Обратное преобразование: присылаем ранее выданную подстановку с тем же
+	// идентификатором.
+	code, body = do(t, ts, processCall{
+		body:    processBody(t, masked, id),
+		headers: map[string]string{"X-Synthetic-Key": testKeySynthetic},
+	})
 	if code != http.StatusOK {
 		t.Fatalf("обратное преобразование ответило кодом %d: %s", code, body)
 	}
