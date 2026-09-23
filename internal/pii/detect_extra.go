@@ -174,11 +174,11 @@ var plateLetters = map[rune]bool{
 // одиночными пробелами между группами.
 func plateSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 	// Первая буква.
-	if !isPlateLettersToken(d, toks[i], 1) {
+	pos, ok := takePlateLetters(d, toks, i, 1)
+	if !ok {
 		return 0, 0, false
 	}
 	// Три цифры.
-	pos := i + 1
 	pos = skipPlateSpace(d, toks, pos)
 	if !isDigitToken(d, toks, pos, 3) {
 		return 0, 0, false
@@ -186,10 +186,10 @@ func plateSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 	pos++
 	// Две буквы.
 	pos = skipPlateSpace(d, toks, pos)
-	if !isPlateLettersToken(d, toks[pos], 2) {
+	pos, ok = takePlateLetters(d, toks, pos, 2)
+	if !ok {
 		return 0, 0, false
 	}
-	pos++
 	// Две или три цифры региона.
 	pos = skipPlateSpace(d, toks, pos)
 	if !isDigitToken(d, toks, pos, 2) && !isDigitToken(d, toks, pos, 3) {
@@ -199,30 +199,49 @@ func plateSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 	return toks[i].Start, toks[pos-1].End, true
 }
 
+// takePlateLetters забирает ровно n букв госномера, начиная с токена pos, и
+// возвращает позицию следующего токена.
+//
+// Буквы разрешено набирать из нескольких подряд идущих токенов: буквы
+// госномера выбраны так, что у каждой есть латинский двойник по начертанию, и
+// человек набирает их вперемешку — «М663XК09» это кириллические М и К с
+// латинской X посередине. Разметчик слов делит такую запись по смене
+// письменности, и пара букв оказывается в двух токенах. Пока группа искалась
+// одним токеном, смешанные номера не находились вовсе.
+func takePlateLetters(d *Doc, toks []Token, pos, n int) (int, bool) {
+	got := 0
+	for pos < len(toks) && got < n {
+		tok := toks[pos]
+		if tok.Kind != KindLat && tok.Kind != KindCyr {
+			return 0, false
+		}
+		if got > 0 && d.Text[toks[pos-1].End:tok.Start] != "" {
+			return 0, false
+		}
+		runes := []rune(d.Text[tok.Start:tok.End])
+		if got+len(runes) > n {
+			return 0, false
+		}
+		for _, r := range runes {
+			if !plateLetters[unicode.ToLower(r)] {
+				return 0, false
+			}
+		}
+		got += len(runes)
+		pos++
+	}
+	if got != n {
+		return 0, false
+	}
+	return pos, true
+}
+
 // skipPlateSpace пропускает один одиночный пробел между группами госномера.
 func skipPlateSpace(d *Doc, toks []Token, pos int) int {
 	if pos < len(toks) && toks[pos].Kind == KindSpace && d.Text[toks[pos].Start:toks[pos].End] == " " {
 		return pos + 1
 	}
 	return pos
-}
-
-// isPlateLettersToken сообщает, что токен — ровно n букв, все допустимые в
-// госномере.
-func isPlateLettersToken(d *Doc, tok Token, n int) bool {
-	if tok.Kind != KindLat && tok.Kind != KindCyr {
-		return false
-	}
-	runes := []rune(d.Text[tok.Start:tok.End])
-	if len(runes) != n {
-		return false
-	}
-	for _, r := range runes {
-		if !plateLetters[unicode.ToLower(r)] {
-			return false
-		}
-	}
-	return true
 }
 
 // isDigitToken сообщает, что токен — ровно n цифр.
