@@ -748,3 +748,26 @@ func TestFIOLatinAbbrevNotSurname(t *testing.T) {
 		})
 	}
 }
+
+// TestFIOInitialScript закрепляет требование одной письменности у инициала и
+// фамилии. Случай взят из набора: хвост VIN «…8S. Сведения» принимался за имя,
+// и ложное имя вытесняло настоящий номер.
+func TestFIOInitialScript(t *testing.T) {
+	det := NewFIODetector()
+	cases := []struct {
+		name string
+		text string
+		want int
+	}{
+		{"латинский инициал с русским словом", "Номер вина: 53KYHT3RFKCNJSY8S. Сведения внесены", 0},
+		{"русский инициал с русской фамилией", "Обратился Иванов И. И. лично", 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := det.Detect(NewDoc(c.text))
+			if len(got) != c.want {
+				t.Fatalf("найдено %d фрагментов, ожидалось %d: %s", len(got), c.want, describeSpans(c.text, got))
+			}
+		})
+	}
+}
