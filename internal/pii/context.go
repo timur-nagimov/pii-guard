@@ -234,10 +234,27 @@ func (s *ctxScan) numberRules(i int) string {
 	if s.leftAnchorWins(i, ctxReqWindow, ctxRequisiteMarkers) {
 		return reasonOrgRequisites
 	}
-	if s.leftAnchorWins(i, ctxRefWindow, ctxRefMarkers) {
+	// У адреса в сети список свой. Общий содержит слова «ip», «ip-адрес» и
+	// «в журнале» — они попали туда, когда адрес ещё не был отдельным типом и
+	// служили защитой для других номеров. Теперь они снимали бы сам адрес:
+	// его собственный якорь одновременно значил «это не персональные данные».
+	// Остаются только признаки оборудования.
+	markers := ctxRefMarkers
+	if s.spans[i].Type == TypeIPAddress {
+		markers = ctxRefMarkersNetwork
+	}
+	if s.leftAnchorWins(i, ctxRefWindow, markers) {
 		return reasonRefNumber
 	}
 	return ""
+}
+
+// ctxRefMarkersNetwork — признаки того, что адрес принадлежит оборудованию, а
+// не сессии человека. Сессию обозначают «IP», «с адреса», «вход с», и эти
+// слова сюда не входят.
+var ctxRefMarkersNetwork = []string{
+	"адрес сервера", "сервер", "узл", "трафик", "балансировщик", "хост",
+	"порт", "кластер", "шлюз", "верси", "сборк", "билд",
 }
 
 // ctxReferenceType сообщает, что фрагмент этого типа мог оказаться служебным

@@ -413,8 +413,7 @@ func extraSpecs() []valueSpec {
 			name: "ip_address", typ: pii.TypeIPAddress, label: "IP-адрес",
 			anchors: []string{
 				"IP-адрес", "IP", "Айпи", "С адреса", "Вход с",
-				"Сессия с", "IP адрес", "Сетевой адрес", "Адрес узла",
-				"Айпи-адрес",
+				"Сессия с", "IP адрес", "Сетевой адрес", "Айпи-адрес",
 			},
 			value: func(g *Generator, _ person) []frag {
 				return one(pii.TypeIPAddress, g.ipAddress())
