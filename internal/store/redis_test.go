@@ -363,7 +363,9 @@ func TestRedisPauseAfterFailure(t *testing.T) {
 	}
 	started := time.Now()
 	for i := 0; i < 50; i++ {
-		s.Get("id-7")
+		// Здесь важен только факт вызова: проверяется, что во время паузы
+		// чтение не уходит в Redis, а не результат чтения.
+		_, _ = s.Get("id-7")
 	}
 	if elapsed := time.Since(started); elapsed > cfg.Redis.DialTimeout {
 		t.Fatalf("во время паузы запросы шли в Redis: 50 чтений заняли %v", elapsed)
@@ -609,7 +611,9 @@ func TestRedisSetDegradedHook(t *testing.T) {
 	}
 
 	s.SetDegradedHook(nil)
-	s.Get("id")
+	// Здесь важен только факт вызова: проверяется, что снятый обработчик
+	// больше не вызывается, а не результат чтения.
+	_, _ = s.Get("id")
 	mu.Lock()
 	defer mu.Unlock()
 	if len(ops) != got {

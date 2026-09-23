@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -514,7 +515,7 @@ func TestAllowPersonsChangeAffectsMasking(t *testing.T) {
 	mask := func(id string) string {
 		t.Helper()
 		body, _ := json.Marshal(map[string]string{"payload": text, "payload_id": id})
-		r := httptest.NewRequest(http.MethodPost, "/process", bytes.NewReader(body))
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/process", bytes.NewReader(body))
 		r.RemoteAddr = "127.0.0.1:1"
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, r)

@@ -684,42 +684,6 @@ func (s *Server) loadConversation(id string) map[string]string {
 	return m
 }
 
-// placeholderPair — один образец, который может встретиться в ответе модели,
-// и значение, которым он заменяется.
-type placeholderPair struct{ from, to string }
-
-// placeholderPairs перечисляет написания, под которыми плейсхолдер мог уехать
-// в ответ модели: сам токен, вариант с пробелами вместо подчёркиваний, в
-// угловых и фигурных скобках, вовсе без скобок, а для подстановки synthetic —
-// ещё и склонённые формы. Значение quoted уже подготовлено для вставки внутрь
-// строки JSON.
-//
-// Вынесено из restorePlaceholders отдельной функцией: вместе с перебором карты
-// и сборкой замены она выходила за порог сложности статического анализа.
-func placeholderPairs(token, quoted string) []placeholderPair {
-	inner := strings.TrimSuffix(strings.TrimPrefix(token, "["), "]")
-	out := make([]placeholderPair, 0, 5)
-	for _, variant := range []string{
-		token,
-		"[" + strings.ReplaceAll(inner, "_", " ") + "]",
-		"<" + inner + ">",
-		"{" + inner + "}",
-		inner,
-	} {
-		if variant == "" {
-			continue
-		}
-		out = append(out, placeholderPair{variant, quoted})
-	}
-	// Подстановка synthetic — настоящее имя, которое модель может
-	// просклонять в ответе. Склонённые формы подстановки тоже заменяются
-	// исходным значением, иначе восстановление потеряет данные.
-	for _, declined := range mask.DeclineVariants(token) {
-		out = append(out, placeholderPair{declined, quoted})
-	}
-	return out
-}
-
 // restorePlaceholders возвращает в текст ответа исходные значения. Разбор
 // терпим к искажениям: модель может изменить регистр или оформление
 // плейсхолдера. Нераспознанный плейсхолдер остаётся как есть — выдумывать
@@ -740,15 +704,10 @@ func restorePlaceholders(text string, back map[string]string) string {
 	// Порядок пар задаётся явно: сначала длинные образцы, потом короткие, а при
 	// равной длине по алфавиту. Это нужно, чтобы короткий образец не съедал
 	// начало длинного и чтобы результат не зависел от карты.
-	var pairs []placeholderPair
+	var pairs []pair
 
 	for token, value := range back {
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			continue
-		}
-		quoted := strings.TrimSuffix(strings.TrimPrefix(string(encoded), "\""), "\"")
-		pairs = append(pairs, placeholderPairs(token, quoted)...)
+		pairs = append(pairs, restorePairsForToken(token, value)...)
 	}
 	if len(pairs) == 0 {
 		return text
@@ -771,4 +730,39 @@ func restorePlaceholders(text string, back map[string]string) string {
 		flat = append(flat, pr.from, pr.to)
 	}
 	return strings.NewReplacer(flat...).Replace(text)
+}
+
+// pair — образец замены: что искать в ответе и чем заменять.
+type pair struct{ from, to string }
+
+// restorePairsForToken собирает образцы замены для одного плейсхолдера: сам
+// токен, его варианты оформления и склонённые формы подстановки.
+func restorePairsForToken(token, value string) []pair {
+	var pairs []pair
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	quoted := strings.TrimSuffix(strings.TrimPrefix(string(encoded), "\""), "\"")
+
+	inner := strings.TrimSuffix(strings.TrimPrefix(token, "["), "]")
+	for _, variant := range []string{
+		token,
+		"[" + strings.ReplaceAll(inner, "_", " ") + "]",
+		"<" + inner + ">",
+		"{" + inner + "}",
+		inner,
+	} {
+		if variant == "" {
+			continue
+		}
+		pairs = append(pairs, pair{variant, quoted})
+	}
+	// Подстановка synthetic — настоящее имя, которое модель может
+	// просклонять в ответе. Склонённые формы подстановки тоже заменяются
+	// исходным значением, иначе восстановление потеряет данные.
+	for _, declined := range mask.DeclineVariants(token) {
+		pairs = append(pairs, pair{declined, quoted})
+	}
+	return pairs
 }

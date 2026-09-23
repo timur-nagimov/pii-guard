@@ -407,8 +407,13 @@ func TestProcessUnknownMaskPassthrough(t *testing.T) {
 	// маску на восстановление.
 	time.Sleep(150 * time.Millisecond)
 
-	resp, err := ts.Client().Post(ts.URL+"/process", "application/json",
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/process",
 		strings.NewReader(processBody(t, masked, id)))
+	if err != nil {
+		t.Fatalf("запрос не собрался: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("запрос не выполнился: %v", err)
 	}
@@ -481,8 +486,13 @@ func TestProcessAmbiguousHeader(t *testing.T) {
 	}
 
 	// Третий текст с тем же идентификатором — неоднозначный повтор.
-	resp, err := ts.Client().Post(ts.URL+"/process", "application/json",
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/process",
 		strings.NewReader(processBody(t, third, id)))
+	if err != nil {
+		t.Fatalf("запрос не собрался: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("запрос не выполнился: %v", err)
 	}

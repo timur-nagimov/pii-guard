@@ -139,35 +139,7 @@ func Apply(text string, spans []pii.Span, opts Options) Result {
 		}
 		b.WriteString(text[prev:s.Start])
 		value := text[s.Start:s.End]
-		preset := opts.PresetFor(s.Type)
-
-		switch preset {
-		case PresetToken:
-			tok, fresh := tokenFor(s.Type, value, counters, valueToken)
-			if fresh {
-				res.Placeholders = append(res.Placeholders, Placeholder{Token: tok, Value: value, Type: s.Type})
-			}
-			b.WriteString(tok)
-		case PresetSynthetic:
-			key := string(s.Type) + "\x00" + value
-			sub, seen := synthetic[key]
-			if !seen {
-				seed := hashValue(value)
-				sub = syntheticValue(value, s.Type, seed)
-				// Разные значения не должны сталкиваться в пределах запроса:
-				// при совпадении подстановка пересчитывается с другим сидом.
-				for syntheticUsed[sub] {
-					seed++
-					sub = syntheticValue(value, s.Type, seed)
-				}
-				synthetic[key] = sub
-				syntheticUsed[sub] = true
-				res.Placeholders = append(res.Placeholders, Placeholder{Token: sub, Value: value, Type: s.Type})
-			}
-			b.WriteString(sub)
-		default:
-			b.WriteString(maskValue(value, preset))
-		}
+		b.WriteString(applySpan(s, value, opts, counters, valueToken, synthetic, syntheticUsed, &res))
 		prev = s.End
 	}
 	b.WriteString(text[prev:])
@@ -176,19 +148,43 @@ func Apply(text string, spans []pii.Span, opts Options) Result {
 	return res
 }
 
-// tokenFor выдаёт метку значению: одно и то же значение одного типа получает
-// одну и ту же метку, иначе связь между упоминаниями в тексте потерялась бы.
-// Второй результат сообщает, что метка выдана впервые и её надо занести в
-// список подстановок — повторную запись список не переживёт.
-func tokenFor(t pii.Type, value string, counters map[pii.Type]int, valueToken map[string]string) (string, bool) {
-	key := string(t) + "\x00" + value
-	if tok, seen := valueToken[key]; seen {
-		return tok, false
+// applySpan маскирует один фрагмент и возвращает текст для подстановки.
+// Плейсхолдеры и подстановки synthetic добавляются в результат, чтобы их
+// можно было восстановить в ответе.
+func applySpan(s pii.Span, value string, opts Options, counters map[pii.Type]int, valueToken, synthetic map[string]string, syntheticUsed map[string]bool, res *Result) string {
+	preset := opts.PresetFor(s.Type)
+
+	switch preset {
+	case PresetToken:
+		key := string(s.Type) + "\x00" + value
+		tok, seen := valueToken[key]
+		if !seen {
+			counters[s.Type]++
+			tok = "[" + string(s.Type) + "_" + itoa(counters[s.Type]) + "]"
+			valueToken[key] = tok
+			res.Placeholders = append(res.Placeholders, Placeholder{Token: tok, Value: value, Type: s.Type})
+		}
+		return tok
+	case PresetSynthetic:
+		key := string(s.Type) + "\x00" + value
+		sub, seen := synthetic[key]
+		if !seen {
+			seed := hashValue(value)
+			sub = syntheticValue(value, s.Type, seed)
+			// Разные значения не должны сталкиваться в пределах запроса:
+			// при совпадении подстановка пересчитывается с другим сидом.
+			for syntheticUsed[sub] {
+				seed++
+				sub = syntheticValue(value, s.Type, seed)
+			}
+			synthetic[key] = sub
+			syntheticUsed[sub] = true
+			res.Placeholders = append(res.Placeholders, Placeholder{Token: sub, Value: value, Type: s.Type})
+		}
+		return sub
+	default:
+		return maskValue(value, preset)
 	}
-	counters[t]++
-	tok := "[" + string(t) + "_" + itoa(counters[t]) + "]"
-	valueToken[key] = tok
-	return tok, true
 }
 
 // maskValue применяет к одному значению пресет, не сохраняющий состояния.

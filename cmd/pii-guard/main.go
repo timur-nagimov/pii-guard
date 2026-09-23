@@ -767,90 +767,115 @@ func newConfigApplier(path string, srv *api.Server, eng *engine.Engine, reg *pii
 // журнал собираются один раз, и менять их на лету небезопасно для идущих
 // запросов.
 func restartRequiredChanges(old, new *config.Config) []string {
+	out := make([]string, 0, 8)
+	out = append(out, serverChanges(old.Server, new.Server)...)
+	out = append(out, limitsChanges(old.Limits, new.Limits)...)
+	out = append(out, storeChanges(old.Store, new.Store)...)
+	out = append(out, loggingChanges(old.Logging, new.Logging)...)
+	return out
+}
+
+// serverChanges возвращает изменённые поля сетевых слушателей и их сроков.
+func serverChanges(old, new config.Server) []string {
 	var out []string
-	// Сетевые слушатели и их сроки.
-	if old.Server.HTTP != new.Server.HTTP {
+	if old.HTTP != new.HTTP {
 		out = append(out, "server.http")
 	}
-	if old.Server.HTTPS != new.Server.HTTPS {
+	if old.HTTPS != new.HTTPS {
 		out = append(out, "server.https")
 	}
-	if old.Server.MaxBodyBytes != new.Server.MaxBodyBytes {
+	if old.MaxBodyBytes != new.MaxBodyBytes {
 		out = append(out, "server.max_body_bytes")
 	}
-	if old.Server.ReadHeaderTimeout != new.Server.ReadHeaderTimeout {
+	if old.ReadHeaderTimeout != new.ReadHeaderTimeout {
 		out = append(out, "server.read_header_timeout")
 	}
-	if old.Server.ReadTimeout != new.Server.ReadTimeout {
+	if old.ReadTimeout != new.ReadTimeout {
 		out = append(out, "server.read_timeout")
 	}
-	if old.Server.WriteTimeout != new.Server.WriteTimeout {
+	if old.WriteTimeout != new.WriteTimeout {
 		out = append(out, "server.write_timeout")
 	}
-	if old.Server.IdleTimeout != new.Server.IdleTimeout {
+	if old.IdleTimeout != new.IdleTimeout {
 		out = append(out, "server.idle_timeout")
 	}
-	if old.Server.ShutdownTimeout != new.Server.ShutdownTimeout {
+	if old.ShutdownTimeout != new.ShutdownTimeout {
 		out = append(out, "server.shutdown_timeout")
 	}
-	if old.Server.DrainTimeout != new.Server.DrainTimeout {
+	if old.DrainTimeout != new.DrainTimeout {
 		out = append(out, "server.drain_timeout")
 	}
-	// Ограничители одновременной обработки.
-	if old.Limits.Inflight != new.Limits.Inflight {
+	return out
+}
+
+// limitsChanges возвращает изменённые поля ограничителей одновременной
+// обработки.
+func limitsChanges(old, new config.Limits) []string {
+	var out []string
+	if old.Inflight != new.Inflight {
 		out = append(out, "limits.inflight")
 	}
-	if old.Limits.HeavyInflight != new.Limits.HeavyInflight {
+	if old.HeavyInflight != new.HeavyInflight {
 		out = append(out, "limits.heavy_inflight")
 	}
-	if old.Limits.HeavyThresholdBytes != new.Limits.HeavyThresholdBytes {
+	if old.HeavyThresholdBytes != new.HeavyThresholdBytes {
 		out = append(out, "limits.heavy_threshold_bytes")
 	}
-	if old.Limits.MaxWait != new.Limits.MaxWait {
+	if old.MaxWait != new.MaxWait {
 		out = append(out, "limits.max_wait")
 	}
-	// Хранилище соответствий.
-	if old.Store.TTL != new.Store.TTL {
+	return out
+}
+
+// storeChanges возвращает изменённые поля хранилища соответствий.
+func storeChanges(old, new config.Store) []string {
+	var out []string
+	if old.TTL != new.TTL {
 		out = append(out, "store.ttl")
 	}
-	if old.Store.MaxRecords != new.Store.MaxRecords {
+	if old.MaxRecords != new.MaxRecords {
 		out = append(out, "store.max_records")
 	}
-	if old.Store.KeyEnv != new.Store.KeyEnv {
+	if old.KeyEnv != new.KeyEnv {
 		out = append(out, "store.key_env")
 	}
-	if old.Store.Redis != new.Store.Redis {
+	if old.Redis != new.Redis {
 		out = append(out, "store.redis")
 	}
-	if old.Store.UnreadyOnDegraded != new.Store.UnreadyOnDegraded {
+	if old.UnreadyOnDegraded != new.UnreadyOnDegraded {
 		out = append(out, "store.unready_on_degraded")
 	}
-	// Журнал.
-	if old.Logging.Level != new.Logging.Level {
+	return out
+}
+
+// loggingChanges возвращает изменённые поля журнала.
+func loggingChanges(old, new config.Logging) []string {
+	var out []string
+	if old.Level != new.Level {
 		out = append(out, "logging.level")
 	}
-	if old.Logging.Format != new.Logging.Format {
+	if old.Format != new.Format {
 		out = append(out, "logging.format")
 	}
-	if !boolPtrEqual(old.Logging.Source, new.Logging.Source) {
+	if !boolPtrEqual(old.Source, new.Source) {
 		out = append(out, "logging.source")
 	}
-	if !boolPtrEqual(old.Logging.Redact, new.Logging.Redact) {
+	if !boolPtrEqual(old.Redact, new.Redact) {
 		out = append(out, "logging.redact")
 	}
-	if old.Logging.RepeatWindow != new.Logging.RepeatWindow {
+	if old.RepeatWindow != new.RepeatWindow {
 		out = append(out, "logging.repeat_window")
 	}
-	if old.Logging.RepeatLevel != new.Logging.RepeatLevel {
+	if old.RepeatLevel != new.RepeatLevel {
 		out = append(out, "logging.repeat_level")
 	}
-	if old.Logging.SampleN != new.Logging.SampleN {
+	if old.SampleN != new.SampleN {
 		out = append(out, "logging.sample_n")
 	}
-	if old.Logging.Slow != new.Logging.Slow {
+	if old.Slow != new.Slow {
 		out = append(out, "logging.slow")
 	}
-	if !auditEqual(old.Logging.Audit, new.Logging.Audit) {
+	if !auditEqual(old.Audit, new.Audit) {
 		out = append(out, "logging.audit")
 	}
 	return out
