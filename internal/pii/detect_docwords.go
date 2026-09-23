@@ -121,11 +121,46 @@ func dwAnyAnchor(hay string, anchors []string) (string, bool) {
 // Сравнение идёт по свёрнутой строке, где латинские омоглифы заменены на
 // кириллические: «грaждaнcтво» с латинскими буквами совпадает с якорем
 // «гражданство». Возвращается длина совпадения в байтах исходной строки.
-func dwMatchLongestAnchor(s string, at int, anchors []string) (string, bool) {
-	best := ""
-	bestLen := 0
+// anchorSet — список якорей, подготовленный один раз: свёрнутые строки и
+// набор первых букв. Подбор якоря вызывается на каждом слове текста, и перебор
+// всего списка с повторным сворачиванием на каждом слове был виден на горячем
+// пути: добавление семи якорей замедлило маскирование на шестую часть.
+type anchorSet struct {
+	folded []string
+	first  map[rune]bool
+}
+
+// newAnchorSet готовит якоря к подбору.
+func newAnchorSet(anchors []string) *anchorSet {
+	set := &anchorSet{
+		folded: make([]string, 0, len(anchors)),
+		first:  make(map[rune]bool, len(anchors)),
+	}
 	for _, a := range anchors {
 		na := FoldHomoglyphs(a)
+		if na == "" {
+			continue
+		}
+		set.folded = append(set.folded, na)
+		r, _ := firstRune(na)
+		set.first[r] = true
+	}
+	return set
+}
+
+// Возвращается длина совпадения В ИСХОДНОЙ строке, а не длина самого якоря:
+// сворачивание омоглифов приравнивает однобайтовую латинскую букву
+// двухбайтовой кириллической, поэтому длины расходятся. Пока наружу отдавалась
+// длина якоря, в тексте «Выдaвший оргaн: Отделом внутренних дел» значение
+// искали на два байта не там, и орган выдачи не находился совсем.
+func dwMatchLongestAnchor(s string, at int, set *anchorSet) (int, bool) {
+	// Первая буква слова отсекает почти все слова текста до перебора списка.
+	r, _ := firstRune(s[at:])
+	if !set.first[foldRune(r)] {
+		return 0, false
+	}
+	bestLen := 0
+	for _, na := range set.folded {
 		matched, n := dwFoldPrefixLen(s[at:], na)
 		if !matched || n <= bestLen {
 			continue
@@ -133,9 +168,9 @@ func dwMatchLongestAnchor(s string, at int, anchors []string) (string, bool) {
 		if dwIsWordRune(dwRuneAt(s, at+n)) {
 			continue
 		}
-		best, bestLen = a, n
+		bestLen = n
 	}
-	return best, best != ""
+	return bestLen, bestLen > 0
 }
 
 // dwFoldPrefixLen сообщает, что свёрнутая строка начинается с префикса, и
@@ -364,6 +399,11 @@ var issuerAnchors = []string{
 	"кем выдан", "орган выдачи", "выдавший орган", "выдан", "выдано", "выдана",
 	"выданный", "выданная", "выданного", "выданным", "выдавший", "выдавшим",
 	"выдавшего", "issued by",
+	// Косвенные падежи и канцелярские обороты: в анкетах пишут
+	// «наименование органа выдачи», «подразделение выдачи», и без этих
+	// форм якорь не находился вовсе.
+	"наименование органа выдачи", "органа выдачи", "подразделение выдачи",
+	"подразделением выдачи", "орган, выдавший", "кем выдано", "кем выдана",
 }
 
 // issuerAgencyWords — ведомственные сокращения. Без такого признака внутри
@@ -440,11 +480,11 @@ func issuerByAnchor(d *Doc) []Span {
 		if dwIsWordRune(dwRuneBefore(d.Lower, tok.Start)) {
 			continue
 		}
-		anchor, ok := dwMatchLongestAnchor(d.Lower, tok.Start, issuerAnchors)
+		anchorLen, ok := dwMatchLongestAnchor(d.Lower, tok.Start, issuerAnchorSet)
 		if !ok {
 			continue
 		}
-		start, end, ok := issuerValueAfter(d, tok.Start+len(anchor))
+		start, end, ok := issuerValueAfter(d, tok.Start+anchorLen)
 		if !ok || dwOverlaps(out, start, end) {
 			continue
 		}
@@ -627,6 +667,13 @@ func issuerSentenceEnd(low string, i int) bool {
 // issuerHasAgency проверяет ведомственный признак внутри фрагмента. Вариант
 // без точек нужен для записей вида «О.У.Ф.М.С.».
 func issuerHasAgency(frag string) bool {
+	// Ведомственный признак ищется по свёрнутому тексту: в распознанных
+	// сканах пишут «внутpенних дел» с латинской «p», и признак не находился,
+	// а без него весь фрагмент отбрасывался. Смещения здесь не нужны — ответ
+	// булев, поэтому обычное сворачивание годится.
+	if hasASCIIHomoglyph(frag) {
+		frag = FoldHomoglyphs(frag)
+	}
 	for _, w := range issuerAgencyWords {
 		if dwContainsWord(frag, w) {
 			return true
@@ -731,11 +778,11 @@ func (citizenshipDetector) Detect(d *Doc) []Span {
 		if dwIsWordRune(dwRuneBefore(d.Lower, tok.Start)) {
 			continue
 		}
-		anchor, ok := dwMatchLongestAnchor(d.Lower, tok.Start, citizenshipAnchors)
+		anchorLen, ok := dwMatchLongestAnchor(d.Lower, tok.Start, citizenshipAnchorSet)
 		if !ok {
 			continue
 		}
-		start, end, ok := citizenshipValue(d, tok.Start+len(anchor))
+		start, end, ok := citizenshipValue(d, tok.Start+anchorLen)
 		if !ok || dwOverlaps(out, start, end) {
 			continue
 		}
@@ -978,3 +1025,10 @@ func driverStandardSeries(series string) bool {
 	}
 	return true
 }
+
+// Якоря готовятся один раз при запуске: подбор идёт на каждом слове каждого
+// текста, и повторная подготовка там недопустима.
+var (
+	issuerAnchorSet      = newAnchorSet(issuerAnchors)
+	citizenshipAnchorSet = newAnchorSet(citizenshipAnchors)
+)
