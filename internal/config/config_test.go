@@ -117,12 +117,17 @@ func TestLoadSampleConfig(t *testing.T) {
 		t.Errorf("настройки языковой модели разобраны неверно: %+v", kilo.Upstream)
 	}
 
+	// Профили жюри маскируют звёздочками все типы без исключений: видимый
+	// кусок паспорта в ответе модуля защиты выглядит как утечка.
 	jury, _ := cfg.System("jury_demo")
-	if jury.PerType[pii.TypeFIO] != mask.PresetInitials {
-		t.Errorf("переопределение пресета по типу не разобралось: %+v", jury.PerType)
+	if jury.Preset != mask.PresetFull {
+		t.Errorf("пресет системы jury_demo %q, ожидался %q", jury.Preset, mask.PresetFull)
+	}
+	if len(jury.PerType) != 0 {
+		t.Errorf("у системы жюри не должно быть исключений по типам: %+v", jury.PerType)
 	}
 	opts := jury.MaskOptions(cfg.Defaults)
-	if opts.PresetFor(pii.TypeFIO) != mask.PresetInitials || opts.PresetFor(pii.TypePhone) != mask.PresetPartial {
+	if opts.PresetFor(pii.TypeFIO) != mask.PresetFull || opts.PresetFor(pii.TypePhone) != mask.PresetFull {
 		t.Errorf("настройки маскирования собраны неверно: %+v", opts)
 	}
 
@@ -765,4 +770,48 @@ systems:
 			t.Fatalf("согласованные настройки отвергнуты: %v", err)
 		}
 	})
+}
+
+// TestPerTypePresetParsing проверяет разбор исключений по типам на своём
+// примере. Раньше эту возможность проверял боевой файл настроек: там стояло
+// единственное исключение. Когда профили жюри перевели на звёздочки без
+// исключений, разбор остался без проверки вовсе — теперь он не зависит от
+// того, какие настройки выбраны для продукта.
+func TestPerTypePresetParsing(t *testing.T) {
+	const src = `
+defaults:
+  preset: full
+systems:
+  demo:
+    enabled: true
+    auth:
+      none: true
+    types: [all]
+    preset: token
+    per_type:
+      FIO: initials
+      PHONE: partial
+`
+	cfg, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("настройки не разобрались: %v", err)
+	}
+	sys, ok := cfg.System("demo")
+	if !ok {
+		t.Fatal("система demo не разобралась")
+	}
+	if sys.PerType[pii.TypeFIO] != mask.PresetInitials {
+		t.Errorf("исключение для имени %q, ожидалось %q", sys.PerType[pii.TypeFIO], mask.PresetInitials)
+	}
+	opts := sys.MaskOptions(cfg.Defaults)
+	if opts.PresetFor(pii.TypeFIO) != mask.PresetInitials {
+		t.Errorf("имя маскируется как %q, ожидалось %q", opts.PresetFor(pii.TypeFIO), mask.PresetInitials)
+	}
+	if opts.PresetFor(pii.TypePhone) != mask.PresetPartial {
+		t.Errorf("телефон маскируется как %q, ожидалось %q", opts.PresetFor(pii.TypePhone), mask.PresetPartial)
+	}
+	// Тип без исключения берёт общий пресет системы, а не пресет по умолчанию.
+	if opts.PresetFor(pii.TypeCard) != mask.PresetToken {
+		t.Errorf("карта маскируется как %q, ожидалось %q", opts.PresetFor(pii.TypeCard), mask.PresetToken)
+	}
 }
