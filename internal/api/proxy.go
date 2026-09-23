@@ -311,7 +311,8 @@ func (s *Server) callUpstream(r *http.Request, sys config.System, body []byte) (
 // имени системы: создавать транспорт на каждый запрос дорого и мешает
 // переиспользованию соединений.
 func (s *Server) upstreamClient(sys config.System, timeout time.Duration) *http.Client {
-	if v, ok := s.upstreams.Load(sys.Name); ok {
+	upstreams := s.upstreams.Load()
+	if v, ok := upstreams.Load(sys.Name); ok {
 		if c, valid := v.(*http.Client); valid {
 			return c
 		}
@@ -322,7 +323,7 @@ func (s *Server) upstreamClient(sys config.System, timeout time.Duration) *http.
 			TLSClientConfig:     pinnedTLSConfig(sys.Upstream.PinSHA256),
 			MaxIdleConnsPerHost: 64,
 		}
-		s.upstreams.Store(sys.Name, client)
+		upstreams.Store(sys.Name, client)
 		return client
 	}
 	if sys.Upstream.CAFile != "" {
@@ -337,7 +338,7 @@ func (s *Server) upstreamClient(sys config.System, timeout time.Duration) *http.
 			}
 		}
 	}
-	s.upstreams.Store(sys.Name, client)
+	upstreams.Store(sys.Name, client)
 	return client
 }
 

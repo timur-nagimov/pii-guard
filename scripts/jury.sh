@@ -112,17 +112,118 @@ TEXTS
 
 case_4() {
   echo "=== Критерий 4. Гибкая настройка и расширяемость ==="
-  echo "Файл настроек: configs/config.yaml. Изменения применяются без перезапуска."
-  local t="Клиент Иванов Иван Иванович, тел. +7 916 123 45 67, карта 4111 1111 1111 1111"
-  show "профиль по умолчанию (полная маска)" "$t" "$(req "$t" "jury4a-$RANDOM")"
-  show "профиль жюри (частичная маска, ФИО инициалами)" "$t" "$(req "$t" "jury4b-$RANDOM" "$JURY_KEY")"
-  echo
-  echo "  Дальше проверяется руками, каждый шаг занимает меньше минуты:"
-  echo "  1) отключить систему:      в configs/config.yaml поставить enabled: false у jury_demo → запрос с её ключом получает 403"
-  echo "  2) убрать тип:             убрать PHONE из types у jury_demo → телефон перестаёт маскироваться"
-  echo "  3) запретить демаскирование: demask: false → обратное преобразование получает 403"
-  echo "  4) добавить новый тип:     дописать блок в custom_types → тип начинает находиться"
-  echo "  После правки: kill -HUP <pid> либо подождать пять секунд, перезапуск не нужен."
+  echo "  Проверка идёт сама: поднимается отдельный экземпляр сервиса на свободном"
+  echo "  порту, настройки правятся по шагам, каждый шаг применяется сигналом SIGHUP."
+  local work port pid url
+  work=$(mktemp -d)
+  pid=""
+  cleanup4() { [[ -n "$pid" ]] && kill "$pid" 2>/dev/null; rm -rf "$work"; }
+  trap cleanup4 RETURN
+
+  port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+  url="http://127.0.0.1:$port"
+
+  go build -o "$work/pii-guard" ./cmd/pii-guard 2>/dev/null || {
+    echo "  сборка сервиса не удалась"; return 1; }
+
+  # write_cfg <enabled> <types> <demask> <custom>
+  write_cfg() {
+    local enabled="$1" types="$2" demask="$3" custom="$4"
+    cat > "$work/config.yaml" <<EOF
+server:
+  http: ":$port"
+  https: ""
+limits:
+  inflight: 16
+store:
+  ttl: 60m
+defaults:
+  preset: full
+  min_confidence: 0.5
+systems:
+  alfasonar:
+    enabled: $enabled
+    auth: none
+    types: [$types]
+    demask: $demask
+    preset: full
+    on_error: open
+    on_unknown_id: passthrough
+custom_types:
+$custom
+EOF
+  }
+
+  # Шаг 1: система выключена.
+  write_cfg false all true ""
+  PII_STORE_KEY="$(head -c 32 /dev/urandom | base64)" "$work/pii-guard" -config "$work/config.yaml" >"$work/service.log" 2>&1 &
+  pid=$!
+  for _ in $(seq 1 30); do
+    curl -s -m 2 -o /dev/null "$url/healthz" 2>/dev/null && break
+    sleep 0.5
+  done
+
+  # req4 <payload> <id> — печатает результат или тело ошибки.
+  req4() {
+    local body raw
+    body=$(python3 -c 'import json,sys;print(json.dumps({"payload":sys.argv[1],"payload_id":sys.argv[2]}))' "$1" "$2")
+    raw=$(curl -sk --max-time 15 -X POST "$url/process" -H 'Content-Type: application/json' -d "$body")
+    python3 -c 'import json,sys
+raw=sys.stdin.read()
+try:
+    d=json.loads(raw)
+except Exception:
+    print(raw.strip()); sys.exit()
+print(d.get("result", json.dumps(d, ensure_ascii=False)))' <<< "$raw"
+  }
+  # code4 <payload> <id> — печатает только код ответа.
+  code4() {
+    local body
+    body=$(python3 -c 'import json,sys;print(json.dumps({"payload":sys.argv[1],"payload_id":sys.argv[2]}))' "$1" "$2")
+    curl -sk --max-time 15 -o /dev/null -w '%{http_code}' -X POST "$url/process" -H 'Content-Type: application/json' -d "$body"
+  }
+
+  # Шаг 1: система выключена → 403.
+  local c1; c1=$(code4 "Клиент Иванов Иван Иванович, тел. +7 916 123 45 67" "jury4-1")
+  echo "  шаг 1 — система выключена: ожидалось 403, получено $c1"
+  [[ "$c1" == "403" ]] && echo "    ✓ совпало" || echo "    ✗ НЕ совпало"
+
+  # Шаг 2: тип убран → телефон открыт.
+  write_cfg true EMAIL true ""
+  kill -HUP "$pid" 2>/dev/null
+  sleep 0.5
+  local r2; r2=$(req4 "Клиент Иванов Иван Иванович, тел. +7 916 123 45 67" "jury4-2")
+  echo "  шаг 2 — тип убран: ожидалось телефон открыт, получено: $r2"
+  if [[ "$r2" == *"+7 916 123 45 67"* ]]; then
+    echo "    ✓ совпало"
+  else
+    echo "    ✗ НЕ совпало"
+  fi
+
+  # Шаг 3: демаскирование запрещено → 403.
+  write_cfg true all false ""
+  kill -HUP "$pid" 2>/dev/null
+  sleep 0.5
+  local m3; m3=$(req4 "Клиент Иванов Иван Иванович, тел. +7 916 123 45 67" "jury4-3")
+  local c3; c3=$(code4 "$m3" "jury4-3")
+  echo "  шаг 3 — демаскирование запрещено: ожидалось 403, получено $c3"
+  [[ "$c3" == "403" ]] && echo "    ✓ совпало" || echo "    ✗ НЕ совпало"
+
+  # Шаг 4: новый custom_types → находится.
+  write_cfg true all true "  - name: BADGE
+    pattern: '(\d{6})'
+    group: 1
+    anchors: [\"пропуск\"]
+    require_anchor: true"
+  kill -HUP "$pid" 2>/dev/null
+  sleep 0.5
+  local r4; r4=$(req4 "Пропуск 123456 выдан на проходной" "jury4-4")
+  echo "  шаг 4 — новый тип: ожидалось номер скрыт, получено: $r4"
+  if [[ "$r4" != *"123456"* ]]; then
+    echo "    ✓ совпало"
+  else
+    echo "    ✗ НЕ совпало"
+  fi
 }
 
 case_5() {

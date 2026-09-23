@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -117,28 +118,58 @@ const dateSpacers = " \t\u00a0-–—.,«»\"'"
 // фрагмента здесь разделяется на два по контексту, поэтому оба типа
 // обслуживает один детектор: он читает окружение даты ровно один раз.
 type dateDetector struct {
-	mode string
+	// mode — режим обработки дат без явного якоря. Хранится атомарно: режим
+	// по умолчанию меняется на лету при применении новых настроек, а читается
+	// на горячем пути из всех обработчиков сразу. Иначе ослабление режима не
+	// действовало бы до перезапуска сервиса.
+	mode atomic.Pointer[string]
+}
+
+// DateDetector — детектор дат, чей режим можно менять на лету. Нужен сервису,
+// чтобы режим по умолчанию следовал за файлом настроек без перезапуска.
+type DateDetector interface {
+	Detector
+	// SetMode меняет режим обработки дат без явного якоря.
+	SetMode(mode string)
 }
 
 // NewDateDetector создаёт детектор дат в заданном режиме. Неизвестное
 // значение режима приводится к режиму по умолчанию: ошибка в конфигурации не
 // должна выключать целый тип персональных данных.
-func NewDateDetector(mode string) Detector {
+func NewDateDetector(mode string) DateDetector {
+	dd := &dateDetector{}
+	dd.SetMode(mode)
+	return dd
+}
+
+// SetMode меняет режим обработки дат без явного якоря. Вызывается при
+// применении новых настроек: режим по умолчанию обязан следовать за файлом,
+// иначе ослабление режима не действовало бы до перезапуска.
+func (dd *dateDetector) SetMode(mode string) {
 	switch mode {
 	case DateModeAnchorOnly, DateModeAny:
-		return dateDetector{mode: mode}
+		dd.mode.Store(&mode)
 	default:
-		return dateDetector{mode: DateModePIIContext}
+		m := DateModePIIContext
+		dd.mode.Store(&m)
 	}
 }
 
+// currentMode возвращает действующий режим обработки дат без якоря.
+func (dd *dateDetector) currentMode() string {
+	if m := dd.mode.Load(); m != nil {
+		return *m
+	}
+	return DateModePIIContext
+}
+
 // Types перечисляет типы, которые находит детектор.
-func (dateDetector) Types() []Type { return []Type{TypeDOB, TypeIssueDate} }
+func (dd *dateDetector) Types() []Type { return []Type{TypeDOB, TypeIssueDate} }
 
 // Detect ищет даты трёх видов: числовые, записанные словами и одиночный год
 // рождения. Год разбирается последним, чтобы не дублировать год, уже вошедший
 // в полную дату.
-func (dd dateDetector) Detect(d *Doc) []Span {
+func (dd *dateDetector) Detect(d *Doc) []Span {
 	out := dd.numericDates(d)
 	out = append(out, dd.wordDates(d)...)
 	out = append(out, dd.birthYears(d, out)...)
@@ -155,7 +186,7 @@ type dateGroup struct {
 // numericDates разбирает числовые кандидаты документа. Отдельного прохода по
 // тексту нет: числовые последовательности уже посчитаны один раз для всех
 // детекторов.
-func (dd dateDetector) numericDates(d *Doc) []Span {
+func (dd *dateDetector) numericDates(d *Doc) []Span {
 	var out []Span
 	for _, run := range d.NumRuns() {
 		// Ведущий плюс бывает только у телефона в международном формате.
@@ -173,7 +204,7 @@ func (dd dateDetector) numericDates(d *Doc) []Span {
 // дата и номер паспорта склеиваются в одну последовательность, и целиком она
 // датой не является. Тройки разбираются слева направо и не перекрываются,
 // иначе хвост даты вместе с началом номера дал бы вторую «дату».
-func (dd dateDetector) runDates(d *Doc, run NumRun) []Span {
+func (dd *dateDetector) runDates(d *Doc, run NumRun) []Span {
 	groups := dateSplitRun(d, run)
 	if len(groups) == 1 {
 		return dd.compactDate(d, groups[0])
@@ -305,7 +336,7 @@ func datePlausibleParts(parts []string) bool {
 // «12031985». От номера документа такая запись ничем не отличается, кроме
 // соседнего слова, поэтому нужен явный якорь рождения или выдачи; упоминания
 // документа рядом здесь недостаточно.
-func (dd dateDetector) compactDate(d *Doc, g dateGroup) []Span {
+func (dd *dateDetector) compactDate(d *Doc, g dateGroup) []Span {
 	digits := d.Text[g.start:g.end]
 	if len(digits) != dateCompactLen || !dateCompactPlausible(digits) {
 		return nil
@@ -563,7 +594,7 @@ func dateSameRunes(a, b []rune) bool {
 
 // wordDates ищет даты, записанные словами. Опорой служит слово-месяц: оно
 // однозначно, а числа вокруг него проверяются на правдоподобие.
-func (dd dateDetector) wordDates(d *Doc) []Span {
+func (dd *dateDetector) wordDates(d *Doc) []Span {
 	var out []Span
 	for i, tok := range d.Tokens {
 		if tok.Kind != KindCyr && tok.Kind != KindLat {
@@ -595,7 +626,7 @@ func dateMonth(word string) (int, bool) {
 
 // dayFirstDate разбирает запись «12 марта 1985», «5-го марта 1990» и
 // «двенадцатое марта тысяча девятьсот восемьдесят пятого года».
-func (dd dateDetector) dayFirstDate(d *Doc, monthTok, month int) (Span, bool) {
+func (dd *dateDetector) dayFirstDate(d *Doc, monthTok, month int) (Span, bool) {
 	start, day, ok := dateDayBefore(d, monthTok)
 	if !ok {
 		return Span{}, false
@@ -608,7 +639,7 @@ func (dd dateDetector) dayFirstDate(d *Doc, monthTok, month int) (Span, bool) {
 }
 
 // monthFirstDate разбирает английскую запись «March 12, 1985».
-func (dd dateDetector) monthFirstDate(d *Doc, monthTok, month int) (Span, bool) {
+func (dd *dateDetector) monthFirstDate(d *Doc, monthTok, month int) (Span, bool) {
 	dayTok, ok := dateDayTokenAfter(d, monthTok)
 	if !ok {
 		return Span{}, false
@@ -625,7 +656,7 @@ func (dd dateDetector) monthFirstDate(d *Doc, monthTok, month int) (Span, bool) 
 }
 
 // wordDateSpan проверяет правдоподобие даты словами и определяет её тип.
-func (dd dateDetector) wordDateSpan(d *Doc, start, end, day, month, year int) (Span, bool) {
+func (dd *dateDetector) wordDateSpan(d *Doc, start, end, day, month, year int) (Span, bool) {
 	if !dateValidDayMonthNum(day, month, year) {
 		return Span{}, false
 	}
@@ -910,7 +941,7 @@ func dateReverse(words []string) {
 // birthYears находит запись года рождения без дня и месяца: «1985 г.р.»,
 // «1985 года рождения», «род. 1985». Года, уже вошедшие в полную дату,
 // пропускаются.
-func (dd dateDetector) birthYears(d *Doc, found []Span) []Span {
+func (dd *dateDetector) birthYears(d *Doc, found []Span) []Span {
 	var out []Span
 	for _, run := range d.NumRuns() {
 		if run.HasPlus || len(run.Groups) != 1 || len(run.Digits) != 4 {
@@ -950,7 +981,7 @@ func dateOverlapsAny(spans []Span, start, end int) bool {
 // Порядок правил важен: явный якорь сильнее отрицательного контекста. Иначе
 // в записи «дата рождения 05.03.1990, оплата прошла» слово «оплата» гасило бы
 // настоящую дату рождения.
-func (dd dateDetector) classify(d *Doc, start, end int, shape string) (Span, bool) {
+func (dd *dateDetector) classify(d *Doc, start, end int, shape string) (Span, bool) {
 	if start >= end || !dateWithinLine(d, start, end) {
 		return Span{}, false
 	}
@@ -998,8 +1029,8 @@ func dateExplicitAnchor(d *Doc, start, end int) (Type, float64, string, bool) {
 }
 
 // byContext решает судьбу даты без якоря по режиму детектора.
-func (dd dateDetector) byContext(d *Doc, start, end int) (Type, float64, string, bool) {
-	switch dd.mode {
+func (dd *dateDetector) byContext(d *Doc, start, end int) (Type, float64, string, bool) {
+	switch dd.currentMode() {
 	case DateModeAnchorOnly:
 		return "", 0, "", false
 	case DateModeAny:
