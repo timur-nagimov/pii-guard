@@ -128,6 +128,7 @@ while ! should_stop; do
   for t in "${TARGETS[@]}"; do printf ' %s' "${t%%:*}"; done
   printf '\n'
 
+  ROOT_HEAD="$(git -C "$ROOT" rev-parse HEAD)"
   PIDS=""
   for entry in "${TARGETS[@]}"; do
     type="${entry%%:*}"
@@ -153,10 +154,27 @@ while ! should_stop; do
         task_prompt "$type" "$score" \
           | opencode run --auto --dir "$dir" --model "$MODEL" --title "$name" 2>&1 | tail -30
 
-        # Работу фиксируем сами: без этого сливать утром нечего.
-        ( cd "$dir" && git add -A -- . ':!corpus' \
-          && (git diff --cached --quiet \
-              || git -c user.name=night -c user.email=night@local commit -q -m "Круг $ROUND: $type") )
+        # Работу фиксируем сами: без этого сливать утром нечего. Пути corpus
+        # перечислять нельзя: набор лежит под правилом игнорирования, и git
+        # на явное упоминание такого пути возвращает единицу. Цепочка через && в
+        # этом месте рвалась, и правка агента оставалась незафиксированной —
+        # так пропала работа pin-r1.
+        ( cd "$dir" && git add -A
+          git diff --cached --quiet \
+            || git -c user.name=night -c user.email=night@local commit -q -m "Круг $ROUND: $type" )
+
+        # Пустая ветка проходит ворота просто потому, что в ней ничего нет.
+        # Такой круг обязан считаться неудачей, иначе пятнадцать кругов подряд
+        # рапортуют успех, не сделав ни одной правки.
+        if [ -z "$(git -C "$dir" log --oneline "$ROOT_HEAD..HEAD" 2>/dev/null)" ]; then
+          echo "=== $name: агент не сделал ни одной правки, ворота не запускаем ==="
+          echo "пусто" > "$NIGHT/parked/$name.empty"
+          if grep -qE 'Forbidden|blocked by a gateway|Unauthorized|quota' "$log" 2>/dev/null; then
+            echo "=== $name: доступ к модели закрыт, ставлю прогон на стоп ==="
+            touch "$NIGHT/STOP"
+          fi
+          exit 0
+        fi
 
         echo "=== $name: ворота $(date '+%H:%M:%S') ==="
         ( cd "$dir" && bash scripts/gate.sh )
