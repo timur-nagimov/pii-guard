@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -375,15 +376,27 @@ func restorePlaceholders(text string, back map[string]string) string {
 	if len(back) == 0 {
 		return text
 	}
-	out := text
+
+	// Замена идёт ОДНИМ проходом, а не по очереди для каждого плейсхолдера.
+	// Прежний способ переписывал уже изменённый текст, из-за чего значение,
+	// подставленное вместо одного плейсхолдера, попадало под замену
+	// следующего: данные одного человека искажались подстановкой другого.
+	// Вдобавок порядок обхода карты в Go случаен, поэтому ответ модели был
+	// невоспроизводим между одинаковыми запросами.
+	//
+	// strings.Replacer проходит текст один раз и подставленное не перечитывает.
+	// Порядок пар задаётся явно: сначала длинные образцы, потом короткие, а при
+	// равной длине по алфавиту. Это нужно, чтобы короткий образец не съедал
+	// начало длинного и чтобы результат не зависел от карты.
+	type pair struct{ from, to string }
+	var pairs []pair
+
 	for token, value := range back {
 		encoded, err := json.Marshal(value)
 		if err != nil {
 			continue
 		}
-		quoted := string(encoded)
-		quoted = strings.TrimPrefix(quoted, "\"")
-		quoted = strings.TrimSuffix(quoted, "\"")
+		quoted := strings.TrimSuffix(strings.TrimPrefix(string(encoded), "\""), "\"")
 
 		inner := strings.TrimSuffix(strings.TrimPrefix(token, "["), "]")
 		for _, variant := range []string{
@@ -393,8 +406,31 @@ func restorePlaceholders(text string, back map[string]string) string {
 			"{" + inner + "}",
 			inner,
 		} {
-			out = strings.ReplaceAll(out, variant, quoted)
+			if variant == "" {
+				continue
+			}
+			pairs = append(pairs, pair{variant, quoted})
 		}
 	}
-	return out
+	if len(pairs) == 0 {
+		return text
+	}
+
+	sort.Slice(pairs, func(i, j int) bool {
+		if len(pairs[i].from) != len(pairs[j].from) {
+			return len(pairs[i].from) > len(pairs[j].from)
+		}
+		return pairs[i].from < pairs[j].from
+	})
+
+	flat := make([]string, 0, len(pairs)*2)
+	seen := make(map[string]bool, len(pairs))
+	for _, pr := range pairs {
+		if seen[pr.from] {
+			continue // один образец не должен встречаться дважды
+		}
+		seen[pr.from] = true
+		flat = append(flat, pr.from, pr.to)
+	}
+	return strings.NewReplacer(flat...).Replace(text)
 }
