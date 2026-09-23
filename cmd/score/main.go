@@ -158,7 +158,7 @@ func main() {
 				cat.full++
 				src.full++
 			}
-			if ratio < 0.5 && *examples > 0 && shown < *examples &&
+			if ratio < 1.0 && *examples > 0 && shown < *examples &&
 				(*onlyType == "" || *onlyType == g.Type) {
 				shown++
 				fmt.Printf("ПРОПУСК %-16s [%s] %q\n   текст: %s\n   маска: %s\n",
