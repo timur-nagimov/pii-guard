@@ -13,6 +13,36 @@ type emailCase struct {
 	want []string
 }
 
+// emailCheckSpan сверяет один найденный фрагмент до того, как по нему режут
+// текст. Испорченные границы обрывают случай сразу: резать по ним нельзя, а
+// чужой тип означает, что дальше сверять значения уже бессмысленно.
+func emailCheckSpan(t *testing.T, c emailCase, s Span) {
+	t.Helper()
+	if s.Start < 0 || s.End > len(c.text) || s.Start >= s.End {
+		t.Fatalf("испорченные границы %d:%d", s.Start, s.End)
+	}
+	if s.Type != TypeEmail {
+		t.Fatalf("тип %s, ожидался %s", s.Type, TypeEmail)
+	}
+	if s.Conf < ConfAnchored {
+		t.Errorf("уверенность %.2f слишком низка для адреса почты", s.Conf)
+	}
+}
+
+// emailCheckValues сверяет найденные адреса с ожидаемыми по порядку. Порядок
+// важен: сдвиг границ одного фрагмента виден именно как расхождение значений.
+func emailCheckValues(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("найдено %d адресов %v, ожидалось %d %v", len(got), got, len(want), want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("адрес %d: %q, ожидался %q", i, got[i], want[i])
+		}
+	}
+}
+
 // runEmailCases прогоняет табличный набор через детектор адресов почты.
 // Детектор создаётся здесь же, поэтому тест не зависит от других детекторов.
 func runEmailCases(t *testing.T, cases []emailCase) {
@@ -23,25 +53,10 @@ func runEmailCases(t *testing.T, cases []emailCase) {
 			spans := det.Detect(NewDoc(c.text))
 			got := make([]string, 0, len(spans))
 			for _, s := range spans {
-				if s.Start < 0 || s.End > len(c.text) || s.Start >= s.End {
-					t.Fatalf("испорченные границы %d:%d", s.Start, s.End)
-				}
-				if s.Type != TypeEmail {
-					t.Fatalf("тип %s, ожидался %s", s.Type, TypeEmail)
-				}
-				if s.Conf < ConfAnchored {
-					t.Errorf("уверенность %.2f слишком низка для адреса почты", s.Conf)
-				}
+				emailCheckSpan(t, c, s)
 				got = append(got, c.text[s.Start:s.End])
 			}
-			if len(got) != len(c.want) {
-				t.Fatalf("найдено %d адресов %v, ожидалось %d %v", len(got), got, len(c.want), c.want)
-			}
-			for i := range got {
-				if got[i] != c.want[i] {
-					t.Errorf("адрес %d: %q, ожидался %q", i, got[i], c.want[i])
-				}
-			}
+			emailCheckValues(t, got, c.want)
 		})
 	}
 }
