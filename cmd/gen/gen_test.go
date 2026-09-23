@@ -465,7 +465,7 @@ func TestNewCategoriesPresent(t *testing.T) {
 		"dialog", "statement", "export_row", "table_five", "email_letter",
 		"free_note", "two_people", "three_mentions", "bilingual",
 		// новые трудные срезы
-		"noise", "latin_mixed", "long_64k",
+		"noise", "latin_mixed", "long_64k", "lowercase_fio",
 		// латиница и международные данные
 		"latin_names", "intl_phone", "english_anchor", "mixed_anchor",
 		// трудные отрицательные примеры
