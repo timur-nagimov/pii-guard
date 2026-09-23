@@ -455,12 +455,25 @@ func addrLookupType(d *Doc, ws []addrWord, i int, types map[string]string) (stri
 	// Односимвольный тип требует точки, иначе предлог «с» из «с 5 утра»
 	// превращается в название села. Исключение — следующее слово с заглавной
 	// буквы: «г Пенза» и «с Ивановка» без точки это адрес, а не предлог.
+	// Аббревиатура вроде «IMEI» названием не считается: «с IMEI» это предлог
+	// с обозначением устройства, а не село.
 	if len([]rune(ws[i].lower)) == 1 && !strings.HasPrefix(addrGap(d, ws, i), ".") {
-		if i+1 >= len(ws) || !ws[i+1].title {
+		if i+1 >= len(ws) || !ws[i+1].title || addrAllCaps(d.Text[ws[i+1].start:ws[i+1].end]) {
 			return "", 0, false
 		}
 	}
 	return kind, i + 1, true
+}
+
+// addrAllCaps сообщает, что слово состоит только из заглавных букв: это
+// аббревиатура вроде «IMEI», а не название населённого пункта.
+func addrAllCaps(s string) bool {
+	for _, r := range s {
+		if unicode.IsLower(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // addrIsTypeWord сообщает, что слово является каким-либо адресным типом.
