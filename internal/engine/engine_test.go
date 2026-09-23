@@ -415,6 +415,19 @@ func countFrom(text, value string, off int) int {
 	return n
 }
 
+// checkSpanOffsets проверяет границы одного принятого фрагмента. Смещения
+// внутри куска пересчитываются в смещения всего текста, и ошибка пересчёта
+// заметна только по содержимому: по границам телефона обязан стоять телефон.
+func checkSpanOffsets(t *testing.T, text string, s pii.Span) {
+	t.Helper()
+	if s.Start < 0 || s.End > len(text) || s.Start >= s.End {
+		t.Fatalf("фрагмент с границами %d:%d не лежит в исходном тексте длиной %d", s.Start, s.End, len(text))
+	}
+	if got := text[s.Start:s.End]; s.Type == pii.TypePhone && got != chunkPanicPhone {
+		t.Fatalf("смещения фрагмента сползли: по границам %d:%d стоит %q", s.Start, s.End, got)
+	}
+}
+
 // TestChunkPanicDoesNotKillProcess — главный тест по сбою куска. Паника
 // роняется внутри рабочей горутины, а не внутри детектора, то есть ровно там,
 // где её раньше не ловил никто. Проверяется, что процесс жив, ответ отдан по
@@ -473,12 +486,7 @@ func TestChunkPanicDoesNotKillProcess(t *testing.T) {
 		t.Fatalf("замаскировано %d телефонов, ожидалось %d", res.Counts[pii.TypePhone], want)
 	}
 	for _, s := range res.Spans {
-		if s.Start < 0 || s.End > len(text) || s.Start >= s.End {
-			t.Fatalf("фрагмент с границами %d:%d не лежит в исходном тексте длиной %d", s.Start, s.End, len(text))
-		}
-		if got := text[s.Start:s.End]; s.Type == pii.TypePhone && got != chunkPanicPhone {
-			t.Fatalf("смещения фрагмента сползли: по границам %d:%d стоит %q", s.Start, s.End, got)
-		}
+		checkSpanOffsets(t, text, s)
 	}
 
 	// Пропущенный кусок остался неразобранным — это заявленная деградация,
