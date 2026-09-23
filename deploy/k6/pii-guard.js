@@ -131,7 +131,7 @@ function resultOf(res) {
     // станет узким местом и исказит то, что мы измеряем. Но и терять событие
     // нельзя — считаем его, а имя ошибки кладём меткой, чтобы в показателях
     // было видно, чем именно тело не понравилось.
-    badBody.add(1, { reason: err && err.name ? err.name : 'unknown' });
+    badBody.add(1, { reason: err?.name ?? 'unknown' });
     return null;
   }
 }
