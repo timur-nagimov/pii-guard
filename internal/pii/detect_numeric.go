@@ -148,11 +148,18 @@ func (n numericDetector) Detect(d *Doc) []Span {
 			continue
 		}
 		// Паспорт, записанный с разделяющими словами: «серия 4509 номер 123456».
-		if len(run.Digits) == 4 {
+		// Серия бывает разбита на части, поэтому первый кандидат не обязан
+		// содержать все четыре цифры: «27-12 564508».
+		if len(run.Digits) >= 2 && len(run.Digits) <= 4 {
 			if j, ok := joinPassportParts(d, runs, i); ok {
 				start, end := NormalizeSpan(d.Text, run.Start, runs[j].End)
 				out = append(out, Span{Start: start, End: end, Type: TypePassport, Conf: ConfHigh, Reason: "passport:series_number_words"})
-				used[i], used[j] = true, true
+				// Помечаются все вошедшие кандидаты, а не только крайние:
+				// иначе середина разбитого номера осталась бы свободной и
+				// получила бы свой, посторонний тип.
+				for k := i; k <= j; k++ {
+					used[k] = true
+				}
 				continue
 			}
 		}
@@ -512,6 +519,14 @@ func matchINN(c numContext) (numMatch, bool) {
 	if c.anchorAt(anchorsINN) {
 		return numMatch{TypeINN, ConfAnchored, "inn:anchor"}, true
 	}
+	// Номер, разбитый на группы по форме паспорта, ИНН не бывает: ИНН пишут
+	// десятью цифрами подряд. Контрольная сумма сходится и у постороннего
+	// числа, поэтому без этой оговорки «27-12 564508» рядом со словами
+	// «удостоверение личности» становилось ИНН и паспорт оставался открытым.
+	// Сплошные десять цифр сюда не попадают намеренно: это как раз форма ИНН.
+	if (c.pattern == "4-6" || c.pattern == "2-2-6") && c.anchorAt(anchorsPassport) {
+		return numMatch{}, false
+	}
 	if INNValid(c.digits) && !c.money() && !c.service() {
 		return numMatch{TypeINN, ConfMedium, "inn:checksum"}, true
 	}
@@ -720,24 +735,58 @@ func isPassportShape(pattern, digits string) bool {
 
 // passportConnectors — слова, которые допустимо встретить между серией и
 // номером паспорта.
-var passportConnectors = []string{"номер", "ном", "no", "n", "серия", "серии", "сер", "№", "#", ":", ",", "-", " "}
+var passportConnectors = []string{"номер", "ном", "no", "n", "серия", "серии", "сер", "№", "#", ":", ",", "-", "/", ".", "с", "н", " "}
+
+// collectDigits собирает группу ровно из want цифр, начиная с кандидата i.
+// Группу разрешено набирать из нескольких соседних кандидатов, разделённых
+// только соединителями: в наборе паспорт пишут и как «240 402», и как «27-12»,
+// и обе половины — отдельные числовые кандидаты. Возвращает индекс последнего
+// вошедшего кандидата.
+//
+// Точку между частями не допускаем намеренно: так пишут даты, и «27.12» рядом
+// с паспортным якорем не должно превращаться в серию.
+func collectDigits(d *Doc, runs []NumRun, i, want, maxParts int) (int, bool) {
+	total := len(runs[i].Digits)
+	if total > want {
+		return 0, false
+	}
+	if total == want {
+		return i, true
+	}
+	for j := i + 1; j < len(runs) && j-i < maxParts; j++ {
+		gap := d.Lower[runs[j-1].End:runs[j].Start]
+		if len([]rune(gap)) > 3 || strings.Contains(gap, ".") || !onlyConnectors(gap) {
+			return 0, false
+		}
+		total += len(runs[j].Digits)
+		if total == want {
+			return j, true
+		}
+		if total > want {
+			return 0, false
+		}
+	}
+	return 0, false
+}
 
 // joinPassportParts проверяет, что за четырёхзначной серией через разделяющие
 // слова идёт шестизначный номер, и возвращает индекс кандидата с номером.
 func joinPassportParts(d *Doc, runs []NumRun, i int) (int, bool) {
-	if len(runs[i].Digits) != 4 || serviceNumberContext(d, runs[i].Start) {
+	if serviceNumberContext(d, runs[i].Start) {
+		return 0, false
+	}
+	// Серия набирается из одной или двух частей: «4509» и «27-12».
+	seriesEnd, ok := collectDigits(d, runs, i, 4, 2)
+	if !ok {
 		return 0, false
 	}
 	// Серия без паспортного контекста — не паспорт: четыре цифры встречаются
 	// в любом тексте.
-	if _, ok := d.FindAnchor(runs[i].Start, runs[i].End, anchorsPassport, anchorWindow, anchorWindow); !ok {
+	if _, ok := d.FindAnchor(runs[i].Start, runs[seriesEnd].End, anchorsPassport, anchorWindow, anchorWindow); !ok {
 		return 0, false
 	}
-	for j := i + 1; j < len(runs) && j <= i+2; j++ {
-		if len(runs[j].Digits) != 6 {
-			continue
-		}
-		gap := d.Lower[runs[i].End:runs[j].Start]
+	for j := seriesEnd + 1; j < len(runs) && j <= seriesEnd+2; j++ {
+		gap := d.Lower[runs[seriesEnd].End:runs[j].Start]
 		if strings.ContainsAny(gap, "\n\r") {
 			return 0, false
 		}
@@ -747,7 +796,10 @@ func joinPassportParts(d *Doc, runs []NumRun, i int) (int, bool) {
 		if !onlyConnectors(gap) {
 			return 0, false
 		}
-		return j, true
+		// Номер тоже бывает разбит: «№ 240 402».
+		if numEnd, ok := collectDigits(d, runs, j, 6, 2); ok {
+			return numEnd, true
+		}
 	}
 	return 0, false
 }
