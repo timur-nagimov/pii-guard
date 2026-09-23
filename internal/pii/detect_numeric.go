@@ -17,7 +17,7 @@ var (
 	anchorsSNILS    = []string{"снилс", "страховой номер", "лицевого счета", "лицевого счёта"}
 	anchorsDriver   = []string{"водительск", "в/у", "ву ", "права", "driver"}
 	anchorsCVV      = []string{"cvv", "cvc", "cvv2", "cvc2", "код безопасности", "защитный код", "три цифры", "с обратной стороны", "с оборота", "оборотн"}
-	anchorsPIN      = []string{"пин", "pin", "пин-код", "пинкод", "pin-code"}
+	anchorsPIN      = []string{"пин", "pin", "пин-код", "пинкод", "pin-code", "код доступа к карте", "секретный код карты", "секретный код"}
 
 	// anchorsDept — код подразделения пишут и полным словом, и сокращением.
 	// Основа «подразделени» закрывает все падежи, «к/п» и «кп» — сокращения
@@ -167,6 +167,17 @@ func (n numericDetector) Detect(d *Doc) []Span {
 		if s, ok := n.classify(d, run); ok {
 			out = append(out, s)
 			used[i] = true
+			// Пин-код, разбитый на две пары цифр: «PIN-code: 07 26». Первая
+			// пара ловится якорем, вторая — соседняя двухзначная пара, между
+			// которой и якорем уже стоят цифры первой пары. Помечаем её тем же
+			// типом, чтобы обе половины пина были замаскированы.
+			if s.Type == TypePIN && len(run.Digits) == 2 {
+				if j, ok := joinSplitPIN(d, runs, i); ok {
+					start, end := NormalizeSpan(d.Text, runs[j].Start, runs[j].End)
+					out = append(out, Span{Start: start, End: end, Type: TypePIN, Conf: ConfHigh, Reason: "pin:split_pair"})
+					used[j] = true
+				}
+			}
 		}
 	}
 	return out
@@ -620,14 +631,20 @@ func matchPostcode(c numContext) (numMatch, bool) {
 // matchSecretCode: код безопасности и пин-код маскируются только по явному
 // якорю — три или четыре цифры сами по себе встречаются в любом тексте.
 func matchSecretCode(c numContext) (numMatch, bool) {
-	if len(c.digits) < 3 || len(c.digits) > 5 {
+	if len(c.digits) < 2 || len(c.digits) > 5 {
+		return numMatch{}, false
+	}
+	// Пин-код допускает две цифры: в записи «PIN-code: 07 26» пин разбит на
+	// две пары, и каждая пара — отдельный числовой кандидат. Код безопасности
+	// всегда трёхзначный, поэтому для него порог остаётся прежним.
+	if c.anchorNear(anchorsPIN) || c.anchorAfter(anchorsPIN) {
+		return numMatch{TypePIN, ConfHigh, "pin:anchor"}, true
+	}
+	if len(c.digits) < 3 {
 		return numMatch{}, false
 	}
 	if c.anchorNear(anchorsCVV) || c.anchorAfter(anchorsCVV) {
 		return numMatch{TypeCVV, ConfHigh, "cvv:anchor"}, true
-	}
-	if c.anchorNear(anchorsPIN) || c.anchorAfter(anchorsPIN) {
-		return numMatch{TypePIN, ConfHigh, "pin:anchor"}, true
 	}
 	// Опечатка в якоре: «пни» вместо «пин», «оборотнои» вместо «оборота».
 	// Короткие якоря допускают одну опечатку только рядом со значением.
@@ -725,6 +742,26 @@ func joinPassportParts(d *Doc, runs []NumRun, i int) (int, bool) {
 			return 0, false
 		}
 		if len([]rune(gap)) > 24 {
+			return 0, false
+		}
+		if !onlyConnectors(gap) {
+			return 0, false
+		}
+		return j, true
+	}
+	return 0, false
+}
+
+// joinSplitPIN находит вторую пару цифр разбитого пин-кода: «PIN-code: 07 26».
+// Первая пара уже распознана как пин, вторая примыкает к ней без посторонних
+// слов и тоже состоит из двух цифр.
+func joinSplitPIN(d *Doc, runs []NumRun, i int) (int, bool) {
+	for j := i + 1; j < len(runs) && j <= i+1; j++ {
+		if len(runs[j].Digits) != 2 {
+			continue
+		}
+		gap := d.Lower[runs[i].End:runs[j].Start]
+		if len([]rune(gap)) > 8 {
 			return 0, false
 		}
 		if !onlyConnectors(gap) {
