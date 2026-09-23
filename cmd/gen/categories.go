@@ -44,6 +44,7 @@ func compositeCategories() []categorySpec {
 		{name: "noise", weight: 4, gen: genNoise},
 		{name: "latin_mixed", weight: 4, gen: genLatinMixed},
 		{name: "long_64k", weight: 2, gen: genLong64k},
+		{name: "lowercase_fio", weight: 4, gen: genLowercaseFIO},
 	}
 }
 
@@ -109,6 +110,7 @@ func negativeCategories() []categorySpec {
 		{name: "neg_poet_verse", gen: negPoetVerse, negative: true},
 		{name: "neg_company_inn", gen: negCompanyINN, negative: true},
 		{name: "neg_contract_number", gen: negContractNumber, negative: true},
+		{name: "neg_latin_product", gen: negLatinProduct, negative: true},
 	}
 }
 

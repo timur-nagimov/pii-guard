@@ -465,7 +465,7 @@ func TestNewCategoriesPresent(t *testing.T) {
 		"dialog", "statement", "export_row", "table_five", "email_letter",
 		"free_note", "two_people", "three_mentions", "bilingual",
 		// новые трудные срезы
-		"noise", "latin_mixed", "long_64k",
+		"noise", "latin_mixed", "long_64k", "lowercase_fio",
 		// латиница и международные данные
 		"latin_names", "intl_phone", "english_anchor", "mixed_anchor",
 		// трудные отрицательные примеры
@@ -479,7 +479,7 @@ func TestNewCategoriesPresent(t *testing.T) {
 		"neg_insurance_policy", "neg_medical_card", "neg_student_ticket",
 		"neg_employee_badge", "neg_room_number", "neg_route_number",
 		"neg_historical_figure", "neg_poet_verse", "neg_company_inn",
-		"neg_contract_number",
+		"neg_contract_number", "neg_latin_product",
 	}
 	seen := make(map[string]int)
 	for _, r := range NewGenerator(17, false).Generate(4000) {
