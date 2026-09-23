@@ -110,6 +110,7 @@ func negativeCategories() []categorySpec {
 		{name: "neg_poet_verse", gen: negPoetVerse, negative: true},
 		{name: "neg_company_inn", gen: negCompanyINN, negative: true},
 		{name: "neg_contract_number", gen: negContractNumber, negative: true},
+		{name: "neg_latin_product", gen: negLatinProduct, negative: true},
 	}
 }
 
