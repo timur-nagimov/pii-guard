@@ -283,11 +283,14 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 	defer st.Close()
 
 	reg := pii.NewRegistry()
+	// Детектор дат держится отдельной ссылкой: его режим по умолчанию меняется
+	// на лету при применении новых настроек, как и сменный слот своих типов.
+	dateDet := pii.NewDateDetector(cfg.Defaults.DateWithoutAnchor)
 	reg.Register(
 		pii.NewNumericDetector(),
 		pii.NewEmailDetector(),
 		pii.NewFIODetector(),
-		pii.NewDateDetector(cfg.Defaults.DateWithoutAnchor),
+		dateDet,
 		pii.NewAddressDetector(),
 		pii.NewBirthPlaceDetector(),
 		pii.NewIssuerDetector(),
@@ -396,14 +399,20 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
-	applyConfig := newConfigApplier(configPath, srv, eng, reg, log)
+	applyConfig := newConfigApplier(configPath, srv, eng, reg, dateDet, log)
 	// Ручка управления правилами применяет свою правку тем же кодом, что и
 	// наблюдение за файлом, только сразу, а не к ближайшему обходу.
 	srv.SetReloader(func() error { return applyConfig("rules_api") })
-	go watchConfig(configPath, applyConfig, log, reload)
+	// Наблюдение за файлом живёт, пока живёт сервис: контекст завершает его
+	// вместе с остановкой, иначе горутина держала бы файл открытым после
+	// выхода из run.
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	defer watchCancel()
+	go watchConfig(watchCtx, configPath, applyConfig, log, reload)
 
 	select {
 	case err := <-errCh:
+		watchCancel()
 		return err
 	case <-stop:
 		log.Info("получен сигнал остановки, снимаю готовность",
@@ -413,6 +422,7 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 
 	srv.SetReady(false)
 	drain(cfg.Server.DrainTimeout, stop, log)
+	watchCancel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
@@ -528,7 +538,10 @@ func startPprof(addr string, log *slog.Logger) {
 // watchConfig применяет новые настройки по сигналу SIGHUP и при изменении
 // файла на диске. Настройки, не прошедшие проверку, отбрасываются: сервис
 // продолжает работать со старыми.
-func watchConfig(path string, apply func(reason string) error, log *slog.Logger, sig <-chan os.Signal) {
+//
+// Контекст завершает наблюдение вместе с сервисом: без него горутина жила бы
+// после остановки и держала бы файл настроек открытым.
+func watchConfig(ctx context.Context, path string, apply func(reason string) error, log *slog.Logger, sig <-chan os.Signal) {
 	var lastMod time.Time
 	if st, err := os.Stat(path); err == nil {
 		lastMod = st.ModTime()
@@ -551,6 +564,8 @@ func watchConfig(path string, apply func(reason string) error, log *slog.Logger,
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-sig:
 			_ = applied("signal")
 		case <-ticker.C:
@@ -585,7 +600,7 @@ func watchConfig(path string, apply func(reason string) error, log *slog.Logger,
 //
 // Настройки применяются целиком или никак. Полупримененные настройки — это
 // системы, которым роздан список типов, искать которые нечем.
-func newConfigApplier(path string, srv *api.Server, eng *engine.Engine, reg *pii.Registry, log *slog.Logger) func(reason string) error {
+func newConfigApplier(path string, srv *api.Server, eng *engine.Engine, reg *pii.Registry, dateDet pii.DateDetector, log *slog.Logger) func(reason string) error {
 	return func(reason string) error {
 		cfg, err := config.Load(path)
 		if err != nil {
@@ -596,6 +611,18 @@ func newConfigApplier(path string, srv *api.Server, eng *engine.Engine, reg *pii
 		if err := applyCustomTypes(reg, cfg); err != nil {
 			return err
 		}
+		// Режим дат по умолчанию следует за файлом настроек: ослабление режима
+		// обязано начать находить даты без якоря без перезапуска.
+		dateDet.SetMode(cfg.Defaults.DateWithoutAnchor)
+		// Честный журнал: поля, которые требуют перезапуска, не применяются
+		// на лету, и молчать о них нельзя. Сравниваем с действующими
+		// настройками и предупреждаем о каждом изменённом поле отдельно.
+		old := srv.Config()
+		for _, field := range restartRequiredChanges(old, cfg) {
+			log.Warn("поле изменено, требует перезапуска",
+				logging.Event(logging.EventConfigApplied), logging.Component("config"),
+				slog.String("field", field), slog.String("reason", reason))
+		}
 		srv.SetConfig(cfg)
 		eng.ResetFilters()
 		log.Info("настройки применены",
@@ -604,6 +631,116 @@ func newConfigApplier(path string, srv *api.Server, eng *engine.Engine, reg *pii
 			slog.Int("custom_types", len(cfg.CustomTypes)))
 		return nil
 	}
+}
+
+// restartRequiredChanges возвращает имена полей, которые изменились между
+// старыми и новыми настройками и требуют перезапуска сервиса. Эти поля
+// применяются только при старте: сетевые слушатели, ограничители, хранилище и
+// журнал собираются один раз, и менять их на лету небезопасно для идущих
+// запросов.
+func restartRequiredChanges(old, new *config.Config) []string {
+	var out []string
+	// Сетевые слушатели и их сроки.
+	if old.Server.HTTP != new.Server.HTTP {
+		out = append(out, "server.http")
+	}
+	if old.Server.HTTPS != new.Server.HTTPS {
+		out = append(out, "server.https")
+	}
+	if old.Server.MaxBodyBytes != new.Server.MaxBodyBytes {
+		out = append(out, "server.max_body_bytes")
+	}
+	if old.Server.ReadHeaderTimeout != new.Server.ReadHeaderTimeout {
+		out = append(out, "server.read_header_timeout")
+	}
+	if old.Server.ReadTimeout != new.Server.ReadTimeout {
+		out = append(out, "server.read_timeout")
+	}
+	if old.Server.WriteTimeout != new.Server.WriteTimeout {
+		out = append(out, "server.write_timeout")
+	}
+	if old.Server.IdleTimeout != new.Server.IdleTimeout {
+		out = append(out, "server.idle_timeout")
+	}
+	if old.Server.ShutdownTimeout != new.Server.ShutdownTimeout {
+		out = append(out, "server.shutdown_timeout")
+	}
+	if old.Server.DrainTimeout != new.Server.DrainTimeout {
+		out = append(out, "server.drain_timeout")
+	}
+	// Ограничители одновременной обработки.
+	if old.Limits.Inflight != new.Limits.Inflight {
+		out = append(out, "limits.inflight")
+	}
+	if old.Limits.HeavyInflight != new.Limits.HeavyInflight {
+		out = append(out, "limits.heavy_inflight")
+	}
+	if old.Limits.HeavyThresholdBytes != new.Limits.HeavyThresholdBytes {
+		out = append(out, "limits.heavy_threshold_bytes")
+	}
+	if old.Limits.MaxWait != new.Limits.MaxWait {
+		out = append(out, "limits.max_wait")
+	}
+	// Хранилище соответствий.
+	if old.Store.TTL != new.Store.TTL {
+		out = append(out, "store.ttl")
+	}
+	if old.Store.MaxRecords != new.Store.MaxRecords {
+		out = append(out, "store.max_records")
+	}
+	if old.Store.KeyEnv != new.Store.KeyEnv {
+		out = append(out, "store.key_env")
+	}
+	if old.Store.Redis != new.Store.Redis {
+		out = append(out, "store.redis")
+	}
+	if old.Store.UnreadyOnDegraded != new.Store.UnreadyOnDegraded {
+		out = append(out, "store.unready_on_degraded")
+	}
+	// Журнал.
+	if old.Logging.Level != new.Logging.Level {
+		out = append(out, "logging.level")
+	}
+	if old.Logging.Format != new.Logging.Format {
+		out = append(out, "logging.format")
+	}
+	if !boolPtrEqual(old.Logging.Source, new.Logging.Source) {
+		out = append(out, "logging.source")
+	}
+	if !boolPtrEqual(old.Logging.Redact, new.Logging.Redact) {
+		out = append(out, "logging.redact")
+	}
+	if old.Logging.RepeatWindow != new.Logging.RepeatWindow {
+		out = append(out, "logging.repeat_window")
+	}
+	if old.Logging.RepeatLevel != new.Logging.RepeatLevel {
+		out = append(out, "logging.repeat_level")
+	}
+	if old.Logging.SampleN != new.Logging.SampleN {
+		out = append(out, "logging.sample_n")
+	}
+	if old.Logging.Slow != new.Logging.Slow {
+		out = append(out, "logging.slow")
+	}
+	if !auditEqual(old.Logging.Audit, new.Logging.Audit) {
+		out = append(out, "logging.audit")
+	}
+	return out
+}
+
+// boolPtrEqual сравнивает два указателя на логическое значение, считая
+// отсутствие значения равным значению по умолчанию.
+func boolPtrEqual(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// auditEqual сравнивает настройки журнала аудита.
+func auditEqual(a, b config.LoggingAudit) bool {
+	return boolPtrEqual(a.Enabled, b.Enabled) && a.Path == b.Path &&
+		a.MaxBytes == b.MaxBytes && a.Keep == b.Keep
 }
 
 // applyCustomTypes пересобирает детектор типов из настроек.

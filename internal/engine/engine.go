@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"pii-guard/internal/config"
@@ -124,8 +125,14 @@ func (r Result) Meta() []store.SpanMeta {
 // и повторять её на каждом запросе незачем.
 type Engine struct {
 	registry *pii.Registry
-	filters  sync.Map
-	onPanic  PanicHandler
+	// filters — готовые контекстные фильтры систем. Хранится указатель на
+	// карту, а не сама карта: сброс при применении новых настроек подменяет
+	// указатель атомарно, и уже идущие запросы дорабатывают прежней картой.
+	// Иначе присваивание sync.Map{} целиком при живых чтениях было бы гонкой
+	// данных, которую детектор гонок не видит без теста на перезагрузку под
+	// нагрузкой.
+	filters atomic.Pointer[sync.Map]
+	onPanic PanicHandler
 
 	// docPool переиспользует разобранные документы между запросами. Разбор
 	// строит копию текста в нижнем регистре, срез токенов и индекс рун, и на
@@ -149,6 +156,7 @@ type PanicHandler func(chunk int, recovered any)
 // New создаёт конвейер поверх набора детекторов.
 func New(reg *pii.Registry) *Engine {
 	e := &Engine{registry: reg}
+	e.filters.Store(&sync.Map{})
 	e.docPool.New = func() any { return &pii.Doc{} }
 	return e
 }
@@ -173,7 +181,8 @@ func (e *Engine) OnPanic(h PanicHandler) { e.onPanic = h }
 // contextFilter возвращает готовый фильтр для системы, собирая его при первом
 // обращении.
 func (e *Engine) contextFilter(sys config.System) *pii.ContextFilter {
-	if v, ok := e.filters.Load(sys.Name); ok {
+	filters := e.filters.Load()
+	if v, ok := filters.Load(sys.Name); ok {
 		if f, valid := v.(*pii.ContextFilter); valid {
 			return f
 		}
@@ -185,13 +194,15 @@ func (e *Engine) contextFilter(sys config.System) *pii.ContextFilter {
 		AllowAddresses: sys.Exclusions.AllowAddresses,
 		AllowValues:    sys.Exclusions.AllowValues,
 	})
-	e.filters.Store(sys.Name, f)
+	filters.Store(sys.Name, f)
 	return f
 }
 
 // ResetFilters сбрасывает собранные фильтры. Вызывается после применения
 // новых настроек, иначе система работала бы по прежним спискам исключений.
-func (e *Engine) ResetFilters() { e.filters = sync.Map{} }
+// Сброс подменяет карту целиком атомарно: уже идущие запросы дорабатывают
+// прежней картой, а новые собирают фильтры заново.
+func (e *Engine) ResetFilters() { e.filters.Store(&sync.Map{}) }
 
 // filterDatesByMode убирает даты, найденные по контексту, если система
 // требует только явный якорь.

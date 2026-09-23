@@ -59,7 +59,11 @@ type Server struct {
 	heavySem chan struct{}
 
 	// upstreams кеширует клиентов к языковой модели по имени системы.
-	upstreams sync.Map
+	// Хранится указатель на карту, а не сама карта: сброс при применении
+	// новых настроек подменяет указатель атомарно, и уже идущие запросы
+	// дорабатывают прежней картой. Иначе присваивание sync.Map{} целиком при
+	// живых чтениях было бы гонкой данных.
+	upstreams atomic.Pointer[sync.Map]
 
 	ready atomic.Bool
 }
@@ -68,6 +72,7 @@ type Server struct {
 func New(cfg *config.Config, st *store.Store, eng *engine.Engine, m *metrics.Metrics, log *slog.Logger) *Server {
 	s := &Server{store: st, engine: eng, metrics: m, log: log}
 	s.cfg.Store(cfg)
+	s.upstreams.Store(&sync.Map{})
 	s.sem = make(chan struct{}, cfg.Limits.Inflight)
 	s.heavySem = make(chan struct{}, cfg.Limits.HeavyInflight)
 	s.ready.Store(true)
@@ -100,8 +105,9 @@ func (s *Server) Config() *config.Config { return s.cfg.Load() }
 func (s *Server) SetConfig(cfg *config.Config) {
 	s.cfg.Store(cfg)
 	// Настройки обращения к модели могли измениться, поэтому кешированных
-	// клиентов нужно собрать заново.
-	s.upstreams = sync.Map{}
+	// клиентов нужно собрать заново. Подмена карты атомарная: уже идущие
+	// запросы дорабатывают прежней картой.
+	s.upstreams.Store(&sync.Map{})
 }
 
 // SetReady переключает готовность принимать запросы. При завершении работы
