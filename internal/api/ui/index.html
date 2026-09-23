@@ -263,7 +263,7 @@ table.coverage td.conf { color: var(--ink-soft); font-size: 11.5px; }
 .coverage-legend .hole { color: var(--bad); font-weight: 650; }
 .coverage-legend .demask { color: var(--ok); font-weight: 650; }
 .coverage-legend .custom { color: var(--accent); font-weight: 650; }
-/* Подпись «extra» в пояснении — это <strong>, и цвет ей возвращают заголовочный,
+/* Подпись «extra» в пояснении набрана элементом strong, и цвет ей возвращают заголовочный,
    перебивая .coverage-legend strong. Элемент в записи назван явно, чтобы правило
    не пересекалось с одноимённым классом внутри самой матрицы: там .src — это
    подпись источника в клетке, вещь другая и со своим весом. */
@@ -775,7 +775,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     if (row) {
       row.classList.toggle('active', on);
     }
-    if (on && mark) { mark.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+    if (on && mark) {
+      mark.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
   }
 
   function bindHover(node, idx) {
@@ -802,7 +804,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     marks.clear();
 
     var runes = toRunes(text);
-    var ordered = spans.map(function (span, idx) { return { span, idx }; });
+    var ordered = spans.map(function (span, idx) {
+      return { span, idx };
+    });
     ordered.sort(function (a, b) {
       return (a.span.start_rune - b.span.start_rune) || (b.span.end_rune - a.span.end_rune);
     });
@@ -1314,7 +1318,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     var b = encoder.encode(right);
     var limit = Math.min(a.length, b.length);
     for (var i = 0; i < limit; i++) {
-      if (a[i] !== b[i]) { return { same: false, at: i, left: a.length, right: b.length }; }
+      if (a[i] !== b[i]) {
+        return { same: false, at: i, left: a.length, right: b.length };
+      }
     }
     if (a.length !== b.length) {
       return { same: false, at: limit, left: a.length, right: b.length };
