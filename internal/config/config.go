@@ -239,6 +239,17 @@ type CustomType struct {
 	AnchorWindow  int      `yaml:"anchor_window"`
 }
 
+// Уровни записи журнала. Одни и те же строки стоят и в значениях по
+// умолчанию, и в проверке настроек: разъехаться они не должны, поэтому имя
+// у каждого уровня одно на весь пакет.
+const (
+	levelDebug   = "debug"
+	levelInfo    = "info"
+	levelWarn    = "warn"
+	levelWarning = "warning"
+	levelError   = "error"
+)
+
 // Значения полей on_error и on_unknown_id.
 const (
 	OnErrorOpen          = "open"
@@ -250,7 +261,7 @@ const (
 	DateAny              = "any"
 )
 
-// Enabled сообщает, действуют ли контекстные правила для системы.
+// ContextRulesOn сообщает, действуют ли контекстные правила для системы.
 func (s System) ContextRulesOn(d Defaults) bool {
 	if s.ContextRulesEnabled != nil {
 		return *s.ContextRulesEnabled
@@ -349,7 +360,22 @@ func Parse(raw []byte) (*Config, error) {
 	return &c, nil
 }
 
+// applyDefaults заполняет незаданные значения. Разнесено по разделам файла
+// настроек: раздел правят целиком, и умолчания к нему должны читаться так же
+// — одним куском, а не выискиваться в общем списке.
 func (c *Config) applyDefaults() {
+	c.applyServerDefaults()
+	c.applyLimitsDefaults()
+	c.applyStoreDefaults()
+	c.applyCommonDefaults()
+	c.applyLoggingDefaults()
+}
+
+// applyServerDefaults заполняет незаданные адреса, сроки и предел размера
+// тела у слушателей. Сроки связаны друг с другом и с ожиданием места в
+// ограничителе — их соотношения проверяет Validate, — поэтому значения
+// держим рядом, а не по месту чтения.
+func (c *Config) applyServerDefaults() {
 	if c.Server.HTTP == "" {
 		c.Server.HTTP = ":8080"
 	}
@@ -379,6 +405,12 @@ func (c *Config) applyDefaults() {
 		// две секунды запаса на разброс проверок.
 		c.Server.DrainTimeout = 7 * time.Second
 	}
+}
+
+// applyLimitsDefaults заполняет незаданные ограничители одновременной
+// обработки. Числа этого раздела осмысленны только вместе: общий предел,
+// более узкий предел для больших текстов и срок ожидания места в очереди.
+func (c *Config) applyLimitsDefaults() {
 	if c.Limits.Inflight == 0 {
 		c.Limits.Inflight = 96
 	}
@@ -391,6 +423,12 @@ func (c *Config) applyDefaults() {
 	if c.Limits.MaxWait == 0 {
 		c.Limits.MaxWait = 500 * time.Millisecond
 	}
+}
+
+// applyStoreDefaults заполняет незаданные настройки хранилища соответствий.
+// Здесь же окружение перекрывает файл настроек — почему именно для адреса и
+// пароля общего хранилища, написано у самих переменных ниже.
+func (c *Config) applyStoreDefaults() {
 	if c.Store.TTL == 0 {
 		// Пятнадцать минут, а не час: предел числа записей ниже, чем даёт
 		// час при плановой частоте, и час был бы обещанием, которого
@@ -411,6 +449,12 @@ func (c *Config) applyDefaults() {
 	if v := os.Getenv("PII_REDIS_PASSWORD"); v != "" {
 		c.Store.Redis.Password = v
 	}
+}
+
+// applyCommonDefaults заполняет значения, действующие для всех систем.
+// Система, не переопределившая поле, работает по ним, поэтому пустое место
+// здесь — это не «ничего», а поведение по умолчанию для всего сервиса.
+func (c *Config) applyCommonDefaults() {
 	if !c.Defaults.Preset.Valid() {
 		c.Defaults.Preset = mask.PresetFull
 	}
@@ -426,7 +470,6 @@ func (c *Config) applyDefaults() {
 	if c.Defaults.DateWithoutAnchor == "" {
 		c.Defaults.DateWithoutAnchor = DatePIIContext
 	}
-	c.applyLoggingDefaults()
 }
 
 // applyLoggingDefaults заполняет незаданные настройки журнала. Значения
@@ -434,7 +477,7 @@ func (c *Config) applyDefaults() {
 // но и не должен обнулять то, чего в нём нет.
 func (c *Config) applyLoggingDefaults() {
 	if c.Logging.Level == "" {
-		c.Logging.Level = "info"
+		c.Logging.Level = levelInfo
 	}
 	if c.Logging.Format == "" {
 		c.Logging.Format = "json"
@@ -443,7 +486,7 @@ func (c *Config) applyLoggingDefaults() {
 		c.Logging.RepeatWindow = 10 * time.Second
 	}
 	if c.Logging.RepeatLevel == "" {
-		c.Logging.RepeatLevel = "warn"
+		c.Logging.RepeatLevel = levelWarn
 	}
 	if c.Logging.SampleN <= 0 {
 		// Единица означает, что пишутся все записи об успешных запросах.
@@ -542,11 +585,15 @@ func expandEnv(s string) string {
 	if !strings.Contains(s, "${") {
 		return s
 	}
-	return os.Expand(s, func(k string) string { return os.Getenv(k) })
+	return os.Expand(s, os.Getenv)
 }
 
 // Validate проверяет настройки на противоречия, из-за которых сервис повёл бы
 // себя не так, как ожидает проверяющая система или жюри.
+//
+// Проверки разнесены по смысловым группам и идут в порядке от общего к
+// частному: сначала то, без чего разбирать системы бессмысленно, потом сами
+// системы и их правила.
 func (c *Config) Validate() error {
 	if err := c.validateCapture(); err != nil {
 		return err
@@ -557,11 +604,23 @@ func (c *Config) Validate() error {
 	if len(c.Systems) == 0 {
 		return errors.New("не задана ни одна система-потребитель")
 	}
-	anonymous := 0
-	// Соотношения между сроками и пределами. По отдельности каждое значение
-	// выглядит разумным, а вместе они дают поведение, которое никто не
-	// закладывал. Проверяем здесь, потому что в бою это не видно: сервис
-	// работает, просто не так, как написано в документах.
+	if err := c.validateTimings(); err != nil {
+		return err
+	}
+	if err := c.validateKeyCollisions(); err != nil {
+		return err
+	}
+	if err := c.validateSystems(); err != nil {
+		return err
+	}
+	return c.validateCustomTypes()
+}
+
+// validateTimings проверяет соотношения между сроками и пределами. По
+// отдельности каждое значение выглядит разумным, а вместе они дают поведение,
+// которое никто не закладывал. Проверяем здесь, потому что в бою это не
+// видно: сервис работает, просто не так, как написано в документах.
+func (c *Config) validateTimings() error {
 	if c.Limits.MaxWait > 0 && c.Server.WriteTimeout > 0 && c.Limits.MaxWait >= c.Server.WriteTimeout {
 		return fmt.Errorf("ожидание места в ограничителе (%s) не короче срока записи ответа (%s): "+
 			"запрос успеет получить обрыв соединения раньше, чем честный отказ с просьбой повторить",
@@ -572,12 +631,17 @@ func (c *Config) Validate() error {
 			"отдельный ограничитель для больших текстов (%d) не меньше общего (%d): он ничего не ограничивает",
 			c.Limits.HeavyInflight, c.Limits.Inflight))
 	}
+	return nil
+}
 
-	// Один и тот же хеш ключа у двух систем делает выбор системы случайным:
-	// порядок обхода карты в Go не определён, и запрос опознаётся то как одна,
-	// то как другая. Снаружи это выглядит как плавающее поведение сервиса без
-	// видимой причины, а по журналу видно разную систему на одинаковых
-	// запросах. Ловим это на проверке настроек, а не в бою.
+// validateKeyCollisions не даёт двум системам делить один хеш ключа доступа.
+//
+// Один и тот же хеш ключа у двух систем делает выбор системы случайным:
+// порядок обхода карты в Go не определён, и запрос опознаётся то как одна,
+// то как другая. Снаружи это выглядит как плавающее поведение сервиса без
+// видимой причины, а по журналу видно разную систему на одинаковых
+// запросах. Ловим это на проверке настроек, а не в бою.
+func (c *Config) validateKeyCollisions() error {
 	byHash := make(map[string]string, len(c.Systems))
 	for _, name := range sortedSystemNames(c.Systems) {
 		h := c.Systems[name].Auth.KeySHA256
@@ -589,7 +653,18 @@ func (c *Config) Validate() error {
 		}
 		byHash[h] = name
 	}
+	return nil
+}
 
+// validateSystems проверяет каждую включённую систему и следит, чтобы без
+// ключа доступа работала не больше одной. Двух анонимных систем быть не
+// может: запрос без заголовка приписывался бы то одной, то другой — какую
+// первой вернёт обход карты.
+//
+// Проверкам система передаётся указателем не ради правки, а ради размера:
+// копия описания системы весит полкилобайта.
+func (c *Config) validateSystems() error {
+	anonymous := 0
 	for name, s := range c.Systems {
 		if !s.Enabled {
 			continue
@@ -597,69 +672,116 @@ func (c *Config) Validate() error {
 		if s.Auth.None {
 			anonymous++
 		}
-		p := s.Preset
-		if p == "" {
-			p = c.Defaults.Preset
+		if err := c.validateSystemPresets(name, &s); err != nil {
+			return err
 		}
-		if !p.Valid() {
-			return fmt.Errorf("система %q: неизвестный пресет %q", name, p)
+		disabled, err := c.validateSystemKey(name, &s)
+		if err != nil {
+			return err
 		}
-		// Пресет, не сохраняющий длину, сдвигает границы соседних фрагментов,
-		// поэтому анонимной системе проверяющего он запрещён.
-		if s.Auth.None && !p.PreservesLength() {
-			return fmt.Errorf("система %q без ключа не может использовать пресет %q: он не сохраняет длину", name, p)
-		}
-		for t, tp := range s.PerType {
-			if !tp.Valid() {
-				return fmt.Errorf("система %q: неизвестный пресет %q для типа %s", name, tp, t)
-			}
-			if s.Auth.None && !tp.PreservesLength() {
-				return fmt.Errorf("система %q без ключа: пресет %q для типа %s не сохраняет длину", name, tp, t)
-			}
-		}
-		// Система без ключа доступа ВЫКЛЮЧАЕТСЯ, а не роняет запуск.
-		//
-		// Прежнее поведение отвергало настройки целиком, и свежий клон с
-		// пустым .env не стартовал вовсе: проверяющий копировал .env.example,
-		// запускал по инструкции и получал отказ. При этом анонимный профиль
-		// проверяющей системы ключа не требует, то есть контракт работал бы
-		// и без остальных.
-		//
-		// Выключение это безопасное направление: система без ключа просто
-		// недоступна. Опасным было бы обратное, включить её без проверки
-		// ключа, и этого здесь не происходит.
-		if !s.Auth.None && s.Auth.KeySHA256 == "" {
-			s.Enabled = false
-			c.Systems[name] = s
-			// Имя переменной окружения не угадываем: в настройках оно
-			// задаётся явно и не выводится из имени системы. Вместо догадки
-			// отправляем туда, где написано точно.
-			c.Warnings = append(c.Warnings,
-				fmt.Sprintf("система %q выключена: пуст key_sha256, смотрите её раздел в файле настроек", name))
+		if disabled {
 			continue
 		}
-		if s.Auth.KeySHA256 != "" && len(s.Auth.KeySHA256) != 64 {
-			return fmt.Errorf("система %q: хеш ключа должен быть 64 символа", name)
-		}
-		switch s.ErrorMode(c.Defaults) {
-		case OnErrorOpen, OnErrorClosed:
-		default:
-			return fmt.Errorf("система %q: неизвестное значение on_error", name)
-		}
-		switch s.UnknownIDMode(c.Defaults) {
-		case OnUnknownPassthrough, OnUnknown404:
-		default:
-			return fmt.Errorf("система %q: неизвестное значение on_unknown_id", name)
-		}
-		switch s.DateMode(c.Defaults) {
-		case DateAnchorOnly, DatePIIContext, DateAny:
-		default:
-			return fmt.Errorf("система %q: неизвестное значение date_without_anchor", name)
+		if err := c.validateSystemModes(name, &s); err != nil {
+			return err
 		}
 	}
 	if anonymous > 1 {
 		return errors.New("без ключа доступа может работать только одна система")
 	}
+	return nil
+}
+
+// validateSystemPresets проверяет пресеты маскирования системы — и общий, и
+// заданные по типам. Неизвестный пресет нельзя пропустить молча: маскирование
+// тогда пошло бы не тем способом, который выбрал человек.
+func (c *Config) validateSystemPresets(name string, s *System) error {
+	p := s.Preset
+	if p == "" {
+		p = c.Defaults.Preset
+	}
+	if !p.Valid() {
+		return fmt.Errorf("система %q: неизвестный пресет %q", name, p)
+	}
+	// Пресет, не сохраняющий длину, сдвигает границы соседних фрагментов,
+	// поэтому анонимной системе проверяющего он запрещён.
+	if s.Auth.None && !p.PreservesLength() {
+		return fmt.Errorf("система %q без ключа не может использовать пресет %q: он не сохраняет длину", name, p)
+	}
+	for t, tp := range s.PerType {
+		if !tp.Valid() {
+			return fmt.Errorf("система %q: неизвестный пресет %q для типа %s", name, tp, t)
+		}
+		if s.Auth.None && !tp.PreservesLength() {
+			return fmt.Errorf("система %q без ключа: пресет %q для типа %s не сохраняет длину", name, tp, t)
+		}
+	}
+	return nil
+}
+
+// validateSystemKey проверяет ключ доступа системы и сообщает, выключена ли
+// после этого система. Обе ветви здесь про один и тот же ключ и исключают
+// друг друга: пустой хеш выключает систему, непустой обязан быть хешем.
+//
+// Система без ключа доступа ВЫКЛЮЧАЕТСЯ, а не роняет запуск.
+//
+// Прежнее поведение отвергало настройки целиком, и свежий клон с
+// пустым .env не стартовал вовсе: проверяющий копировал .env.example,
+// запускал по инструкции и получал отказ. При этом анонимный профиль
+// проверяющей системы ключа не требует, то есть контракт работал бы
+// и без остальных.
+//
+// Выключение это безопасное направление: система без ключа просто
+// недоступна. Опасным было бы обратное, включить её без проверки
+// ключа, и этого здесь не происходит.
+func (c *Config) validateSystemKey(name string, s *System) (bool, error) {
+	if !s.Auth.None && s.Auth.KeySHA256 == "" {
+		off := *s
+		off.Enabled = false
+		// В карту кладём копию: у вызывающего остаётся то описание, что
+		// пришло из файла, и правка не расходится по чужим ссылкам.
+		c.Systems[name] = off
+		// Имя переменной окружения не угадываем: в настройках оно
+		// задаётся явно и не выводится из имени системы. Вместо догадки
+		// отправляем туда, где написано точно.
+		c.Warnings = append(c.Warnings,
+			fmt.Sprintf("система %q выключена: пуст key_sha256, смотрите её раздел в файле настроек", name))
+		return true, nil
+	}
+	if s.Auth.KeySHA256 != "" && len(s.Auth.KeySHA256) != 64 {
+		return false, fmt.Errorf("система %q: хеш ключа должен быть 64 символа", name)
+	}
+	return false, nil
+}
+
+// validateSystemModes проверяет режимы поведения системы: что делать при
+// внутренней ошибке, при неизвестном идентификаторе и с датой без явного
+// якоря. Все три приходят из файла настроек свободными строками, и опечатку
+// надо поймать здесь: дальше по коду неизвестное значение не совпадёт ни с
+// одной ветвью, и сервис поведёт себя не так, как написано в настройках.
+func (c *Config) validateSystemModes(name string, s *System) error {
+	switch s.ErrorMode(c.Defaults) {
+	case OnErrorOpen, OnErrorClosed:
+	default:
+		return fmt.Errorf("система %q: неизвестное значение on_error", name)
+	}
+	switch s.UnknownIDMode(c.Defaults) {
+	case OnUnknownPassthrough, OnUnknown404:
+	default:
+		return fmt.Errorf("система %q: неизвестное значение on_unknown_id", name)
+	}
+	switch s.DateMode(c.Defaults) {
+	case DateAnchorOnly, DatePIIContext, DateAny:
+	default:
+		return fmt.Errorf("система %q: неизвестное значение date_without_anchor", name)
+	}
+	return nil
+}
+
+// validateCustomTypes отвергает неполные описания своих типов: без имени или
+// без выражения правило не собрать, а тип, которого нет в наборе правил,
+// молча ничего не маскировал бы.
+func (c *Config) validateCustomTypes() error {
 	for _, ct := range c.CustomTypes {
 		if ct.Name == "" || ct.Pattern == "" {
 			return errors.New("в custom_types нужны имя и выражение")
@@ -690,12 +812,12 @@ func (c *Config) AnonymousSystem() (System, bool) {
 // неизвестным уровнем должен быть отвергнут целиком, а не наполовину принят.
 func (c *Config) validateLogging() error {
 	switch strings.ToLower(c.Logging.Level) {
-	case "debug", "info", "warn", "warning", "error":
+	case levelDebug, levelInfo, levelWarn, levelWarning, levelError:
 	default:
 		return fmt.Errorf("журнал: неизвестный уровень %q", c.Logging.Level)
 	}
 	switch strings.ToLower(c.Logging.RepeatLevel) {
-	case "debug", "info", "warn", "warning", "error":
+	case levelDebug, levelInfo, levelWarn, levelWarning, levelError:
 	default:
 		return fmt.Errorf("журнал: неизвестный уровень глушения повторов %q", c.Logging.RepeatLevel)
 	}
