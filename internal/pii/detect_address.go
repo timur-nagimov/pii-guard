@@ -1026,6 +1026,7 @@ var birthAnchors = []string{
 	"страна и город рождения", "город рождения", "страна рождения",
 	"населённый пункт рождения", "населенный пункт рождения",
 	"нас. пункт рождения", "нп рождения",
+	"родина",
 	"place of birth", "birth place", "born in",
 }
 
@@ -1331,10 +1332,29 @@ func birthContinues(d *Doc, ws []addrWord, j, start int) bool {
 	if ws[j].kind == KindDigit || birthStopWords[ws[j].lower] {
 		return false
 	}
-	if strings.Contains(gap, ",") && !ws[j].title && !addrIsTypeWord(ws[j].lower) {
+	if strings.Contains(gap, ",") && !ws[j].title && !addrIsTypeWord(ws[j].lower) &&
+		!birthPlaceContinuation(ws, j) {
 		return false
 	}
 	return true
+}
+
+// birthPlaceContinuation сообщает, что слово после запятой продолжает место
+// рождения, даже если написано со строчной буквы. Заглавная буква в нижнем
+// регистре недоступна, поэтому опорой становятся словарь мест и тип региона
+// или населённого пункта впереди: «липецкая область», «ханты-мансийский
+// автономный округ».
+func birthPlaceContinuation(ws []addrWord, j int) bool {
+	norm := FoldHomoglyphs(ws[j].lower)
+	if _, ok := dict.Place(norm); ok {
+		return true
+	}
+	for k := j + 1; k < len(ws) && k <= j+3; k++ {
+		if addrIsTypeWord(FoldHomoglyphs(ws[k].lower)) {
+			return true
+		}
+	}
+	return false
 }
 
 // birthDedup убирает пересечения, возникшие из-за нескольких подходящих

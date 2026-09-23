@@ -23,6 +23,12 @@ var rawFemaleNames string
 //go:embed surnames.txt
 var rawSurnames string
 
+//go:embed names_latin.txt
+var rawLatinNames string
+
+//go:embed surnames_latin.txt
+var rawLatinSurnames string
+
 // Gender обозначает род, к которому относится имя. Род повышает точность
 // разбора отчеств и падежных форм, но решения о маскировании не меняет.
 type Gender uint8
@@ -40,14 +46,22 @@ type tables struct {
 	male     map[string]struct{}
 	female   map[string]struct{}
 	surnames map[string]struct{}
+	// latinNames и latinSurnames — словари латинской записи имён и фамилий.
+	// Собираются из английских списков и транслитерации русских словарей:
+	// латинское имя сравнивается с ними напрямую, минуя обратную
+	// транслитерацию, которая теряет мягкий знак и путает «ья» и «я».
+	latinNames    map[string]struct{}
+	latinSurnames map[string]struct{}
 }
 
 // load собирает словари из встроенных файлов. Вызывается не более одного раза.
 func load() *tables {
 	return &tables{
-		male:     parseList(rawMaleNames),
-		female:   parseList(rawFemaleNames),
-		surnames: parseList(rawSurnames),
+		male:          parseList(rawMaleNames),
+		female:        parseList(rawFemaleNames),
+		surnames:      parseList(rawSurnames),
+		latinNames:    buildLatinNames(),
+		latinSurnames: buildLatinSurnames(),
 	}
 }
 
@@ -151,6 +165,12 @@ func KnownWord(w string) bool {
 func Sizes() (male, female, surname int) {
 	t := data()
 	return len(t.male), len(t.female), len(t.surnames)
+}
+
+// LatinSizes возвращает размеры латинских словарей имён и фамилий.
+func LatinSizes() (names, surnames int) {
+	t := data()
+	return len(t.latinNames), len(t.latinSurnames)
 }
 
 // translitPairs задаёт соответствия латинских сочетаний кириллице. Разбираются от
@@ -269,4 +289,71 @@ func lastRune(s string) rune {
 		last = r
 	}
 	return last
+}
+
+// latinPairs задаёт соответствия кириллицы латинице для обратной
+// транслитерации. Нужны, чтобы собрать латинский словарь из русского: так
+// «ольга» даёт «olga», а «татьяна» — «tatiana», и латинская запись имени
+// сравнивается со словарём напрямую, без потери мягкого знака.
+var latinPairs = map[rune]string{
+	'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ё': "e",
+	'ж': "zh", 'з': "z", 'и': "i", 'й': "y", 'к': "k", 'л': "l", 'м': "m",
+	'н': "n", 'о': "o", 'п': "p", 'р': "r", 'с': "s", 'т': "t", 'у': "u",
+	'ф': "f", 'х': "kh", 'ц': "ts", 'ч': "ch", 'ш': "sh", 'щ': "shch",
+	'ъ': "", 'ы': "y", 'ь': "", 'э': "e", 'ю': "yu", 'я': "ya",
+}
+
+// TranslitToLatin переводит кириллическую запись в латиницу. Перевод нужен
+// только для построения латинского словаря и не претендует на обратимость.
+func TranslitToLatin(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if rep, ok := latinPairs[r]; ok {
+			b.WriteString(rep)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// buildLatinNames собирает словарь латинских имён: английские имена из
+// встроенного списка плюс транслитерация русских имён. Транслитерация
+// добавляется, чтобы латинская запись русского имени («Olga», «Tatiana»)
+// сравнивалась со словарём напрямую.
+func buildLatinNames() map[string]struct{} {
+	out := parseList(rawLatinNames)
+	for w := range parseList(rawMaleNames) {
+		out[TranslitToLatin(w)] = struct{}{}
+	}
+	for w := range parseList(rawFemaleNames) {
+		out[TranslitToLatin(w)] = struct{}{}
+	}
+	return out
+}
+
+// buildLatinSurnames собирает словарь латинских фамилий: английские фамилии
+// из встроенного списка плюс транслитерация русских фамилий.
+func buildLatinSurnames() map[string]struct{} {
+	out := parseList(rawLatinSurnames)
+	for w := range parseList(rawSurnames) {
+		out[TranslitToLatin(w)] = struct{}{}
+	}
+	return out
+}
+
+// LookupLatinName сообщает, что латинское слово является именем: английским
+// или транслитерацией русского. Слово приводится к нижнему регистру, как и
+// русские словари.
+func LookupLatinName(w string) bool {
+	_, ok := data().latinNames[Normalize(w)]
+	return ok
+}
+
+// LookupLatinSurname сообщает, что латинское слово является фамилией:
+// английской или транслитерацией русской.
+func LookupLatinSurname(w string) bool {
+	_, ok := data().latinSurnames[Normalize(w)]
+	return ok
 }
