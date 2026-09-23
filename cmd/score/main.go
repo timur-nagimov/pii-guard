@@ -110,81 +110,97 @@ func main() {
 	shown := 0
 
 	for _, s := range samples {
-		text := s.Text
-		if *lower {
-			text = strings.ToLower(text)
-		}
-		res := eng.Mask(text, sys, defs)
-		cat := ensure(byCategory, s.Category)
-
-		origRunes := []rune(text)
-		maskRunes := []rune(res.Text)
-		idx := runeIndex(text)
-		inside := make([]bool, len(origRunes))
-
-		for _, g := range s.Spans {
-			if g.Start < 0 || g.End > len(text) || g.Start >= g.End {
-				continue
-			}
-			startRune, endRune := idx[g.Start], idx[g.End]
-			for i := startRune; i < endRune && i < len(inside); i++ {
-				inside[i] = true
-			}
-			st := ensure(byType, g.Type)
-			src := ensure(bySource, s.Source)
-			ratio := changedRatio(origRunes, maskRunes, startRune, endRune)
-			st.fragments++
-			cat.fragments++
-			src.fragments++
-			st.changed += ratio
-			cat.changed += ratio
-			src.changed += ratio
-			if ratio > 0 {
-				st.touched++
-				cat.touched++
-				src.touched++
-			}
-			switch {
-			case ratio == 0:
-				st.missed++
-				cat.missed++
-				src.missed++
-			case ratio < 1:
-				st.partial++
-				cat.partial++
-				src.partial++
-			default:
-				st.full++
-				cat.full++
-				src.full++
-			}
-			if ratio < 0.5 && *examples > 0 && shown < *examples &&
-				(*onlyType == "" || *onlyType == g.Type) {
-				shown++
-				fmt.Printf("ПРОПУСК %-16s [%s] %q\n   текст: %s\n   маска: %s\n",
-					g.Type, s.Category, text[g.Start:g.End], cut(text), cut(res.Text))
-			}
-		}
-
-		extra := 0
-		if !s.PartialLabels {
-			var outside int
-			extra, outside = outsideChanges(origRunes, maskRunes, inside)
-			cat.extra += extra
-			cat.outside += outside
-			src := ensure(bySource, s.Source)
-			src.extra += extra
-			src.outside += outside
-		}
-		if extra > 0 && *examples > 0 && shown < *examples && *onlyType == "" && len(s.Spans) == 0 {
-			shown++
-			fmt.Printf("ЛИШНЕЕ  [%s]\n   текст: %s\n   маска: %s\n", s.Category, cut(text), cut(res.Text))
-		}
+		shown = scoreSample(s, eng, sys, defs, *lower, *examples, *onlyType, shown, byType, byCategory, bySource)
 	}
 
 	report("Типы", byType, *onlyType, *split)
 	report("Источники", bySource, "", false)
 	report("Категории", byCategory, "", false)
+}
+
+// scoreSample обрабатывает один элемент набора: маскирует текст, копит
+// показатели по типу, категории и источнику и печатает примеры ошибок.
+// Возвращает число уже напечатанных примеров.
+func scoreSample(s sample, eng *engine.Engine, sys config.System, defs config.Defaults, lower bool, examples int, onlyType string, shown int, byType, byCategory, bySource map[string]*stat) int {
+	text := s.Text
+	if lower {
+		text = strings.ToLower(text)
+	}
+	res := eng.Mask(text, sys, defs)
+	cat := ensure(byCategory, s.Category)
+
+	origRunes := []rune(text)
+	maskRunes := []rune(res.Text)
+	idx := runeIndex(text)
+	inside := make([]bool, len(origRunes))
+
+	for _, g := range s.Spans {
+		shown = scoreSpan(g, s, text, res.Text, origRunes, maskRunes, idx, inside, examples, onlyType, shown, byType, byCategory, bySource)
+	}
+
+	extra := 0
+	if !s.PartialLabels {
+		var outside int
+		extra, outside = outsideChanges(origRunes, maskRunes, inside)
+		cat.extra += extra
+		cat.outside += outside
+		src := ensure(bySource, s.Source)
+		src.extra += extra
+		src.outside += outside
+	}
+	if extra > 0 && examples > 0 && shown < examples && onlyType == "" && len(s.Spans) == 0 {
+		shown++
+		fmt.Printf("ЛИШНЕЕ  [%s]\n   текст: %s\n   маска: %s\n", s.Category, cut(text), cut(res.Text))
+	}
+	return shown
+}
+
+// scoreSpan копит показатели одного эталонного фрагмента по типу, категории и
+// источнику и печатает пример пропуска, если фрагмент замаскирован слабо.
+func scoreSpan(g goldSpan, s sample, text, masked string, origRunes, maskRunes []rune, idx []int, inside []bool, examples int, onlyType string, shown int, byType, byCategory, bySource map[string]*stat) int {
+	if g.Start < 0 || g.End > len(text) || g.Start >= g.End {
+		return shown
+	}
+	startRune, endRune := idx[g.Start], idx[g.End]
+	for i := startRune; i < endRune && i < len(inside); i++ {
+		inside[i] = true
+	}
+	st := ensure(byType, g.Type)
+	cat := ensure(byCategory, s.Category)
+	src := ensure(bySource, s.Source)
+	ratio := changedRatio(origRunes, maskRunes, startRune, endRune)
+	st.fragments++
+	cat.fragments++
+	src.fragments++
+	st.changed += ratio
+	cat.changed += ratio
+	src.changed += ratio
+	if ratio > 0 {
+		st.touched++
+		cat.touched++
+		src.touched++
+	}
+	switch {
+	case ratio == 0:
+		st.missed++
+		cat.missed++
+		src.missed++
+	case ratio < 1:
+		st.partial++
+		cat.partial++
+		src.partial++
+	default:
+		st.full++
+		cat.full++
+		src.full++
+	}
+	if ratio < 0.5 && examples > 0 && shown < examples &&
+		(onlyType == "" || onlyType == g.Type) {
+		shown++
+		fmt.Printf("ПРОПУСК %-16s [%s] %q\n   текст: %s\n   маска: %s\n",
+			g.Type, s.Category, text[g.Start:g.End], cut(text), cut(masked))
+	}
+	return shown
 }
 
 // runDatasets прогоняет замер по нескольким наборам и печатает общую таблицу
@@ -210,57 +226,70 @@ func runDatasets(list string, minConf float64, preset mask.Preset, lower, split 
 			continue
 		}
 		for _, s := range samples {
-			text := s.Text
-			if lower {
-				text = strings.ToLower(text)
-			}
-			res := eng.Mask(text, sys, defs)
-			origRunes := []rune(text)
-			maskRunes := []rune(res.Text)
-			idx := runeIndex(text)
-			inside := make([]bool, len(origRunes))
-			set := ensure(bySet, setName)
-
-			for _, g := range s.Spans {
-				if g.Start < 0 || g.End > len(text) || g.Start >= g.End {
-					continue
-				}
-				startRune, endRune := idx[g.Start], idx[g.End]
-				for i := startRune; i < endRune && i < len(inside); i++ {
-					inside[i] = true
-				}
-				ratio := changedRatio(origRunes, maskRunes, startRune, endRune)
-				st := ensureType(byType, g.Type, setName)
-				st.fragments++
-				set.fragments++
-				st.changed += ratio
-				set.changed += ratio
-				if ratio > 0 {
-					st.touched++
-					set.touched++
-				}
-				switch {
-				case ratio == 0:
-					st.missed++
-					set.missed++
-				case ratio < 1:
-					st.partial++
-					set.partial++
-				default:
-					st.full++
-					set.full++
-				}
-			}
-
-			if !s.PartialLabels {
-				var outside int
-				extra, outside := outsideChanges(origRunes, maskRunes, inside)
-				set.extra += extra
-				set.outside += outside
-			}
+			scoreDatasetSample(s, eng, sys, defs, lower, setName, byType, bySet)
 		}
 	}
 
+	reportTypeSet(byType, preset, lower, split)
+	reportSetSummary(bySet)
+}
+
+// scoreDatasetSample обрабатывает один элемент набора в режиме нескольких
+// наборов: копит показатели по паре тип×набор и по набору целиком.
+func scoreDatasetSample(s sample, eng *engine.Engine, sys config.System, defs config.Defaults, lower bool, setName string, byType map[string]map[string]*stat, bySet map[string]*stat) {
+	text := s.Text
+	if lower {
+		text = strings.ToLower(text)
+	}
+	res := eng.Mask(text, sys, defs)
+	origRunes := []rune(text)
+	maskRunes := []rune(res.Text)
+	idx := runeIndex(text)
+	inside := make([]bool, len(origRunes))
+	set := ensure(bySet, setName)
+
+	for _, g := range s.Spans {
+		if g.Start < 0 || g.End > len(text) || g.Start >= g.End {
+			continue
+		}
+		startRune, endRune := idx[g.Start], idx[g.End]
+		for i := startRune; i < endRune && i < len(inside); i++ {
+			inside[i] = true
+		}
+		ratio := changedRatio(origRunes, maskRunes, startRune, endRune)
+		st := ensureType(byType, g.Type, setName)
+		st.fragments++
+		set.fragments++
+		st.changed += ratio
+		set.changed += ratio
+		if ratio > 0 {
+			st.touched++
+			set.touched++
+		}
+		switch {
+		case ratio == 0:
+			st.missed++
+			set.missed++
+		case ratio < 1:
+			st.partial++
+			set.partial++
+		default:
+			st.full++
+			set.full++
+		}
+	}
+
+	if !s.PartialLabels {
+		var outside int
+		extra, outside := outsideChanges(origRunes, maskRunes, inside)
+		set.extra += extra
+		set.outside += outside
+	}
+}
+
+// reportTypeSet печатает таблицу тип×набор: доля изменённого, доля затронутых,
+// число фрагментов.
+func reportTypeSet(byType map[string]map[string]*stat, preset mask.Preset, lower, split bool) {
 	// Заголовок: тип, набор, изменено, затронуто, фрагментов.
 	fmt.Printf("\nКачество по типам и наборам (пресет %s%s)\n", preset, lowerLabel(lower))
 	fmt.Printf("%-16s %-22s %10s %10s %10s\n", "тип", "набор", "изменено", "затронуто", "фрагментов")
@@ -286,7 +315,11 @@ func runDatasets(list string, minConf float64, preset mask.Preset, lower, split 
 				t, n, avg(s), touched, s.fragments, mark)
 		}
 	}
+}
 
+// reportSetSummary печатает итог по наборам: доля изменённого, доля затронутых,
+// число фрагментов и доля ложных срабатываний.
+func reportSetSummary(bySet map[string]*stat) {
 	// Итог по наборам.
 	fmt.Printf("\nИтог по наборам\n%-22s %10s %10s %10s %10s\n", "набор", "изменено", "затронуто", "фрагментов", "ложных")
 	sets := sortedKeys(bySet)

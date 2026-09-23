@@ -19,7 +19,7 @@ func TestMiddlewareRequestID(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodPost, "/process", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/process", nil)
 	req.Header.Set(HeaderRequestID, "client-123")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -31,7 +31,7 @@ func TestMiddlewareRequestID(t *testing.T) {
 		t.Errorf("идентификатор не вернулся в заголовке: %q", got)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/process", nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/process", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if len(rec.Header().Get(HeaderRequestID)) != 32 {
@@ -57,7 +57,7 @@ func TestMiddlewareRejectsBadID(t *testing.T) {
 	h := Middleware(l, DefaultMiddlewareOptions())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest(http.MethodGet, "/process", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/process", nil)
 	req.Header.Set(HeaderRequestID, "Иванов Иван Иванович")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -77,7 +77,7 @@ func TestMiddlewareSampling(t *testing.T) {
 		w.WriteHeader(code)
 	}))
 	for i := 0; i < 30; i++ {
-		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/process", nil))
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/process", nil))
 	}
 	if n := len(records(t, buf)); n != 3 {
 		t.Fatalf("прореживание один к десяти дало %d записей на тридцать запросов", n)
@@ -87,7 +87,7 @@ func TestMiddlewareSampling(t *testing.T) {
 	// выходит сразу, остальные считаются и выходят числом.
 	code = http.StatusTooManyRequests
 	for i := 0; i < 5; i++ {
-		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/process", nil))
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/process", nil))
 	}
 	if n := len(records(t, buf)); n != 4 {
 		t.Fatalf("первый отказ должен выйти сразу, остальные заглушаются: получено %d записей", n)
@@ -104,7 +104,7 @@ func TestMiddlewareSkipsService(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	for _, path := range []string{"/metrics", "/healthz", "/readyz"} {
-		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
 	}
 	if n := len(records(t, buf)); n != 0 {
 		t.Fatalf("служебные ручки попали в журнал: %d записей", n)
@@ -121,7 +121,7 @@ func TestMiddlewareSlow(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 	}))
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/process", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/process", nil))
 	if n := len(records(t, buf)); n != 1 {
 		t.Fatalf("медленный запрос не записан: %d записей", n)
 	}
@@ -130,7 +130,7 @@ func TestMiddlewareSlow(t *testing.T) {
 // TestPropagate проверяет сквозной идентификатор для обращения к языковой модели.
 func TestPropagate(t *testing.T) {
 	ctx := WithRequestID(t.Context(), "abc")
-	req := httptest.NewRequest(http.MethodPost, "http://model/v1/chat/completions", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://model/v1/chat/completions", nil)
 	Propagate(ctx, req)
 	if got := req.Header.Get(HeaderRequestID); got != "abc" {
 		t.Fatalf("идентификатор не ушёл к модели: %q", got)

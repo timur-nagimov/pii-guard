@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -121,7 +122,7 @@ func do(t *testing.T, ts *httptest.Server, call processCall) (int, string) {
 	if method == "" {
 		method = http.MethodPost
 	}
-	req, err := http.NewRequest(method, ts.URL+"/process", strings.NewReader(call.body))
+	req, err := http.NewRequestWithContext(t.Context(), method, ts.URL+"/process", strings.NewReader(call.body))
 	if err != nil {
 		t.Fatalf("не удалось собрать запрос: %v", err)
 	}
@@ -487,8 +488,13 @@ func TestProcessEmptyPayload(t *testing.T) {
 // система разбирает тело как JSON в кодировке UTF-8.
 func TestProcessResponseContentType(t *testing.T) {
 	ts := newTestServer(t)
-	resp, err := ts.Client().Post(ts.URL+"/process", "application/json",
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/process",
 		bytes.NewReader([]byte(processBody(t, "Телефон +79161234567", "payload-ct"))))
+	if err != nil {
+		t.Fatalf("не удалось собрать запрос: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("запрос не выполнился: %v", err)
 	}
@@ -513,7 +519,7 @@ func TestProcessConcurrentSameID(t *testing.T) {
 	results := make(chan string, n)
 	for i := 0; i < n; i++ {
 		go func() {
-			req, err := http.NewRequest(http.MethodPost, ts.URL+"/process", strings.NewReader(body))
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/process", strings.NewReader(body))
 			if err != nil {
 				results <- "ошибка сборки запроса: " + err.Error()
 				return
@@ -559,7 +565,11 @@ func TestServiceEndpoints(t *testing.T) {
 	ts := newTestServer(t)
 	for _, path := range []string{"/healthz", "/readyz", "/metrics"} {
 		t.Run(path, func(t *testing.T) {
-			resp, err := ts.Client().Get(ts.URL + path)
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+path, nil)
+			if err != nil {
+				t.Fatalf("не удалось собрать запрос: %v", err)
+			}
+			resp, err := ts.Client().Do(req)
 			if err != nil {
 				t.Fatalf("запрос не выполнился: %v", err)
 			}
@@ -623,8 +633,13 @@ func TestProcessDegradedOpen(t *testing.T) {
 	const payload = "Телефон +79161234567, почта ivan@example.com"
 	const id = "payload-degraded-open"
 
-	resp, err := ts.Client().Post(ts.URL+"/process", "application/json",
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/process",
 		strings.NewReader(processBody(t, payload, id)))
+	if err != nil {
+		t.Fatalf("не удалось собрать запрос: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("запрос не выполнился: %v", err)
 	}
@@ -657,8 +672,13 @@ func TestProcessDegradedClosed(t *testing.T) {
 	const payload = "Телефон +79161234567, почта ivan@example.com"
 	const id = "payload-degraded-closed"
 
-	resp, err := ts.Client().Post(ts.URL+"/process", "application/json",
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/process",
 		strings.NewReader(processBody(t, payload, id)))
+	if err != nil {
+		t.Fatalf("не удалось собрать запрос: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("запрос не выполнился: %v", err)
 	}
@@ -686,8 +706,13 @@ func TestProcessDegradedMetric(t *testing.T) {
 	const payload = "Телефон +79161234567"
 	const id = "payload-degraded-metric"
 
-	resp, err := ts.Client().Post(ts.URL+"/process", "application/json",
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/process",
 		strings.NewReader(processBody(t, payload, id)))
+	if err != nil {
+		t.Fatalf("не удалось собрать запрос: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("запрос не выполнился: %v", err)
 	}
@@ -696,7 +721,11 @@ func TestProcessDegradedMetric(t *testing.T) {
 
 	// Показатели читаются отдельным запросом: счётчик деградации обязан
 	// появиться после ответа с признаком деградации.
-	mresp, err := ts.Client().Get(ts.URL + "/metrics")
+	mreq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/metrics", nil)
+	if err != nil {
+		t.Fatalf("не удалось собрать запрос показателей: %v", err)
+	}
+	mresp, err := ts.Client().Do(mreq)
 	if err != nil {
 		t.Fatalf("запрос показателей не выполнился: %v", err)
 	}
@@ -762,7 +791,7 @@ func TestWithRecoverAfterWrite(t *testing.T) {
 	handler := srv.withRecover(inner)
 
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/process", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/process", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("код ответа %d, ожидался первый 200", rec.Code)

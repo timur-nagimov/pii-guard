@@ -64,7 +64,6 @@ func main() {
 	seed := flag.Uint64("seed", 42, "начальное значение для выбора текстов")
 	flag.Parse()
 
-	target := strings.TrimRight(*url, "/") + "/process"
 	texts, err := loadTexts(*dataset, *payload)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -90,8 +89,15 @@ func main() {
 		},
 	}
 
+	target := strings.TrimRight(*url, "/") + "/process"
+	runLoad(ctx, client, target, texts, *rps, *workers, *seed)
+}
+
+// runLoad гоняет отправителей до конца контекста и печатает итоги. Вынесена из
+// main, чтобы прогон можно было проверить тестом без запуска команды.
+func runLoad(ctx context.Context, client *http.Client, target string, texts []string, rps, workers int, seed uint64) {
 	var c counters
-	latencies := make([][]time.Duration, *workers)
+	latencies := make([][]time.Duration, workers)
 	var wg sync.WaitGroup
 	started := time.Now()
 
@@ -99,62 +105,81 @@ func main() {
 	// они давали заданную частоту. При нулевой частоте отправители работают
 	// без пауз и показывают предел связки.
 	var interval time.Duration
-	if *rps > 0 {
-		interval = time.Duration(float64(*workers) / float64(*rps) * float64(time.Second))
+	if rps > 0 {
+		interval = time.Duration(float64(workers) / float64(rps) * float64(time.Second))
 	}
 
-	for w := 0; w < *workers; w++ {
+	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			rnd := rand.New(rand.NewPCG(*seed, uint64(id)))
-			local := make([]time.Duration, 0, 4096)
-			next := time.Now()
-			for ctx.Err() == nil {
-				if interval > 0 {
-					next = next.Add(interval)
-					if d := time.Until(next); d > 0 {
-						select {
-						case <-time.After(d):
-						case <-ctx.Done():
-							break
-						}
-					}
-				}
-				text := texts[rnd.IntN(len(texts))]
-				id := fmt.Sprintf("load-%d-%d", id, c.sent.Add(1))
-				lat, status, sendErr := send(ctx, client, target, text, id)
-				if ctx.Err() != nil {
-					// Прогон закончился: запрос оборвал не сервис, а мы сами,
-					// и считать это сбоем нельзя.
-					break
-				}
-				if sendErr != nil {
-					c.noteError(sendErr.Error())
-				}
-				switch {
-				case status == http.StatusOK:
-					c.ok.Add(1)
-					local = append(local, lat)
-				case status == http.StatusTooManyRequests:
-					c.throttled.Add(1)
-				default:
-					c.failed.Add(1)
-				}
-			}
-			latencies[id] = local
+			latencies[id] = runWorker(ctx, client, target, texts, interval, seed, id, &c)
 		}(w)
 	}
 	wg.Wait()
 	elapsed := time.Since(started)
 
+	reportResults(&c, latencies, rps, elapsed)
+}
+
+// runWorker гоняет запросы одного отправителя, пока жив контекст, и собирает
+// задержки успешных ответов. Возвращает список задержек для этого отправителя.
+func runWorker(ctx context.Context, client *http.Client, target string, texts []string, interval time.Duration, seed uint64, id int, c *counters) []time.Duration {
+	rnd := rand.New(rand.NewPCG(seed, uint64(id))) //nolint:gosec // нагрузка, не секрет
+	local := make([]time.Duration, 0, 4096)
+	next := time.Now()
+	for ctx.Err() == nil {
+		next = waitInterval(ctx, interval, next)
+		text := texts[rnd.IntN(len(texts))]
+		reqID := fmt.Sprintf("load-%d-%d", id, c.sent.Add(1))
+		lat, status, sendErr := send(ctx, client, target, text, reqID)
+		if ctx.Err() != nil {
+			// Прогон закончился: запрос оборвал не сервис, а мы сами,
+			// и считать это сбоем нельзя.
+			break
+		}
+		if sendErr != nil {
+			c.noteError(sendErr.Error())
+		}
+		switch status {
+		case http.StatusOK:
+			c.ok.Add(1)
+			local = append(local, lat)
+		case http.StatusTooManyRequests:
+			c.throttled.Add(1)
+		default:
+			c.failed.Add(1)
+		}
+	}
+	return local
+}
+
+// waitInterval выдерживает паузу до следующего запроса отправителя. При
+// нулевом интервале отправители работают без пауз и показывают предел связки.
+func waitInterval(ctx context.Context, interval time.Duration, next time.Time) time.Time {
+	if interval <= 0 {
+		return next
+	}
+	next = next.Add(interval)
+	if d := time.Until(next); d > 0 {
+		select {
+		case <-time.After(d):
+		case <-ctx.Done():
+		}
+	}
+	return next
+}
+
+// reportResults печатает итоги прогона: частоту, счётчики, причины сбоев и
+// задержки.
+func reportResults(c *counters, latencies [][]time.Duration, rps int, elapsed time.Duration) {
 	var all []time.Duration
 	for _, l := range latencies {
 		all = append(all, l...)
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i] < all[j] })
 
-	fmt.Printf("частота: цель %d, достигнуто %.0f запросов в секунду\n", *rps, float64(c.ok.Load()+c.throttled.Load()+c.failed.Load())/elapsed.Seconds())
+	fmt.Printf("частота: цель %d, достигнуто %.0f запросов в секунду\n", rps, float64(c.ok.Load()+c.throttled.Load()+c.failed.Load())/elapsed.Seconds())
 	fmt.Printf("успешно %d, отказов с просьбой повторить %d, ошибок %d\n", c.ok.Load(), c.throttled.Load(), c.failed.Load())
 	c.errMu.Lock()
 	for msg, n := range c.errSeen {

@@ -8,9 +8,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -29,8 +31,7 @@ type chatRequest struct {
 	// System выбирает профиль системы-потребителя по имени. Поле нужно странице
 	// проверки, которая переключает профили, не зная ключей; модели оно не
 	// передаётся.
-	System string         `json:"system,omitempty"`
-	rest   map[string]any `json:"-"`
+	System string `json:"system,omitempty"`
 }
 
 type chatMessage struct {
@@ -55,20 +56,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	cfg := s.Config()
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, cfg.Server.MaxBodyBytes))
+	raw, req, bodyLen, err := s.parseChatRequest(w, r, cfg)
 	if err != nil {
-		s.writeError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "тело запроса превышает допустимый размер")
-		return
-	}
-
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		s.writeValidation(w, r, "json_invalid", []string{"body"}, "не удалось разобрать JSON")
-		return
-	}
-	var req chatRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		s.writeValidation(w, r, "json_invalid", []string{"body", "messages"}, "не удалось разобрать список сообщений")
 		return
 	}
 	// Поле system — выбор профиля для страницы проверки, модели оно не нужно.
@@ -97,6 +86,28 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	s.extendWriteDeadline(w, r, sys)
 
+	outBody, back, counts, convID, err := s.prepareMaskedBody(w, r, sys, cfg, req, raw)
+	if err != nil {
+		return
+	}
+
+	// Сохраняем соответствия диалога до обращения к модели: даже если модель
+	// не ответит, история диалога не потеряется.
+	if convID != "" {
+		if err := s.saveConversation(convID, back, sys); err != nil {
+			s.log.WarnContext(r.Context(), "не удалось сохранить соответствия диалога",
+				logging.Event(logging.EventProxy), logging.Component("proxy"), logging.Err(err))
+		}
+	}
+
+	s.proxyUpstream(w, r, sys, outBody, bodyLen, counts, back, begin)
+}
+
+// prepareMaskedBody маскирует текст запроса и собирает тело для отправки
+// модели: маскирует сообщения и текстовые поля tools и response_format,
+// запоминает подстановки и возвращает готовое тело вместе с картой подстановок
+// и счётчиками для журнала аудита.
+func (s *Server) prepareMaskedBody(w http.ResponseWriter, r *http.Request, sys config.System, cfg *config.Config, req chatRequest, raw map[string]any) ([]byte, map[string]string, map[string]int, string, error) {
 	// Маскируем текст каждого сообщения и запоминаем подстановки.
 	opts := sys.MaskOptions(cfg.Defaults)
 	if opts.Default != mask.PresetToken {
@@ -122,22 +133,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	masked := make([]chatMessage, len(req.Messages))
-	for i, msg := range req.Messages {
-		text, isString := decodeContent(msg.Content)
-		if !isString {
-			// content — массив частей (текст и картинки): маскируем текстовые
-			// части, остальные оставляем как есть.
-			masked[i] = chatMessage{Role: msg.Role, Content: s.maskContentParts(msg.Content, sys, cfg.Defaults, opts, back, counts, shared)}
-			continue
-		}
-		maskedText := s.maskText(text, sys, cfg.Defaults, opts, back, counts, shared)
-		encoded, err := json.Marshal(maskedText)
-		if err != nil {
-			s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "не удалось подготовить запрос")
-			return
-		}
-		masked[i] = chatMessage{Role: msg.Role, Content: encoded}
+	masked, err := s.maskMessages(req.Messages, sys, cfg.Defaults, opts, back, counts, shared)
+	if err != nil {
+		s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "не удалось подготовить запрос")
+		return nil, nil, nil, "", err
 	}
 	raw["messages"] = masked
 
@@ -162,18 +161,39 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	outBody, err := json.Marshal(raw)
 	if err != nil {
 		s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "не удалось подготовить запрос")
-		return
+		return nil, nil, nil, "", err
+	}
+	return outBody, back, counts, convID, nil
+}
+
+// parseChatRequest читает тело запроса и разбирает его дважды: в общую карту
+// (чтобы сохранить неизвестные поля для модели) и в структуру запроса (чтобы
+// получить сообщения и служебные поля). Возвращает длину тела для журнала
+// аудита.
+func (s *Server) parseChatRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config) (map[string]any, chatRequest, int, error) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, cfg.Server.MaxBodyBytes))
+	if err != nil {
+		s.writeError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "тело запроса превышает допустимый размер")
+		return nil, chatRequest{}, 0, err
 	}
 
-	// Сохраняем соответствия диалога до обращения к модели: даже если модель
-	// не ответит, история диалога не потеряется.
-	if convID != "" {
-		if err := s.saveConversation(convID, back, sys); err != nil {
-			s.log.WarnContext(r.Context(), "не удалось сохранить соответствия диалога",
-				logging.Event(logging.EventProxy), logging.Component("proxy"), logging.Err(err))
-		}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		s.writeValidation(w, r, "json_invalid", []string{fieldBody}, "не удалось разобрать JSON")
+		return nil, chatRequest{}, 0, err
 	}
+	var req chatRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.writeValidation(w, r, "json_invalid", []string{fieldBody, "messages"}, "не удалось разобрать список сообщений")
+		return nil, chatRequest{}, 0, err
+	}
+	return raw, req, len(body), nil
+}
 
+// proxyUpstream обращается к языковой модели и пишет ответ клиенту: читает
+// тело ответа, разбирает отказ модели без объяснения и восстанавливает
+// исходные значения в тексте ответа.
+func (s *Server) proxyUpstream(w http.ResponseWriter, r *http.Request, sys config.System, outBody []byte, bodyLen int, counts map[string]int, back map[string]string, begin time.Time) {
 	started := time.Now()
 	resp, err := s.callUpstream(r, sys, outBody)
 	if err != nil {
@@ -183,7 +203,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusBadGateway, "upstream_unavailable", "языковая модель недоступна")
 		// Текст уже ушёл модели, поэтому обращение к персональным данным
 		// состоялось независимо от того, дождались мы ответа или нет.
-		s.auditProcess(r, sys, "", "proxy", len(body), counts, time.Since(begin), "error")
+		s.auditProcess(r, sys, "", "proxy", bodyLen, counts, time.Since(begin), "error")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -206,7 +226,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, resp.StatusCode, "upstream_rejected",
 			"языковая модель отказала кодом "+itoa(resp.StatusCode)+" без объяснения; "+
 				"проверьте адрес и ключ доступа в разделе upstream настроек системы")
-		s.auditProcess(r, sys, "", "proxy", len(body), counts, time.Since(begin), "error")
+		s.auditProcess(r, sys, "", "proxy", bodyLen, counts, time.Since(begin), "error")
 		return
 	}
 
@@ -215,11 +235,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("X-PII-Masked", itoa(len(back)))
 	w.WriteHeader(resp.StatusCode)
-	if _, err := w.Write([]byte(restored)); err != nil {
+	if _, err := w.Write(restored); err != nil {
 		s.log.WarnContext(r.Context(), "не удалось записать ответ",
 			logging.Event(logging.EventProxy), logging.Component("proxy"), logging.Err(err))
 	}
-	s.auditProcess(r, sys, "", "proxy", len(body), counts, time.Since(begin), "ok")
+	s.auditProcess(r, sys, "", "proxy", bodyLen, counts, time.Since(begin), "ok")
 }
 
 // defaultUpstreamTimeout — срок ожидания ответа модели, когда он не задан
@@ -289,8 +309,20 @@ func (s *Server) callUpstream(r *http.Request, sys config.System, body []byte) (
 	if timeout <= 0 {
 		timeout = defaultUpstreamTimeout
 	}
-	url := upstreamChatURL(sys.Upstream.URL)
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(body))
+	addr := upstreamChatURL(sys.Upstream.URL)
+	// Адрес модели проверен при загрузке настроек, но проверка повторяется и
+	// здесь: запрос уходит наружу, и схема с хостом обязаны быть известными.
+	u, err := url.Parse(addr)
+	if err != nil {
+		return nil, fmt.Errorf("адрес языковой модели не разобран: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("адрес языковой модели допускает только http и https")
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("адрес языковой модели без хоста")
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, addr, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -303,6 +335,7 @@ func (s *Server) callUpstream(r *http.Request, sys config.System, body []byte) (
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
+	//nolint:gosec // адрес модели задаёт оператор в настройках, схема и хост проверены при загрузке и перед запросом
 	return s.upstreamClient(sys, timeout).Do(req)
 }
 
@@ -350,27 +383,40 @@ func (s *Server) upstreamClient(sys config.System, timeout time.Duration) *http.
 // машины разработчика. Отпечаток снимается один раз и кладётся в настройки:
 // это строже проверки по цепочке, поскольку принимается ровно один ключ.
 func pinnedTLSConfig(pin string) *tls.Config {
+	// verifyPin сравнивает отпечаток открытого ключа сервера с закреплённым.
+	// Используется и при первом соединении, и при возобновлении сессии, чтобы
+	// возобновлённая сессия не обошла проверку.
+	verifyPin := func(rawCerts [][]byte) error {
+		for _, raw := range rawCerts {
+			cert, err := x509.ParseCertificate(raw)
+			if err != nil {
+				continue
+			}
+			spki, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+			if err != nil {
+				continue
+			}
+			sum := sha256.Sum256(spki)
+			if base64.StdEncoding.EncodeToString(sum[:]) == pin {
+				return nil
+			}
+		}
+		return errors.New("отпечаток ключа сервера не совпал с закреплённым")
+	}
 	return &tls.Config{
 		// Штатная проверка отключена намеренно: вместо неё ниже сравнивается
 		// отпечаток ключа, и соединение с чужим сервером будет отвергнуто.
 		InsecureSkipVerify: true, //nolint:gosec // подлинность проверяется закреплённым отпечатком
 		MinVersion:         tls.VersionTLS12,
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			for _, raw := range rawCerts {
-				cert, err := x509.ParseCertificate(raw)
-				if err != nil {
-					continue
-				}
-				spki, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
-				if err != nil {
-					continue
-				}
-				sum := sha256.Sum256(spki)
-				if base64.StdEncoding.EncodeToString(sum[:]) == pin {
-					return nil
-				}
+			return verifyPin(rawCerts)
+		},
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			raws := make([][]byte, 0, len(cs.PeerCertificates))
+			for _, c := range cs.PeerCertificates {
+				raws = append(raws, c.Raw)
 			}
-			return errors.New("отпечаток ключа сервера не совпал с закреплённым")
+			return verifyPin(raws)
 		},
 	}
 }
@@ -446,6 +492,29 @@ func (s *Server) maskContentParts(raw json.RawMessage, sys config.System, defs c
 	return out
 }
 
+// maskMessages маскирует текст всех сообщений запроса. content может быть
+// строкой либо массивом частей (текст и картинки): строки маскируются целиком,
+// массивы — по текстовым частям, остальные части остаются как есть.
+func (s *Server) maskMessages(messages []chatMessage, sys config.System, defs config.Defaults, opts mask.Options, back map[string]string, counts map[string]int, shared *mask.TokenState) ([]chatMessage, error) {
+	masked := make([]chatMessage, len(messages))
+	for i, msg := range messages {
+		text, isString := decodeContent(msg.Content)
+		if !isString {
+			// content — массив частей (текст и картинки): маскируем текстовые
+			// части, остальные оставляем как есть.
+			masked[i] = chatMessage{Role: msg.Role, Content: s.maskContentParts(msg.Content, sys, defs, opts, back, counts, shared)}
+			continue
+		}
+		maskedText := s.maskText(text, sys, defs, opts, back, counts, shared)
+		encoded, err := json.Marshal(maskedText)
+		if err != nil {
+			return nil, err
+		}
+		masked[i] = chatMessage{Role: msg.Role, Content: encoded}
+	}
+	return masked, nil
+}
+
 // maskJSONText проходит по JSON-значению и маскирует строки в текстовых полях
 // (description и title), собирая подстановки. Так закрываются персональные
 // данные внутри tools[].function.description и в схеме response_format, где
@@ -510,23 +579,8 @@ func restoreResponse(body []byte, back map[string]string) []byte {
 		if !ok {
 			continue
 		}
-		if msg, ok := choice["message"].(map[string]any); ok {
-			if content, ok := msg["content"].(string); ok {
-				restored := restorePlaceholders(content, back)
-				if restored != content {
-					msg["content"] = restored
-					changed = true
-				}
-			}
-		}
-		if delta, ok := choice["delta"].(map[string]any); ok {
-			if content, ok := delta["content"].(string); ok {
-				restored := restorePlaceholders(content, back)
-				if restored != content {
-					delta["content"] = restored
-					changed = true
-				}
-			}
+		if restoreChoice(choice, back) {
+			changed = true
 		}
 	}
 	if !changed {
@@ -537,6 +591,32 @@ func restoreResponse(body []byte, back map[string]string) []byte {
 		return body
 	}
 	return out
+}
+
+// restoreChoice восстанавливает исходные значения в одном элементе choices:
+// в текстовых полях message.content и delta.content. Возвращает признак того,
+// что хотя бы одно значение подставлено.
+func restoreChoice(choice map[string]any, back map[string]string) bool {
+	changed := false
+	if msg, ok := choice["message"].(map[string]any); ok {
+		if content, ok := msg["content"].(string); ok {
+			restored := restorePlaceholders(content, back)
+			if restored != content {
+				msg["content"] = restored
+				changed = true
+			}
+		}
+	}
+	if delta, ok := choice["delta"].(map[string]any); ok {
+		if content, ok := delta["content"].(string); ok {
+			restored := restorePlaceholders(content, back)
+			if restored != content {
+				delta["content"] = restored
+				changed = true
+			}
+		}
+	}
+	return changed
 }
 
 // conversationKeyPrefix отделяет ключи диалогов от ключей запросов в хранилище.
