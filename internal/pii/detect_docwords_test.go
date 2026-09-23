@@ -215,3 +215,22 @@ func TestIssuerFromCorpus(t *testing.T) {
 	}
 	docwordsCheck(t, det, TypeIssuer, cases)
 }
+
+// TestCitizenshipAnchorAfter закрепляет разбор, когда якорь стоит справа от
+// значения: «Республика Армения — гражданская принадлежность». Так пишут в
+// анкетах и выгрузках, и раньше такая запись не находилась вовсе.
+func TestCitizenshipAnchorAfter(t *testing.T) {
+	det := NewCitizenshipDetector()
+	cases := []docwordsCase{
+		{name: "якорь справа", text: "Республика Армения — гражданская принадлежность.",
+			want: []string{"Республика Армения"}},
+		{name: "якорь справа, одно слово", text: "Армения — nationality!",
+			want: []string{"Армения"}},
+		{name: "якорь слева по-прежнему работает", text: "Гражданство: Республика Армения",
+			want: []string{"Республика Армения"}},
+		// Между значением и якорем стоит слово: якорь относится не к нему.
+		{name: "слово между значением и якорем", text: "Армения указана как гражданство",
+			want: nil},
+	}
+	docwordsCheck(t, det, TypeCitizenship, cases)
+}
