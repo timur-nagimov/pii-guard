@@ -410,6 +410,74 @@ func (c numContext) service() bool {
 	return serviceNumberContext(c.d, c.run.Start)
 }
 
+// negAnchorsPassportShape — признаки, при которых голая форма паспорта
+// паспортом не является: номер принадлежит другому документу или организации.
+// Список действует только на пути без якоря; при явном слове «паспорт» рядом
+// он не применяется.
+var negAnchorsPassportShape = []string{
+	"инн", "огрн", "кпп", "бик", "лицевой счёт", "лицевой счет",
+	"договор", "полис",
+}
+
+// negAnchorsOtherDoc — явное название другого документа. Оно отменяет паспорт
+// даже при паспортном якоре: слово «номер» само по себе якорь слабый, и
+// «номер студенческого билета 6534-667349» маскировалось паспортом. Слова
+// вроде «инн» сюда не входят — они встречаются в анкете рядом с настоящим
+// паспортом.
+var negAnchorsOtherDoc = []string{
+	"студенческ", "зачётк", "зачетк", "читательск", "абонемент",
+	"пропуск", "табельн",
+}
+
+// passportNegContext ищет такой признак в начале предложения перед значением.
+func passportNegContext(d *Doc, start int) bool {
+	head := sentenceHead(d, start)
+	if _, ok := ContainsAnyLower(head, negAnchorsPassportShape); ok {
+		return true
+	}
+	_, ok := ContainsAnyLower(head, negAnchorsOtherDoc)
+	return ok
+}
+
+// passportOtherDocContext ищет название другого документа. Проверяется и на
+// пути с якорем, поэтому список узкий.
+func passportOtherDocContext(d *Doc, start int) bool {
+	_, ok := ContainsAnyLower(sentenceHead(d, start), negAnchorsOtherDoc)
+	return ok
+}
+
+// isTollFree сообщает, что номер бесплатный: код 800, 803 или 804 после
+// восьмёрки или семёрки.
+func isTollFree(digits string) bool {
+	if len(digits) != 11 {
+		return false
+	}
+	if digits[0] != '7' && digits[0] != '8' {
+		return false
+	}
+	switch digits[1:4] {
+	case "800", "803", "804":
+		return true
+	}
+	return false
+}
+
+// innFollowedByKPP сообщает, что сразу за номером идёт код причины постановки
+// на учёт. Окно короткое: КПП из соседнего предложения к этому номеру не
+// относится.
+func innFollowedByKPP(d *Doc, end int) bool {
+	_, hi := d.WindowRunes(end, end, 0, innKPPWindow)
+	tail := d.Lower[end:hi]
+	if i := strings.IndexAny(tail, ".!?\n\r"); i >= 0 {
+		tail = tail[:i]
+	}
+	_, ok := ContainsAnyLower(tail, []string{"кпп"})
+	return ok
+}
+
+// innKPPWindow — сколько рун за номером просматривается в поисках КПП.
+const innKPPWindow = 24
+
 // serviceNumberContext ищет служебный признак в текущем предложении перед
 // значением. Если между признаком и значением успело встретиться сильное
 // персональное якорное слово, признак к значению не относится.
@@ -453,6 +521,12 @@ func lastAnchorEnd(head string, words []string) int {
 // matchPhone: код страны и десять значащих цифр в любой группировке.
 func matchPhone(c numContext) (numMatch, bool) {
 	if !isPhoneShape(c.run) {
+		return numMatch{}, false
+	}
+	// Бесплатные номера 800, 803 и 804 выдаются организациям и человеку
+	// принадлежать не могут: это горячая линия банка, а не телефон клиента.
+	// Маскировать их — значит портить текст без всякой защиты.
+	if isTollFree(c.digits) {
 		return numMatch{}, false
 	}
 	if c.anchorAt(anchorsPhone) {
@@ -522,6 +596,12 @@ func matchINN(c numContext) (numMatch, bool) {
 		return numMatch{}, false
 	}
 	if c.anchorAt(anchorsINN) {
+		// Код причины постановки на учёт бывает только у организации: у
+		// человека его нет. Десятизначный ИНН, за которым идёт КПП, — это
+		// реквизиты юридического лица, и маскировать их незачем.
+		if len(c.digits) == 10 && innFollowedByKPP(c.d, c.run.End) {
+			return numMatch{}, false
+		}
 		return numMatch{TypeINN, ConfAnchored, "inn:anchor"}, true
 	}
 	// Номер, разбитый на группы по форме паспорта, ИНН не бывает: ИНН пишут
@@ -565,10 +645,20 @@ func matchPassportShape(c numContext) (numMatch, bool) {
 		return numMatch{}, false
 	}
 	if c.anchorAt(anchorsPassport) {
+		if passportOtherDocContext(c.d, c.run.Start) {
+			return numMatch{}, false
+		}
 		return numMatch{TypePassport, ConfHigh, "passport:anchor"}, true
 	}
 	if c.anchorFuzzy(fuzzyAnchorsPassport) {
 		return numMatch{TypePassport, ConfHigh, "passport:anchor_typo"}, true
+	}
+	// Форма без якоря — слабое основание, и рядом с признаком другого
+	// документа она не годится вовсе. Десять цифр рядом со словом «ИНН» это
+	// ИНН организации, «Студенческий 3827-178120» — студенческий билет.
+	// Раньше и то и другое маскировалось паспортом.
+	if passportNegContext(c.d, c.run.Start) {
+		return numMatch{}, false
 	}
 	if c.pattern == "4-6" || c.pattern == "2-2-6" {
 		return numMatch{TypePassport, ConfAnchored, "passport:shape"}, true

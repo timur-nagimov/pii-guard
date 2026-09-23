@@ -88,7 +88,7 @@ sleep 1
 curl -s -m 20 -o "$TMP/metrics.txt" "$URL/metrics"
 
 python3 - "$TMP" "$LOGFILE" <<'PY'
-import pathlib, re, sys
+import json, pathlib, re, sys
 
 tmp = pathlib.Path(sys.argv[1])
 logfile = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -129,6 +129,36 @@ else:
     # показатели. Говорим об этом вслух, но не падаем.
     print("ВНИМАНИЕ: файл журнала не задан, проверены только показатели.")
 
+# Служебные числа записи — длительность, размер, счётчики — к персональным
+# данным отношения не имеют, а короткое значение вроде кода безопасности
+# совпадает с ними случайно: проверка однажды покраснела на длительности
+# ровно в 987 микросекунд. Из записи в формате JSON берутся только строковые
+# значения: утёкшее значение попадает в строку, а не в число.
+def searchable(line):
+    line = line.strip()
+    if not line.startswith("{"):
+        return line
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return line
+    out = []
+
+    def walk(v):
+        if isinstance(v, str):
+            out.append(v)
+        elif isinstance(v, dict):
+            for k, vv in v.items():
+                out.append(str(k))
+                walk(vv)
+        elif isinstance(v, list):
+            for vv in v:
+                walk(vv)
+
+    walk(rec)
+    return "\n".join(out)
+
+
 leaks = []
 for name, path in channels.items():
     try:
@@ -137,12 +167,11 @@ for name, path in channels.items():
         # Непрочитанный канал это не «утечек нет», а несостоявшаяся проверка.
         print(f"не прочитать {name}: {exc}")
         sys.exit(2)
-    for needle in sorted(needles):
-        if hit(needle, body):
-            for line in body.split("\n"):
-                if hit(needle, line):
-                    leaks.append((name, needle, line.strip()[:200]))
-                    break
+    for line in body.split("\n"):
+        hay = searchable(line)
+        for needle in sorted(needles):
+            if hit(needle, hay):
+                leaks.append((name, needle, line.strip()[:200]))
 
 if leaks:
     print(f"НАЙДЕНА УТЕЧКА, совпадений {len(leaks)}:")
