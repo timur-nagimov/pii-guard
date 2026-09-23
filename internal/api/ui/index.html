@@ -320,7 +320,12 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   <h2>Матрица покрытия</h2>
   <div class="coverage-wrap">
     <table class="coverage">
-      <thead id="coverage-head"></thead>
+      <!-- Шапка перерисовывается под набор систем, но заголовки столбцов нужны
+           и до первого ответа: пока их нет, чтение с экрана даёт сетку значений
+           без подписей, и «выключено» непонятно к какой системе относится. -->
+      <thead id="coverage-head">
+        <tr><th scope="col">Тип</th><th scope="col">Системы</th></tr>
+      </thead>
       <tbody id="coverage-body"></tbody>
     </table>
   </div>
@@ -405,8 +410,10 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
 </section>
 
 <section class="panel">
-  <h2>Исходный текст</h2>
-  <textarea id="text" spellcheck="false" aria-label="Текст для разбора">Клиент Иванов Иван Иванович, дата рождения 12.03.1985, паспорт серия 4509 номер 123456 выдан ОУФМС России по г. Москве, код подразделения 770-001, адрес: 101000, г. Москва, ул. Ленина, д. 5, кв. 12, тел +7 (916) 123-45-67, почта ivanov@mail.ru, ИНН 500100732259, карта 4111 1111 1111 1111, CVV 123. Поэт Александр Пушкин родился в Москве. Отделение банка: ул. Тверская, д. 1.</textarea>
+  <h2 id="source-title">Исходный текст</h2>
+  <!-- Имя для чтения с экрана берём у видимого заголовка, а не отдельной
+       строкой: своя подпись расходится с той, что читает глазами человек. -->
+  <textarea id="text" spellcheck="false" aria-labelledby="source-title">Клиент Иванов Иван Иванович, дата рождения 12.03.1985, паспорт серия 4509 номер 123456 выдан ОУФМС России по г. Москве, код подразделения 770-001, адрес: 101000, г. Москва, ул. Ленина, д. 5, кв. 12, тел +7 (916) 123-45-67, почта ivanov@mail.ru, ИНН 500100732259, карта 4111 1111 1111 1111, CVV 123. Поэт Александр Пушкин родился в Москве. Отделение банка: ул. Тверская, д. 1.</textarea>
   <div class="controls">
     <label for="system">Система</label>
     <select id="system" aria-label="Система-потребитель"></select>
@@ -539,11 +546,13 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   </div>
   <div class="compare-cols">
     <div class="compare-col">
-      <h3 id="compare-a-title"></h3>
+      <!-- Названия видов подставляются после сравнения, но пустой заголовок
+           чтением с экрана пропускается, и колонка остаётся без подписи. -->
+      <h3 id="compare-a-title">Вид A</h3>
       <div id="compare-a-text" class="textview"></div>
     </div>
     <div class="compare-col">
-      <h3 id="compare-b-title"></h3>
+      <h3 id="compare-b-title">Вид B</h3>
       <div id="compare-b-text" class="textview"></div>
     </div>
   </div>
@@ -998,10 +1007,14 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     // системы — порог уверенности и признак обратного преобразования.
     var headRow = document.createElement('tr');
     var corner = document.createElement('th');
+    // scope привязывает заголовок к столбцу: без него чтение с экрана не знает,
+    // какой системе принадлежит клетка, и матрица превращается в поток чисел.
+    corner.scope = 'col';
     corner.textContent = 'Тип';
     headRow.appendChild(corner);
     systems.forEach(function (sys) {
       var th = document.createElement('th');
+      th.scope = 'col';
       var name = document.createElement('div');
       name.textContent = sys.name;
       th.appendChild(name);

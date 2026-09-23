@@ -22,9 +22,16 @@ import sys
 import unicodedata
 
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
-HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*$")
+# Заголовок разбирается на уровень и текст до конца строки, а хвост из
+# решёток срезается отдельной функцией. Выражение вида (.*?)\s*#*$ здесь
+# не годится: «.*?», «\s*» и «#*» претендуют на одни и те же символы, и на
+# строке из сотен решёток движок перебирает откаты вместо разбора.
+HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 FENCE = re.compile(r"^\s*(```|~~~)")
 SKIP_DIRS = {".git", "node_modules", "corpus", "dist", "bin", ".terraform"}
+
+# Схемы, на которых проверка останавливается, причина в описании модуля.
+EXTERNAL = ("http://", "https://", "mailto:", "tel:")
 
 
 def anchor(text):
@@ -43,6 +50,15 @@ def anchor(text):
     return "".join(out)
 
 
+def heading_text(raw):
+    """Срезает хвост закрытого заголовка: решётки в конце и пробелы перед ними.
+
+    Порядок важен: решётки считаются хвостом, только когда стоят в самом
+    конце, поэтому сначала снимаются они, а уже потом отступ перед ними.
+    """
+    return raw.rstrip("#").rstrip()
+
+
 def anchors_of(path):
     found = {}
     inside = False
@@ -59,7 +75,7 @@ def anchors_of(path):
         m = HEADING.match(line)
         if not m:
             continue
-        base = anchor(m.group(2))
+        base = anchor(heading_text(m.group(2)))
         if not base:
             continue
         n = found.get(base, 0)
@@ -90,39 +106,63 @@ def links_of(path):
     return out
 
 
+def has_anchor(dest, frag, cache):
+    """Ищет якорь и в нормализованном виде, и как написано в ссылке.
+
+    Разбор заголовков дорогой, а на один документ ссылаются десятки раз,
+    поэтому результат держится в общем на прогон кеше.
+    """
+    if dest not in cache:
+        cache[dest] = anchors_of(dest)
+    known = cache[dest]
+    return anchor(frag) in known or frag in known
+
+
+def link_problem(doc, rel, line_no, target, cache):
+    """Проверяет одну ссылку и возвращает описание поломки либо None."""
+    path_part, _, frag = target.partition("#")
+    dest = (doc.parent / path_part).resolve() if path_part else doc
+
+    if not dest.exists():
+        return f"{rel}:{line_no}: нет файла {target}"
+
+    # Якорь спрашиваем только у документов: у картинок и исходников его нет,
+    # и требовать там заголовок значит выдумывать поломку.
+    if frag and dest.suffix == ".md" and not has_anchor(dest, frag, cache):
+        return f"{rel}:{line_no}: нет якоря #{frag} в {path_part or rel.name}"
+
+    return None
+
+
+def check_doc(doc, rel, cache):
+    """Проверяет ссылки одного документа: сколько проверено и что поломано."""
+    checked = 0
+    broken = []
+    for line_no, target in links_of(doc):
+        if target.startswith(EXTERNAL):
+            continue
+        checked += 1
+        problem = link_problem(doc, rel, line_no, target, cache)
+        if problem:
+            broken.append(problem)
+    return checked, broken
+
+
 def main():
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
-    docs = [
+    docs = sorted(
         p for p in root.rglob("*.md")
         if not any(part in SKIP_DIRS for part in p.parts)
-    ]
+    )
 
     anchor_cache = {}
     broken = []
     checked = 0
 
-    for doc in sorted(docs):
-        for line_no, target in links_of(doc):
-            if target.startswith(("http://", "https://", "mailto:", "tel:")):
-                continue
-            checked += 1
-
-            path_part, _, frag = target.partition("#")
-            if path_part:
-                dest = (doc.parent / path_part).resolve()
-            else:
-                dest = doc
-
-            rel = doc.relative_to(root)
-            if not dest.exists():
-                broken.append(f"{rel}:{line_no}: нет файла {target}")
-                continue
-
-            if frag and dest.suffix == ".md":
-                if dest not in anchor_cache:
-                    anchor_cache[dest] = anchors_of(dest)
-                if anchor(frag) not in anchor_cache[dest] and frag not in anchor_cache[dest]:
-                    broken.append(f"{rel}:{line_no}: нет якоря #{frag} в {path_part or rel.name}")
+    for doc in docs:
+        found, problems = check_doc(doc, doc.relative_to(root), anchor_cache)
+        checked += found
+        broken.extend(problems)
 
     if broken:
         print(f"Битых ссылок {len(broken)} из {checked} проверенных:")
