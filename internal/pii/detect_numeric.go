@@ -20,7 +20,7 @@ const (
 	anchorWordAddress    = "адрес"
 	anchorWordMkr        = "мкр"
 	anchorWordContract   = "договор"
-	anchorWordPassport   = "паспорт"
+	anchorWordPassport   = "паспорт" // #nosec G101 — якорное слово, а не секрет
 	anchorWordIssued     = "выдан"
 	anchorWordRegistered = "зарегистрирован"
 	anchorWordHolder     = "держател"
@@ -191,47 +191,62 @@ func (n numericDetector) Detect(d *Doc) []Span {
 		if used[i] {
 			continue
 		}
-		// Паспорт, записанный с разделяющими словами: «серия 4509 номер 123456».
-		// Серия бывает разбита на части, поэтому первый кандидат не обязан
-		// содержать все четыре цифры: «27-12 564508».
-		if len(run.Digits) >= 2 && len(run.Digits) <= 4 {
-			if j, ok := joinPassportParts(d, runs, i); ok {
-				start, end := NormalizeSpan(d.Text, run.Start, runs[j].End)
-				out = append(out, Span{Start: start, End: end, Type: TypePassport, Conf: ConfHigh, Reason: "passport:series_number_words"})
-				// Помечаются все вошедшие кандидаты, а не только крайние:
-				// иначе середина разбитого номера осталась бы свободной и
-				// получила бы свой, посторонний тип.
-				for k := i; k <= j; k++ {
-					used[k] = true
-				}
-				continue
-			}
-		}
-
-		// Паспорт, приклеившийся к дате: «Белова К.А. 1977-12-17 75 52 040112».
-		if parts, ok := splitDatePassport(d, run); ok {
-			out = append(out, parts...)
-			used[i] = true
+		spans, next := n.detectCandidate(d, runs, i, run)
+		if len(spans) == 0 {
 			continue
 		}
-
-		if s, ok := n.classify(d, run); ok {
-			out = append(out, s)
-			used[i] = true
-			// Пин-код, разбитый на две пары цифр: «PIN-code: 07 26». Первая
-			// пара ловится якорем, вторая — соседняя двухзначная пара, между
-			// которой и якорем уже стоят цифры первой пары. Помечаем её тем же
-			// типом, чтобы обе половины пина были замаскированы.
-			if s.Type == TypePIN && len(run.Digits) == 2 {
-				if j, ok := joinSplitPIN(d, runs, i); ok {
-					start, end := NormalizeSpan(d.Text, runs[j].Start, runs[j].End)
-					out = append(out, Span{Start: start, End: end, Type: TypePIN, Conf: ConfHigh, Reason: "pin:split_pair"})
-					used[j] = true
-				}
-			}
+		out = append(out, spans...)
+		for k := i; k <= next; k++ {
+			used[k] = true
 		}
 	}
 	return out
+}
+
+// detectCandidate разбирает один числовой кандидат и возвращает найденные
+// фрагменты вместе с индексом последнего занятого кандидата. Кандидат может
+// дать несколько фрагментов: паспорт, приклеившийся к дате, режется на части.
+func (n numericDetector) detectCandidate(d *Doc, runs []NumRun, i int, run NumRun) ([]Span, int) {
+	// Паспорт, записанный с разделяющими словами: «серия 4509 номер 123456».
+	// Серия бывает разбита на части, поэтому первый кандидат не обязан
+	// содержать все четыре цифры: «27-12 564508».
+	if len(run.Digits) >= 2 && len(run.Digits) <= 4 {
+		if j, ok := joinPassportParts(d, runs, i); ok {
+			return []Span{passportSeriesNumberSpan(d, run, runs[j])}, j
+		}
+	}
+
+	// Паспорт, приклеившийся к дате: «Белова К.А. 1977-12-17 75 52 040112».
+	if parts, ok := splitDatePassport(d, run); ok {
+		return parts, i
+	}
+
+	if s, ok := n.classify(d, run); ok {
+		// Пин-код, разбитый на две пары цифр: «PIN-code: 07 26». Первая
+		// пара ловится якорем, вторая — соседняя двухзначная пара, между
+		// которой и якорем уже стоят цифры первой пары. Помечаем её тем же
+		// типом, чтобы обе половины пина были замаскированы.
+		if s.Type == TypePIN && len(run.Digits) == 2 {
+			if j, ok := joinSplitPIN(d, runs, i); ok {
+				return []Span{s, splitPINSpan(d, runs[j])}, j
+			}
+		}
+		return []Span{s}, i
+	}
+	return nil, i
+}
+
+// passportSeriesNumberSpan собирает фрагмент паспорта из серии и номера,
+// записанных разделяющими словами.
+func passportSeriesNumberSpan(d *Doc, series, number NumRun) Span {
+	start, end := NormalizeSpan(d.Text, series.Start, number.End)
+	return Span{Start: start, End: end, Type: TypePassport, Conf: ConfHigh, Reason: "passport:series_number_words"}
+}
+
+// splitPINSpan собирает фрагмент второй пары цифр разбитого пин-кода.
+func splitPINSpan(d *Doc, run NumRun) Span {
+	start, end := NormalizeSpan(d.Text, run.Start, run.End)
+	return Span{Start: start, End: end, Type: TypePIN, Conf: ConfHigh, Reason: "pin:split_pair"}
 }
 
 // datePrefixGroups — длины групп цифр, с которых начинается дата. Вариант из
@@ -761,31 +776,41 @@ func deptPassportNear(c numContext) bool {
 // passportAbbrevIn сообщает, что в окне есть сокращённая запись паспорта
 // «с. XXXX н. YYYYYY» или «XXXX № YYYYYY».
 func passportAbbrevIn(win string) bool {
-	// «с. XXXX н. YYYYYY». Кириллические «с» и «н» занимают по два байта,
-	// поэтому после «с.» и «н.» смещение сдвигается на три.
-	if i := strings.Index(win, "с."); i >= 0 {
-		rest := strings.TrimLeft(win[i+3:], " \t")
-		if len(rest) >= 4 && allDigits(rest[:4]) {
-			rest = strings.TrimLeft(rest[4:], " \t")
-			if strings.HasPrefix(rest, "н.") {
-				rest = strings.TrimLeft(rest[3:], " \t")
-				if len(rest) >= 6 && allDigits(rest[:6]) {
-					return true
-				}
-			}
-		}
+	return passportAbbrevSeries(win) || passportAbbrevNumber(win)
+}
+
+// passportAbbrevSeries проверяет сокращённую запись «с. XXXX н. YYYYYY».
+// Кириллические «с» и «н» занимают по два байта, поэтому после «с.» и «н.»
+// смещение сдвигается на три.
+func passportAbbrevSeries(win string) bool {
+	i := strings.Index(win, "с.")
+	if i < 0 {
+		return false
 	}
-	// «XXXX № YYYYYY»
-	if i := strings.Index(win, "№"); i >= 0 {
-		before := strings.TrimRight(win[:i], " \t")
-		if len(before) >= 4 && allDigits(before[len(before)-4:]) {
-			rest := strings.TrimLeft(win[i+1:], " \t")
-			if len(rest) >= 6 && allDigits(rest[:6]) {
-				return true
-			}
-		}
+	rest := strings.TrimLeft(win[i+3:], " \t")
+	if len(rest) < 4 || !allDigits(rest[:4]) {
+		return false
 	}
-	return false
+	rest = strings.TrimLeft(rest[4:], " \t")
+	if !strings.HasPrefix(rest, "н.") {
+		return false
+	}
+	rest = strings.TrimLeft(rest[3:], " \t")
+	return len(rest) >= 6 && allDigits(rest[:6])
+}
+
+// passportAbbrevNumber проверяет сокращённую запись «XXXX № YYYYYY».
+func passportAbbrevNumber(win string) bool {
+	i := strings.Index(win, "№")
+	if i < 0 {
+		return false
+	}
+	before := strings.TrimRight(win[:i], " \t")
+	if len(before) < 4 || !allDigits(before[len(before)-4:]) {
+		return false
+	}
+	rest := strings.TrimLeft(win[i+1:], " \t")
+	return len(rest) >= 6 && allDigits(rest[:6])
 }
 
 // allDigits сообщает, что строка состоит только из цифр.
@@ -1069,12 +1094,13 @@ func hasFuzzyWordMin(window string, anchors []string, minRunes int) bool {
 	}
 	// Пробел, вставленный внутрь якоря, разрывает слово: «поч товый» вместо
 	// «почтовый». Проверяем окно без пробелов целиком.
-	compact := strings.Map(func(r rune) rune {
-		if r == ' ' || r == '\t' || r == '\u00a0' {
-			return -1
-		}
-		return r
-	}, norm)
+	return fuzzyCompactContains(norm, folded)
+}
+
+// fuzzyCompactContains ищет якорь в окне без пробелов. Пробел, вставленный
+// внутрь якоря, разрывает слово: «поч товый» вместо «почтовый».
+func fuzzyCompactContains(norm string, folded []string) bool {
+	compact := compactSpaces(norm)
 	for _, a := range folded {
 		if strings.Contains(compact, a) {
 			return true
@@ -1120,27 +1146,43 @@ func nearlyEqual(a, b string) bool {
 	same := len(ra) == len(rb)
 	i, j, diff := 0, 0, 0
 	for i < len(ra) && j < len(rb) {
-		if ra[i] == rb[j] {
-			i, j = i+1, j+1
-			continue
-		}
-		// Перестановка соседних рун: «ab» против «ba».
-		if same && i+1 < len(ra) && j+1 < len(rb) &&
-			ra[i] == rb[j+1] && ra[i+1] == rb[j] {
-			i, j, diff = i+2, j+2, diff+1
-			if diff > 1 {
-				return false
-			}
-			continue
-		}
-		diff++
-		if diff > 1 {
+		ni, nj, nd, ok := nearlyStep(ra, rb, i, j, diff, same)
+		if !ok {
 			return false
 		}
-		if same {
-			i++
-		}
-		j++
+		i, j, diff = ni, nj, nd
 	}
 	return true
+}
+
+// nearlyStep продвигает сравнение на одну позицию. Возвращает новые индексы,
+// число различий и признак того, что сравнение можно продолжать. Ложь означает
+// накопление более одного различия.
+func nearlyStep(ra, rb []rune, i, j, diff int, same bool) (int, int, int, bool) {
+	if ra[i] == rb[j] {
+		return i + 1, j + 1, diff, true
+	}
+	// Перестановка соседних рун: «ab» против «ba».
+	if same && swappedRunes(ra, rb, i, j) {
+		diff++
+		if diff > 1 {
+			return 0, 0, 0, false
+		}
+		return i + 2, j + 2, diff, true
+	}
+	diff++
+	if diff > 1 {
+		return 0, 0, 0, false
+	}
+	if same {
+		i++
+	}
+	return i, j + 1, diff, true
+}
+
+// swappedRunes сообщает, что в позициях i и j руны переставлены местами:
+// «ab» против «ba».
+func swappedRunes(ra, rb []rune, i, j int) bool {
+	return i+1 < len(ra) && j+1 < len(rb) &&
+		ra[i] == rb[j+1] && ra[i+1] == rb[j]
 }

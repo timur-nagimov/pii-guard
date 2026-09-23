@@ -1019,6 +1019,22 @@ func dateAnchorDistance(d *Doc, start, end int, anchors []string, before, after 
 	best := -1
 	lo, _ := d.WindowRunes(start, start, before, 0)
 	left := FoldHomoglyphs(d.Lower[lo:start])
+	best = dateAnchorLeft(left, anchors, best)
+	_, hi := d.WindowRunes(end, end, 0, after)
+	right := FoldHomoglyphs(d.Lower[end:hi])
+	best = dateAnchorRight(right, anchors, best)
+	// Пробел, вставленный внутрь якоря, разрывает слово: «ро жд» вместо
+	// «рожд». Пробуем окно без пробелов. Короткие якоря вроде «др» не берём:
+	// они совпадают внутри чужих слов («адреса» содержит «др»).
+	if best < 0 {
+		return dateAnchorCompact(left, anchors)
+	}
+	return best, true
+}
+
+// dateAnchorLeft ищет якорь слева от даты и возвращает наименьшее расстояние
+// до него. Расстояние считается от конца якоря до начала даты.
+func dateAnchorLeft(left string, anchors []string, best int) int {
 	for _, a := range anchors {
 		na := FoldHomoglyphs(a)
 		pos := strings.LastIndex(left, na)
@@ -1029,8 +1045,12 @@ func dateAnchorDistance(d *Doc, start, end int, anchors []string, before, after 
 			best = dist
 		}
 	}
-	_, hi := d.WindowRunes(end, end, 0, after)
-	right := FoldHomoglyphs(d.Lower[end:hi])
+	return best
+}
+
+// dateAnchorRight ищет якорь справа от даты и возвращает наименьшее расстояние
+// до него. Расстояние считается от конца даты до начала якоря.
+func dateAnchorRight(right string, anchors []string, best int) int {
 	for _, a := range anchors {
 		na := FoldHomoglyphs(a)
 		pos := strings.Index(right, na)
@@ -1041,33 +1061,23 @@ func dateAnchorDistance(d *Doc, start, end int, anchors []string, before, after 
 			best = pos
 		}
 	}
-	// Пробел, вставленный внутрь якоря, разрывает слово: «ро жд» вместо
-	// «рожд». Пробуем окно без пробелов. Короткие якоря вроде «др» не берём:
-	// они совпадают внутри чужих слов («адреса» содержит «др»).
-	if best < 0 {
-		compact := strings.Map(func(r rune) rune {
-			if r == ' ' || r == '\t' || r == '\u00a0' {
-				return -1
-			}
-			return r
-		}, left)
-		for _, a := range anchors {
-			if utf8.RuneCountInString(a) < 4 {
-				continue
-			}
-			na := FoldHomoglyphs(a)
-			naCompact := strings.Map(func(r rune) rune {
-				if r == ' ' || r == '\t' || r == '\u00a0' {
-					return -1
-				}
-				return r
-			}, na)
-			if strings.Contains(compact, naCompact) {
-				return 0, true
-			}
+	return best
+}
+
+// dateAnchorCompact ищет якорь в окне без пробелов. Короткие якоря вроде «др»
+// не берём: они совпадают внутри чужих слов («адреса» содержит «др»).
+func dateAnchorCompact(left string, anchors []string) (int, bool) {
+	compact := compactSpaces(left)
+	for _, a := range anchors {
+		if utf8.RuneCountInString(a) < 4 {
+			continue
+		}
+		naCompact := compactSpaces(FoldHomoglyphs(a))
+		if strings.Contains(compact, naCompact) {
+			return 0, true
 		}
 	}
-	return best, best >= 0
+	return -1, false
 }
 
 // dateHasNegative сообщает, что рядом стоит слово, при котором дата не

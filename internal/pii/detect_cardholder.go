@@ -819,40 +819,57 @@ func extraDocMilitary(d *Doc, runs []NumRun, i int) (Span, bool) {
 	// Рядом с двухбуквенной серией длина номера допускает опечатку в одну
 	// цифру: сама пара «две буквы плюс номер» уже говорит о документе.
 	if start, ok := extraDocSeries(d, run.Start); ok && n >= 6 && n <= 8 {
-		if extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsMilitary) {
-			return extraDocSpan(d, start, firstEnd, TypeMilitaryID, ConfHigh, "military_id:series_number")
-		}
-		// Без якоря номер берётся только для ровно семи цифр: «АН-2850498» в
-		// выгрузке. Пара «две буквы плюс семь цифр» характерна для военного
-		// билета, поэтому якорь не обязателен. Опечатки в длине номера и
-		// разбитые номера без якоря не отличить от случайных обозначений.
-		// Слово «билет» без военного якоря — это билет на поезд или самолёт,
-		// а не военный билет, поэтому такой номер без якоря не берём.
-		if n == 7 && !extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsTicket) {
-			return extraDocSpan(d, start, firstEnd, TypeMilitaryID, ConfAnchored, "military_id:series_standard")
-		}
-		return Span{}, false
+		return extraDocMilitarySeries(d, start, firstEnd, n)
 	}
 	// Номер, разбитый на две отдельные группы: две цифры и пять цифр. Серия
 	// обязательна, иначе «41 05371» без серии не отличить от случайных чисел.
 	if n == 2 && i+1 < len(runs) {
-		next := runs[i+1]
-		if len(next.Digits) == 5 {
-			if start, ok := extraDocSeries(d, run.Start); ok {
-				gap := extraDocLowerSlice(d, run.End, next.Start)
-				if !strings.ContainsAny(gap, "\n\r") && utf8.RuneCountInString(gap) <= 16 && onlyConnectors(gap) {
-					if extraDocAnchorNear(d, start, next.End, extraDocAnchorsMilitary) {
-						return extraDocSpan(d, start, next.End, TypeMilitaryID, ConfHigh, "military_id:series_number_split")
-					}
-				}
-			}
-		}
-		return Span{}, false
+		return extraDocMilitarySplit(d, runs, i, run)
 	}
 	if n != 7 || !extraDocAnchorBefore(d, run.Start, extraDocAnchorsMilitary) {
 		return Span{}, false
 	}
 	return extraDocSpan(d, run.Start, firstEnd, TypeMilitaryID, ConfAnchored, "military_id:anchor")
+}
+
+// extraDocMilitarySeries разбирает военный билет с двухбуквенной серией и
+// номером из шести-восьми цифр.
+func extraDocMilitarySeries(d *Doc, start, firstEnd, n int) (Span, bool) {
+	if extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsMilitary) {
+		return extraDocSpan(d, start, firstEnd, TypeMilitaryID, ConfHigh, "military_id:series_number")
+	}
+	// Без якоря номер берётся только для ровно семи цифр: «АН-2850498» в
+	// выгрузке. Пара «две буквы плюс семь цифр» характерна для военного
+	// билета, поэтому якорь не обязателен. Опечатки в длине номера и
+	// разбитые номера без якоря не отличить от случайных обозначений.
+	// Слово «билет» без военного якоря — это билет на поезд или самолёт,
+	// а не военный билет, поэтому такой номер без якоря не берём.
+	if n == 7 && !extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsTicket) {
+		return extraDocSpan(d, start, firstEnd, TypeMilitaryID, ConfAnchored, "military_id:series_standard")
+	}
+	return Span{}, false
+}
+
+// extraDocMilitarySplit разбирает военный билет, номер которого разбит на две
+// группы: две цифры и пять цифр. Серия обязательна, иначе «41 05371» без
+// серии не отличить от случайных чисел.
+func extraDocMilitarySplit(d *Doc, runs []NumRun, i int, run NumRun) (Span, bool) {
+	next := runs[i+1]
+	if len(next.Digits) != 5 {
+		return Span{}, false
+	}
+	start, ok := extraDocSeries(d, run.Start)
+	if !ok {
+		return Span{}, false
+	}
+	gap := extraDocLowerSlice(d, run.End, next.Start)
+	if strings.ContainsAny(gap, "\n\r") || utf8.RuneCountInString(gap) > 16 || !onlyConnectors(gap) {
+		return Span{}, false
+	}
+	if extraDocAnchorNear(d, start, next.End, extraDocAnchorsMilitary) {
+		return extraDocSpan(d, start, next.End, TypeMilitaryID, ConfHigh, "military_id:series_number_split")
+	}
+	return Span{}, false
 }
 
 // extraDocPermit находит номер вида на жительство. Единой формы у него нет,

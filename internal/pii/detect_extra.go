@@ -65,7 +65,7 @@ func (extraDetector) Types() []Type {
 // Detect разбирает документ на расширенные типы. Числовые типы идут по
 // числовым кандидатам, буквенно-цифровые — по токенам.
 func (e extraDetector) Detect(d *Doc) []Span {
-	var out []Span
+	out := make([]Span, 0, 8)
 	out = append(out, e.detectNumeric(d)...)
 	out = append(out, e.detectAlnum(d)...)
 	out = append(out, e.detectIP(d)...)
@@ -138,25 +138,37 @@ func (extraDetector) detectAlnum(d *Doc) []Span {
 		// Пробуем собрать госномер: буква, три цифры, две буквы, две или три
 		// цифры, с одиночными пробелами между группами.
 		if start, end, ok := plateSpan(d, toks, i); ok {
-			if extraAnchorNear(d, start, end, anchorsPlate, anchorWindow, nearAnchorWindow) {
-				if s, ok := extraSpan(d, start, end, TypePlate, ConfHigh, "plate:anchor"); ok {
-					out = append(out, s)
-				}
+			if s, ok := extraPlateSpan(d, start, end); ok {
+				out = append(out, s)
 			}
 			i = tokenIndexAt(toks, end)
 			continue
 		}
 		// Пробуем собрать VIN: семнадцать знаков латиницы и цифр без пробелов.
 		if start, end, ok := vinSpan(d, toks, i); ok {
-			if extraAnchorNear(d, start, end, anchorsVIN, vinAnchorWindow, nearAnchorWindow) {
-				if s, ok := extraSpan(d, start, end, TypeVIN, ConfHigh, "vin:anchor"); ok {
-					out = append(out, s)
-				}
+			if s, ok := extraVINSpan(d, start, end); ok {
+				out = append(out, s)
 			}
 			i = tokenIndexAt(toks, end)
 		}
 	}
 	return out
+}
+
+// extraPlateSpan собирает фрагмент госномера, если рядом есть якорь.
+func extraPlateSpan(d *Doc, start, end int) (Span, bool) {
+	if !extraAnchorNear(d, start, end, anchorsPlate, anchorWindow, nearAnchorWindow) {
+		return Span{}, false
+	}
+	return extraSpan(d, start, end, TypePlate, ConfHigh, "plate:anchor")
+}
+
+// extraVINSpan собирает фрагмент VIN, если рядом есть якорь.
+func extraVINSpan(d *Doc, start, end int) (Span, bool) {
+	if !extraAnchorNear(d, start, end, anchorsVIN, vinAnchorWindow, nearAnchorWindow) {
+		return Span{}, false
+	}
+	return extraSpan(d, start, end, TypeVIN, ConfHigh, "vin:anchor")
 }
 
 // plateLetters — буквы, допустимые в госномере: только те, что имеют латинские
@@ -219,13 +231,8 @@ func takePlateLetters(d *Doc, toks []Token, pos, n int) (int, bool) {
 			return 0, false
 		}
 		runes := []rune(d.Text[tok.Start:tok.End])
-		if got+len(runes) > n {
+		if got+len(runes) > n || !plateLettersOK(runes) {
 			return 0, false
-		}
-		for _, r := range runes {
-			if !plateLetters[unicode.ToLower(r)] {
-				return 0, false
-			}
 		}
 		got += len(runes)
 		pos++
@@ -234,6 +241,16 @@ func takePlateLetters(d *Doc, toks []Token, pos, n int) (int, bool) {
 		return 0, false
 	}
 	return pos, true
+}
+
+// plateLettersOK сообщает, что все буквы токена допустимы в госномере.
+func plateLettersOK(runes []rune) bool {
+	for _, r := range runes {
+		if !plateLetters[unicode.ToLower(r)] {
+			return false
+		}
+	}
+	return true
 }
 
 // skipPlateSpace пропускает один одиночный пробел между группами госномера.
@@ -262,6 +279,23 @@ func vinSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 		return 0, 0, false
 	}
 	start := toks[i].Start
+	end, count := vinExtend(d, toks, i)
+	if count != 17 {
+		return 0, 0, false
+	}
+	// Буквы I, O и Q из VIN исключены: их убрали, чтобы не путать с единицей
+	// и нулём. Заодно считаем цифры: в настоящем номере они есть всегда, и это
+	// отсекает слова из семнадцати латинских букв.
+	if !vinValidBody(d.Text[start:end]) {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+// vinExtend собирает семнадцать знаков VIN, допуская один разрыв пробелом.
+// Возвращает конец номера и число знаков.
+func vinExtend(d *Doc, toks []Token, i int) (int, int) {
+	start := toks[i].Start
 	end := toks[i].End
 	count := utf8.RuneCountInString(d.Text[start:end])
 	// Номер переносят и разрывают пробелом: «BFXP336J ZLY4XJ5Z2». Один разрыв
@@ -288,27 +322,24 @@ func vinSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 		count += utf8.RuneCountInString(d.Text[next.Start:next.End])
 		j++
 	}
-	if count != 17 {
-		return 0, 0, false
-	}
-	// Буквы I, O и Q из VIN исключены: их убрали, чтобы не путать с единицей
-	// и нулём. Заодно считаем цифры: в настоящем номере они есть всегда, и это
-	// отсекает слова из семнадцати латинских букв.
+	return end, count
+}
+
+// vinValidBody проверяет тело VIN: буквы I, O и Q исключены, а цифры обязаны
+// присутствовать. Это отсекает слова из семнадцати латинских букв.
+func vinValidBody(body string) bool {
 	digits := 0
-	for _, r := range d.Text[start:end] {
+	for _, r := range body {
 		switch {
 		case r >= '0' && r <= '9':
 			digits++
 		case r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z':
 			if vinForbidden[unicode.ToLower(r)] {
-				return 0, 0, false
+				return false
 			}
 		}
 	}
-	if digits == 0 {
-		return 0, 0, false
-	}
-	return start, end, true
+	return digits > 0
 }
 
 // tokenIndexAt возвращает индекс токена, содержащего байтовое смещение.
@@ -346,29 +377,32 @@ func (extraDetector) detectIP(d *Doc) []Span {
 		if end < 0 {
 			continue
 		}
-		candidate := text[i:end]
-		if !isIPv4(candidate) {
-			continue
-		}
-		// Сетевой диапазон в записи CIDR (10.0.0.0/8) на человека не указывает.
-		if end < len(text) && text[end] == '/' {
-			i = end - 1
-			continue
-		}
-		if isServiceIPv4(candidate) {
-			i = end - 1
-			continue
-		}
-		if !extraAnchorNear(d, i, end, anchorsIP, anchorWindow, nearAnchorWindow) {
-			i = end - 1
-			continue
-		}
-		if s, ok := extraSpan(d, i, end, TypeIPAddress, ConfHigh, "ip:anchor"); ok {
+		if s, ok := extraIPSpan(d, text, i, end); ok {
 			out = append(out, s)
 		}
 		i = end - 1
 	}
 	return out
+}
+
+// extraIPSpan собирает фрагмент сетевого адреса, если кандидат не служебный и
+// рядом есть якорь.
+func extraIPSpan(d *Doc, text string, start, end int) (Span, bool) {
+	candidate := text[start:end]
+	if !isIPv4(candidate) {
+		return Span{}, false
+	}
+	// Сетевой диапазон в записи CIDR (10.0.0.0/8) на человека не указывает.
+	if end < len(text) && text[end] == '/' {
+		return Span{}, false
+	}
+	if isServiceIPv4(candidate) {
+		return Span{}, false
+	}
+	if !extraAnchorNear(d, start, end, anchorsIP, anchorWindow, nearAnchorWindow) {
+		return Span{}, false
+	}
+	return extraSpan(d, start, end, TypeIPAddress, ConfHigh, "ip:anchor")
 }
 
 // ipv4End возвращает конец IPv4-кандидата, начинающегося в позиции i, либо
