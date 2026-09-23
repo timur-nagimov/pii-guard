@@ -26,6 +26,17 @@ cover: ## прогнать тесты и показать покрытие
 	go test ./... -count=1 -coverprofile=coverage.out
 	go tool cover -func=coverage.out | tail -1
 
+.PHONY: sonar-prep
+sonar-prep: ## подготовить отчёты для сканера SonarQube
+	go test ./... -count=1 -coverprofile=coverage.out -covermode=atomic
+	go test ./... -count=1 -json > test-report.json
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run ./... --output.checkstyle.path=golangci-report.xml || true; \
+	else \
+		echo "golangci-lint не установлен, отчёт линтера не собран"; \
+	fi
+	go vet ./... 2> govet-report.out || true
+
 .PHONY: lint
 lint: ## проверить формат и статический анализ
 	@test -z "$$(gofmt -l . | grep -v '^$$')" || (echo "не отформатированы:"; gofmt -l .; exit 1)

@@ -64,7 +64,6 @@ func main() {
 	seed := flag.Uint64("seed", 42, "начальное значение для выбора текстов")
 	flag.Parse()
 
-	target := strings.TrimRight(*url, "/") + "/process"
 	texts, err := loadTexts(*dataset, *payload)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -90,8 +89,15 @@ func main() {
 		},
 	}
 
+	target := strings.TrimRight(*url, "/") + "/process"
+	runLoad(ctx, client, target, texts, *rps, *workers, *seed)
+}
+
+// runLoad гоняет отправителей до конца контекста и печатает итоги. Вынесена из
+// main, чтобы прогон можно было проверить тестом без запуска команды.
+func runLoad(ctx context.Context, client *http.Client, target string, texts []string, rps, workers int, seed uint64) {
 	var c counters
-	latencies := make([][]time.Duration, *workers)
+	latencies := make([][]time.Duration, workers)
 	var wg sync.WaitGroup
 	started := time.Now()
 
@@ -99,21 +105,21 @@ func main() {
 	// они давали заданную частоту. При нулевой частоте отправители работают
 	// без пауз и показывают предел связки.
 	var interval time.Duration
-	if *rps > 0 {
-		interval = time.Duration(float64(*workers) / float64(*rps) * float64(time.Second))
+	if rps > 0 {
+		interval = time.Duration(float64(workers) / float64(rps) * float64(time.Second))
 	}
 
-	for w := 0; w < *workers; w++ {
+	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			latencies[id] = runWorker(ctx, client, target, texts, interval, *seed, id, &c)
+			latencies[id] = runWorker(ctx, client, target, texts, interval, seed, id, &c)
 		}(w)
 	}
 	wg.Wait()
 	elapsed := time.Since(started)
 
-	reportResults(&c, latencies, *rps, elapsed)
+	reportResults(&c, latencies, rps, elapsed)
 }
 
 // runWorker гоняет запросы одного отправителя, пока жив контекст, и собирает
