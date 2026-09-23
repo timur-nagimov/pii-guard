@@ -163,17 +163,41 @@ func TestNormalizeSpanClampsBounds(t *testing.T) {
 	}
 }
 
+// digitRunCase — случай табличного теста числовых кандидатов. На один текст
+// их может прийтись несколько, поэтому ожидание задано параллельными
+// списками: i-й кандидат сверяется с i-м элементом каждого из них.
+type digitRunCase struct {
+	name     string
+	text     string
+	digits   []string
+	patterns []string
+	hasPlus  []bool
+}
+
+// checkDigitRun сверяет одного числового кандидата. Границы проверяются у
+// каждого: по ним форматные детекторы режут исходный текст, и выход за его
+// пределы уронил бы разбор целиком, а не испортил один фрагмент.
+func checkDigitRun(t *testing.T, c digitRunCase, i int, r NumRun) {
+	t.Helper()
+	if r.Digits != c.digits[i] {
+		t.Errorf("последовательность %d: цифры %q, ожидались %q", i, r.Digits, c.digits[i])
+	}
+	if got := r.GroupsPattern(); got != c.patterns[i] {
+		t.Errorf("последовательность %d: форма %q, ожидалась %q", i, got, c.patterns[i])
+	}
+	if r.HasPlus != c.hasPlus[i] {
+		t.Errorf("последовательность %d: признак плюса %v, ожидался %v", i, r.HasPlus, c.hasPlus[i])
+	}
+	if r.Start < 0 || r.End > len(c.text) || r.Start >= r.End {
+		t.Errorf("последовательность %d: испорченные границы %d:%d", i, r.Start, r.End)
+	}
+}
+
 // TestDigitRuns проверяет разбор текста на числовых кандидатов. Именно на этом
 // разборе стоят все форматные детекторы, поэтому важны и склейка групп через
 // допустимые разделители, и отказ от склейки через запятую и перевод строки.
 func TestDigitRuns(t *testing.T) {
-	cases := []struct {
-		name     string
-		text     string
-		digits   []string
-		patterns []string
-		hasPlus  []bool
-	}{
+	cases := []digitRunCase{
 		{
 			name:     "телефон со скобками и дефисами",
 			text:     "+7 (916) 123-45-67",
@@ -266,18 +290,7 @@ func TestDigitRuns(t *testing.T) {
 				t.Fatalf("найдено %d последовательностей, ожидалось %d: %+v", len(runs), len(c.digits), runs)
 			}
 			for i, r := range runs {
-				if r.Digits != c.digits[i] {
-					t.Errorf("последовательность %d: цифры %q, ожидались %q", i, r.Digits, c.digits[i])
-				}
-				if got := r.GroupsPattern(); got != c.patterns[i] {
-					t.Errorf("последовательность %d: форма %q, ожидалась %q", i, got, c.patterns[i])
-				}
-				if r.HasPlus != c.hasPlus[i] {
-					t.Errorf("последовательность %d: признак плюса %v, ожидался %v", i, r.HasPlus, c.hasPlus[i])
-				}
-				if r.Start < 0 || r.End > len(c.text) || r.Start >= r.End {
-					t.Errorf("последовательность %d: испорченные границы %d:%d", i, r.Start, r.End)
-				}
+				checkDigitRun(t, c, i, r)
 			}
 		})
 	}
