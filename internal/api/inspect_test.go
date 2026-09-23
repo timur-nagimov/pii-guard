@@ -133,21 +133,36 @@ func TestInspectReturnsLinks(t *testing.T) {
 	}
 	// Индексы рёбер и субъектов ссылаются на фрагменты в spans.
 	for _, e := range resp.Edges {
-		if e.A < 0 || e.A >= len(resp.Spans) || e.B < 0 || e.B >= len(resp.Spans) {
-			t.Fatalf("ребро %+v ссылается на фрагмент вне диапазона %d", e, len(resp.Spans))
-		}
-		if e.Basis == "" {
-			t.Errorf("у ребра %+v пустое основание", e)
-		}
+		checkInspectEdge(t, e, len(resp.Spans))
 	}
 	for _, sub := range resp.Subjects {
-		if len(sub.Fragments) == 0 {
-			t.Fatalf("субъект %+v без фрагментов", sub)
-		}
-		for _, fi := range sub.Fragments {
-			if fi < 0 || fi >= len(resp.Spans) {
-				t.Fatalf("субъект %+v ссылается на фрагмент вне диапазона %d", sub, len(resp.Spans))
-			}
+		checkInspectSubject(t, sub, len(resp.Spans))
+	}
+}
+
+// checkInspectEdge проверяет одно ребро связи: обе стороны обязаны указывать
+// на существующий фрагмент, иначе по ответу нельзя понять, что с чем связано.
+func checkInspectEdge(t *testing.T, e inspectEdge, spanCount int) {
+	t.Helper()
+	if e.A < 0 || e.A >= spanCount || e.B < 0 || e.B >= spanCount {
+		t.Fatalf("ребро %+v ссылается на фрагмент вне диапазона %d", e, spanCount)
+	}
+	if e.Basis == "" {
+		t.Errorf("у ребра %+v пустое основание", e)
+	}
+}
+
+// checkInspectSubject проверяет одного субъекта: без фрагментов он ничего не
+// говорит о тексте, а ссылка за пределы spans означает, что разбиение на людей
+// разъехалось с разметкой.
+func checkInspectSubject(t *testing.T, sub inspectSubject, spanCount int) {
+	t.Helper()
+	if len(sub.Fragments) == 0 {
+		t.Fatalf("субъект %+v без фрагментов", sub)
+	}
+	for _, fi := range sub.Fragments {
+		if fi < 0 || fi >= spanCount {
+			t.Fatalf("субъект %+v ссылается на фрагмент вне диапазона %d", sub, spanCount)
 		}
 	}
 }
