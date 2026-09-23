@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -50,9 +51,9 @@ func TestPutAndGet(t *testing.T) {
 		t.Fatalf("запись сохранена с другими полями: %+v", put)
 	}
 
-	got, ok := s.Get("id-1")
-	if !ok {
-		t.Fatal("запись не найдена сразу после сохранения")
+	got, err := s.Get("id-1")
+	if err != nil {
+		t.Fatalf("запись не найдена сразу после сохранения: %v", err)
 	}
 	if got.Mask != maskText {
 		t.Errorf("маска %q, ожидалась %q", got.Mask, maskText)
@@ -82,11 +83,11 @@ func TestPutAndGet(t *testing.T) {
 // TestGetMissing проверяет чтение по неизвестному идентификатору.
 func TestGetMissing(t *testing.T) {
 	s := newTestStore(t, Config{TTL: time.Hour})
-	if _, ok := s.Get("нет такого"); ok {
-		t.Fatal("найдена запись, которой нет")
+	if _, err := s.Get("нет такого"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("получена ошибка %v, ожидалась %v", err, ErrNotFound)
 	}
-	if _, ok := s.Get(""); ok {
-		t.Fatal("найдена запись по пустому идентификатору")
+	if _, err := s.Get(""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("получена ошибка %v, ожидалась %v", err, ErrNotFound)
 	}
 }
 
@@ -103,8 +104,8 @@ func TestPutOverwrite(t *testing.T) {
 	if n := s.Len(); n != 1 {
 		t.Fatalf("счётчик записей %d, ожидалась одна запись", n)
 	}
-	e, ok := s.Get("id")
-	if !ok {
+	e, err := s.Get("id")
+	if err != nil {
 		t.Fatal("запись пропала после перезаписи")
 	}
 	text, err := s.Original(e)
@@ -210,14 +211,14 @@ func TestTTLExpired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := s.Get("id"); !ok {
+	if _, err := s.Get("id"); err != nil {
 		t.Fatal("свежая запись не найдена")
 	}
 	// Срок сдвигается в прошлое вручную: ждать настоящего истечения в тесте
 	// нельзя, а время наступления события важно задать точно.
 	e.ExpiresAt = time.Now().Add(-time.Second)
-	if _, ok := s.Get("id"); ok {
-		t.Fatal("просроченная запись отдана из хранилища")
+	if _, err := s.Get("id"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("просроченная запись отдана из хранилища: %v", err)
 	}
 }
 
@@ -238,13 +239,13 @@ func TestSweepRemovesExpired(t *testing.T) {
 		t.Fatalf("после уборки осталось %d записей, ожидалось 2", n)
 	}
 	for i := 0; i < 3; i++ {
-		if _, ok := s.Get(fmt.Sprintf("id-%d", i)); ok {
-			t.Fatalf("просроченная запись id-%d пережила уборку", i)
+		if _, err := s.Get(fmt.Sprintf("id-%d", i)); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("просроченная запись id-%d пережила уборку: %v", i, err)
 		}
 	}
 	for i := 3; i < 5; i++ {
-		if _, ok := s.Get(fmt.Sprintf("id-%d", i)); !ok {
-			t.Fatalf("действующая запись id-%d удалена уборкой", i)
+		if _, err := s.Get(fmt.Sprintf("id-%d", i)); err != nil {
+			t.Fatalf("действующая запись id-%d удалена уборкой: %v", i, err)
 		}
 	}
 }
@@ -276,8 +277,8 @@ func TestMaxRecords(t *testing.T) {
 		}
 	}
 	// Последняя запись обязана быть доступна: вытесняются самые ранние.
-	if _, ok := s.Get("id-199"); !ok {
-		t.Fatal("последняя записанная пара вытеснена")
+	if _, err := s.Get("id-199"); err != nil {
+		t.Fatalf("последняя записанная пара вытеснена: %v", err)
 	}
 }
 
@@ -303,9 +304,9 @@ func putAndVerify(s *MemoryStore, id string) error {
 	if _, err := s.Put(id, original, "маска "+id, "sys", nil); err != nil {
 		return err
 	}
-	e, ok := s.Get(id)
-	if !ok {
-		return fmt.Errorf("запись %s пропала сразу после сохранения", id)
+	e, err := s.Get(id)
+	if err != nil {
+		return fmt.Errorf("запись %s пропала сразу после сохранения: %w", id, err)
 	}
 	got, err := s.Original(e)
 	if err != nil {
@@ -317,13 +318,13 @@ func putAndVerify(s *MemoryStore, id string) error {
 	return nil
 }
 
-// readBack читает запись, если она уже сохранена. Отсутствие записи ошибкой не
+// readBack читает запись, если она уже сохранена. ErrNotFound ошибкой не
 // считается: читатель ходит по тем же идентификаторам и законно опережает
 // писателя, а вот частично записанное значение обязано выдать себя ошибкой
 // расшифровки. Длина опрашивается следом, потому что счётчик живёт под тем же
 // замком и ловит гонку не хуже самого чтения.
 func readBack(s *MemoryStore, id string) error {
-	if e, ok := s.Get(id); ok {
+	if e, err := s.Get(id); err == nil {
 		if _, err := s.Original(e); err != nil {
 			return err
 		}
@@ -460,8 +461,8 @@ func TestMemoryDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Delete("id-1")
-	if _, ok := s.Get("id-1"); ok {
-		t.Fatal("запись пережила удаление")
+	if _, err := s.Get("id-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("запись пережила удаление: %v", err)
 	}
 	if n := s.Len(); n != 0 {
 		t.Fatalf("после удаления в хранилище %d записей, ожидалось 0", n)
@@ -495,8 +496,8 @@ func TestMemorySpansPreserved(t *testing.T) {
 	if _, err := s.Put("id", "текст", "маска", "sys", spans); err != nil {
 		t.Fatal(err)
 	}
-	e, ok := s.Get("id")
-	if !ok {
+	e, err := s.Get("id")
+	if err != nil {
 		t.Fatal("запись не найдена")
 	}
 	if len(e.Spans) != 2 || e.Spans[0].Type != "FIO" || e.Spans[1].End != 9 {

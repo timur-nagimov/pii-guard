@@ -24,11 +24,13 @@ const dwMaxStemTail = 4
 const dwShortAnchorRunes = 3
 
 // dwSeparatorRunes — знаки, которые могут стоять между якорем и значением.
-const dwSeparatorRunes = " \t\r\n:-–—«\"'№.=>|()[]"
+// Неразрывный пробел из выгрузок учитывается наравне с обычным.
+const dwSeparatorRunes = " \t\r\n\u00a0:-–—«\"'№.=>|()[]"
 
 // dwWordGapRunes — знаки, допустимые между словами одного значения. Запятая
-// сюда не входит: она разделяет разные сведения в анкете.
-const dwWordGapRunes = " \t.-"
+// сюда не входит: она разделяет разные сведения в анкете. Неразрывный пробел
+// из выгрузок не рвёт значение.
+const dwWordGapRunes = " \t\u00a0.-"
 
 // dwIsLetter сообщает, что руна — буква кириллицы или латиницы.
 func dwIsLetter(r rune) bool {
@@ -290,6 +292,38 @@ func dwNextWord(s string, from, limit int) (int, int, bool) {
 			break
 		}
 		if gaps >= 2 || !strings.ContainsRune(dwWordGapRunes, r) {
+			return 0, 0, false
+		}
+		gaps++
+		i += size
+	}
+	start := i
+	for i < limit {
+		r, size := firstRune(s[i:])
+		if size == 0 || !dwIsLetter(r) {
+			break
+		}
+		i += size
+	}
+	if start == i {
+		return 0, 0, false
+	}
+	return start, i, true
+}
+
+// dwNextWordValue находит следующее слово значения, разрешая между словами
+// перевод строки. В анкетах значение гражданства часто переносится по строкам:
+// «Республика\nБеларусь» или слово разбито внутри («Арм\nения»). Обычный
+// dwNextWord перевод строки не пропускает, поэтому для значения гражданства
+// нужен отдельный проход.
+func dwNextWordValue(s string, from, limit int) (int, int, bool) {
+	i, gaps := from, 0
+	for i < limit {
+		r, size := firstRune(s[i:])
+		if size == 0 || dwIsLetter(r) {
+			break
+		}
+		if gaps >= 2 || !strings.ContainsRune(dwWordGapRunes, r) && r != '\n' {
 			return 0, 0, false
 		}
 		gaps++

@@ -59,7 +59,7 @@ func newRulesServer(t *testing.T) (http.Handler, string) {
 	t.Cleanup(st.Close)
 
 	reg := pii.NewRegistry()
-	reg.Register(pii.NewNumericDetector(), pii.NewEmailDetector())
+	reg.Register(pii.NewNumericDetector(), pii.NewEmailDetector(), pii.NewFIODetector())
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	eng := engine.New(reg)
@@ -115,7 +115,7 @@ func post(t *testing.T, h http.Handler, remote string, headers map[string]string
 	if err != nil {
 		t.Fatalf("запрос не собрался: %v", err)
 	}
-	r := httptest.NewRequest(http.MethodPost, "/v1/rules", bytes.NewReader(raw))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/rules", bytes.NewReader(raw))
 	r.RemoteAddr = remote
 	for k, v := range headers {
 		r.Header.Set(k, v)
@@ -285,7 +285,7 @@ func TestRulesRejectsBadRequests(t *testing.T) {
 // Молча её проглотить значит применить не то, о чём просили.
 func TestRulesRejectsUnknownFields(t *testing.T) {
 	h, _ := newRulesServer(t)
-	r := httptest.NewRequest(http.MethodPost, "/v1/rules",
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/rules",
 		strings.NewReader(`{"op":"remove_type","naem":"SNILS"}`))
 	r.RemoteAddr = "127.0.0.1:44444"
 	rec := httptest.NewRecorder()
@@ -301,7 +301,7 @@ func TestRulesRejectsUnknownFields(t *testing.T) {
 func TestRulesGetListsRulesWithoutSecrets(t *testing.T) {
 	h, _ := newRulesServer(t)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/rules", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/rules", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("код %d, ожидался 200; тело %s", rec.Code, rec.Body.String())
@@ -342,7 +342,7 @@ func TestRulesGetListsRulesWithoutSecrets(t *testing.T) {
 func TestRulesRejectsOtherMethods(t *testing.T) {
 	h, _ := newRulesServer(t)
 	for _, m := range []string{http.MethodPut, http.MethodDelete, http.MethodPatch} {
-		r := httptest.NewRequest(m, "/v1/rules", nil)
+		r := httptest.NewRequestWithContext(t.Context(), m, "/v1/rules", nil)
 		r.RemoteAddr = "127.0.0.1:44444"
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, r)
@@ -370,7 +370,7 @@ func TestRulesAddThenRemoveRestoresFile(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/rules", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/rules", nil))
 	if !strings.Contains(rec.Body.String(), "BADGE") {
 		t.Errorf("добавленного типа нет в перечне: %s", rec.Body.String())
 	}
@@ -402,7 +402,7 @@ func TestRuleAddedThroughAPIStartsMaskingImmediately(t *testing.T) {
 	mask := func(id string) string {
 		t.Helper()
 		body, _ := json.Marshal(map[string]string{"payload": text, "payload_id": id})
-		r := httptest.NewRequest(http.MethodPost, "/process", bytes.NewReader(body))
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/process", bytes.NewReader(body))
 		r.RemoteAddr = "127.0.0.1:1"
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, r)
@@ -468,7 +468,7 @@ func TestSystemTypesChangeAffectsMasking(t *testing.T) {
 	mask := func(id string) string {
 		t.Helper()
 		body, _ := json.Marshal(map[string]string{"payload": text, "payload_id": id})
-		r := httptest.NewRequest(http.MethodPost, "/process", bytes.NewReader(body))
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/process", bytes.NewReader(body))
 		r.RemoteAddr = "127.0.0.1:1"
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, r)
@@ -502,5 +502,49 @@ func TestSystemTypesChangeAffectsMasking(t *testing.T) {
 	}
 	if strings.Contains(got, "ivan@example.com") {
 		t.Errorf("почта не замаскирована, хотя тип оставлен: %q", got)
+	}
+}
+
+// Добавление имени в список разрешённых через ручку снимает маску в следующем
+// запросе без перезапуска: ровно ради этого список правится через интерфейс.
+func TestAllowPersonsChangeAffectsMasking(t *testing.T) {
+	h, _ := newRulesServer(t)
+	const text = "Клиент Иван Петров, паспорт 4509 123456"
+
+	mask := func(id string) string {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"payload": text, "payload_id": id})
+		r := httptest.NewRequest(http.MethodPost, "/process", bytes.NewReader(body))
+		r.RemoteAddr = "127.0.0.1:1"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("маскирование ответило кодом %d: %s", rec.Code, rec.Body.String())
+		}
+		var out struct {
+			Result string `json:"result"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+			t.Fatalf("ответ не разобран: %v", err)
+		}
+		return out.Result
+	}
+
+	// До правки имя клиента маскируется.
+	if got := mask("before"); strings.Contains(got, "Иван Петров") {
+		t.Fatalf("имя не замаскировано до добавления в список: %q", got)
+	}
+
+	// Добавляем имя в список разрешённых.
+	rec := post(t, h, "127.0.0.1:1", nil, map[string]any{
+		"op": "set_system_allow_persons", "system": "alfasonar", "persons": []string{"Иван Петров"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("список имён не изменён: %s", rec.Body.String())
+	}
+
+	// После правки имя остаётся открытым.
+	if got := mask("after"); strings.Contains(got, "Иван Петров") == false {
+		t.Errorf("имя замаскировано, хотя добавлено в список разрешённых: %q", got)
 	}
 }

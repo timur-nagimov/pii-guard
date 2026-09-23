@@ -272,6 +272,15 @@ func ctxReferenceType(t Type) bool {
 	}
 }
 
+// ctxPIIAnchorsFull — признаки персональных данных целиком: общий перечень
+// ctxPIIAnchors из context_words.go плюс признаки кода подразделения
+// паспорта. Они появились вместе с самим типом и лежат рядом с правилом,
+// которое их читает: без них «к/п 770-053» рядом со служебным словом
+// снимался бы как номер заказа.
+var ctxPIIAnchorsFull = append([]string{
+	anchorWordDept, "код подр", "код п/п",
+}, ctxPIIAnchors...)
+
 // leftAnchorWins сообщает, что ближайший слева признак говорит о служебном
 // номере, а не о персональных данных.
 func (s *ctxScan) leftAnchorWins(i, window int, markers []string) bool {
@@ -283,7 +292,7 @@ func (s *ctxScan) leftAnchorWins(i, window int, markers []string) bool {
 	}
 	left := s.low[lo:sp.Start]
 	own := ctxLastMarker(left, markers)
-	return own >= 0 && own > ctxLastMarker(left, ctxPIIAnchors)
+	return own >= 0 && own > ctxLastMarker(left, ctxPIIAnchorsFull)
 }
 
 // ctxSkipPartialWord сдвигает начало окна за обрезанное слово. Без сдвига
@@ -380,18 +389,44 @@ func (s *ctxScan) isStreetName(i int) bool {
 	return ctxHasMarker(s.low[lo:sp.Start], ctxStreetMarkers)
 }
 
+// ctxRoleMarkersFull — ролевые признаки целиком: занятия и звания из
+// ctxRoleMarkers (context_words.go) плюс должности. По должности
+// упоминание современника опознаётся как публичное лицо, а не как
+// клиент.
+var ctxRoleMarkersFull = append([]string{
+	"губернатор", "мэр", "глава", "председател", "депутат",
+	"предпринимател", "основател", "блогер", "телеведущ", "миллиардер",
+	"политик", "бизнесмен",
+}, ctxRoleMarkers...)
+
+// ctxQuestionMarkers — вопросительные формы к модели. В отличие от должностей,
+// они сами по себе имя не снимают: вопрос сотрудника про неизвестного человека
+// может касаться клиента, поэтому имя обязано остаться замаскированным. Снятие
+// происходит только вместе со сверкой со словарём известных людей.
+var ctxQuestionMarkers = []string{
+	"кто такой", "кто такая", "расскажи о", "расскажи про", "биография",
+	"чем известен", "что сделал", "что думал",
+}
+
 // isPublicFigure решает, снимать ли имя как упоминание известного человека.
 //
 // Условий три: (а) имя есть в словаре, (б) рядом есть ролевой признак,
 // (в) в абзаце нет банковского контекста. Нужны два условия, причём (в) само
 // по себе не срабатывает: без него имя вообще не снимается, иначе тёзка
 // клиента перестанет маскироваться.
+//
+// Должность снимает имя сама по себе: «губернатор Собянин» — это публичное
+// лицо, а не клиент. Вопросительная форма к модели снимает имя только вместе
+// со словарём: «Кто такой Иван Петров?» может быть вопросом сотрудника про
+// клиента, поэтому имя остаётся замаскированным.
 func (s *ctxScan) isPublicFigure(i int) bool {
 	if !s.cleanParagraph(i) {
 		return false
 	}
-	role := s.hasRole(i)
-	return role || s.f.knownFigure(s.spanText(i), role)
+	if s.hasRole(i) {
+		return true
+	}
+	return s.f.knownFigure(s.spanText(i), s.hasQuestion(i))
 }
 
 // hasRole ищет ролевой признак или годы жизни в скобках рядом с именем.
@@ -399,7 +434,15 @@ func (s *ctxScan) hasRole(i int) bool {
 	sp := s.spans[i]
 	lo, hi := s.d.WindowRunes(sp.Start, sp.End, ctxFigureWindow, ctxFigureWindow)
 	window := s.low[lo:hi]
-	return ctxHasMarker(window, ctxRoleMarkers) || ctxHasLifeYears(window)
+	return ctxHasMarker(window, ctxRoleMarkersFull) || ctxHasLifeYears(window)
+}
+
+// hasQuestion ищет вопросительную форму к модели рядом с именем.
+func (s *ctxScan) hasQuestion(i int) bool {
+	sp := s.spans[i]
+	lo, hi := s.d.WindowRunes(sp.Start, sp.End, ctxFigureWindow, ctxFigureWindow)
+	window := s.low[lo:hi]
+	return ctxHasMarker(window, ctxQuestionMarkers)
 }
 
 // cleanParagraph сообщает, что в абзаце нет банковского контекста: ни якорей,
@@ -433,9 +476,11 @@ func ctxBankingType(t Type) bool {
 }
 
 // knownFigure ищет имя в словаре известных людей. Полное совпадение фамилии и
-// имени принимается всегда, совпадение по одной фамилии — только вместе с
-// ролевым признаком: одна фамилия слишком часто встречается у обычных людей.
-func (f *ContextFilter) knownFigure(value string, role bool) bool {
+// имени принимается всегда. Совпадение по одной фамилии принимается только
+// вместе с вопросительной формой и только для редкой фамилии: «Петров» и
+// «Кузнецова» частые, и вопрос про них может касаться клиента, а «Достоевский»
+// в общем словаре фамилий отсутствует.
+func (f *ContextFilter) knownFigure(value string, question bool) bool {
 	words := ctxWords(ctxNormalizeValue(value))
 	stems := make([]string, 0, len(words))
 	for _, w := range words {
@@ -448,15 +493,30 @@ func (f *ContextFilter) knownFigure(value string, role bool) bool {
 			}
 		}
 	}
-	if !role {
+	if !question {
 		return false
 	}
 	for _, st := range stems {
-		if f.figureSurname[st] {
+		if f.figureSurname[st] && ctxRareSurname(st) {
 			return true
 		}
 	}
 	return false
+}
+
+// ctxRareSurname сообщает, что основа не встречается ни в общем словаре
+// фамилий, ни в словаре имён. Частая фамилия в вопросе к модели может
+// принадлежать клиенту, поэтому совпадение по одной фамилии принимается
+// только для редких. Имена отсечены отдельно: в словаре известных людей есть
+// записи вида «Иван Грозный», где первое слово — имя, а не фамилия, и по нему
+// в figureSurname попадает основа «иван». Без этой проверки вопрос «Кто такой
+// Иван Петров?» снимал бы имя клиента по одному слову «Иван». Сами записи не
+// теряются: пара «имя плюс прозвище» сверяется раньше, по figureFull.
+func ctxRareSurname(stem string) bool {
+	if _, ok := dict.LookupName(stem); ok {
+		return false
+	}
+	return !dict.LookupSurname(stem)
 }
 
 // markOrgAddresses снимает адреса организаций. Каждый признак организации
@@ -545,7 +605,7 @@ func (s *ctxScan) sameOrgAddress(i, j int) bool {
 		return false
 	}
 	gap := s.gapText(i, j)
-	return !strings.ContainsAny(gap, "\n0123456789") && ctxLastMarker(gap, ctxPIIAnchors) < 0
+	return !strings.ContainsAny(gap, "\n0123456789") && ctxLastMarker(gap, ctxPIIAnchorsFull) < 0
 }
 
 // ownerAddress выбирает адрес, к которому относится признак организации.

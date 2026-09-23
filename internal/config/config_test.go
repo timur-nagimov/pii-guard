@@ -466,6 +466,30 @@ systems:
 `,
 			wantErr: "64 символа",
 		},
+		{
+			name: "адрес модели со схемой file",
+			yaml: `
+systems:
+  demo:
+    enabled: true
+    auth: none
+    upstream:
+      url: file:///etc/passwd
+`,
+			wantErr: "допускает только http и https",
+		},
+		{
+			name: "адрес модели без хоста",
+			yaml: `
+systems:
+  demo:
+    enabled: true
+    auth: none
+    upstream:
+      url: https:///v1
+`,
+			wantErr: "без хоста",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -526,6 +550,17 @@ systems:
     enabled: false
     auth: none
     preset: звёздочки
+`,
+		},
+		{
+			name: "адрес модели с хостом и схемой",
+			yaml: `
+systems:
+  demo:
+    enabled: true
+    auth: none
+    upstream:
+      url: https://host/v1
 `,
 		},
 	}

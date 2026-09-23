@@ -222,18 +222,24 @@ func (r *RedisStore) put(id string, e *Entry) error {
 // Get читает запись из общего хранилища, а при его недоступности из памяти.
 // Запасной путь проверяется и после промаха: там лежат записи, созданные во
 // время деградации.
-func (r *RedisStore) Get(id string) (*Entry, bool) {
+//
+// Испорченная запись (чужой ключ шифрования или повреждённое значение) не
+// прячется за запасным путём: она возвращается как ErrCorrupted, чтобы
+// обработчик не маскировал повторно текст, который уже был замаскирован.
+func (r *RedisStore) Get(id string) (*Entry, error) {
 	if !r.available() {
 		r.markDegraded("get", nil)
 		return r.fallback.Get(id)
 	}
 	e, ok, err := r.get(id)
 	switch {
+	case errors.Is(err, ErrCorrupted):
+		return nil, ErrCorrupted
 	case err != nil:
 		r.markDegraded("get", err)
 	case ok:
 		r.hits.Add(1)
-		return e, true
+		return e, nil
 	default:
 		r.misses.Add(1)
 	}

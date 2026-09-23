@@ -116,7 +116,7 @@ func main() {
 	acc := newSliceStats()
 	ex := &examplePrinter{limit: *examples, onlyType: *onlyType}
 	for _, s := range samples {
-		scoreSample(sc, &s, *lower, acc, ex)
+		scoreSliceSample(sc, &s, *lower, acc, ex)
 	}
 
 	report("Типы", acc.byType, *onlyType, *split)
@@ -142,10 +142,11 @@ func newSliceStats() *sliceStats {
 	}
 }
 
-// scoreSample сверяет один элемент набора с эталонной разметкой и разносит
-// результат по срезам. Вынесен из main отдельно, чтобы разбор одного элемента
-// читался целиком и не перемешивался с разбором ключей и печатью отчёта.
-func scoreSample(sc *scanner, s *sample, lower bool, acc *sliceStats, ex *examplePrinter) {
+// scoreSliceSample сверяет один элемент набора с эталонной разметкой и
+// разносит результат по срезам. Вынесен из main отдельно, чтобы разбор одного
+// элемента читался целиком и не перемешивался с разбором ключей и печатью
+// отчёта. Имя парно scoreSetSample: там разбор того же элемента по наборам.
+func scoreSliceSample(sc *scanner, s *sample, lower bool, acc *sliceStats, ex *examplePrinter) {
 	// Категория заводится на каждом элементе, даже если размеченных фрагментов
 	// в нём нет: отрицательные категории тем и ценны, что находиться в них
 	// нечему, и в отчёте они обязаны быть видны.
@@ -176,6 +177,27 @@ func scoreSample(sc *scanner, s *sample, lower bool, acc *sliceStats, ex *exampl
 	if extra > 0 && len(s.Spans) == 0 {
 		ex.unexpected(s.Category, p.text, p.masked)
 	}
+}
+
+// scoreSample — плоский вход того же замера: срезы приходят тремя отдельными
+// картами, конвейер — тремя отдельными значениями, а счётчик напечатанных
+// примеров передаётся и возвращается числом. В таком виде замер одного
+// элемента пришёл со второй ветки вместе с её проверками покрытия. Внутри он
+// собирает scanner, sliceStats и examplePrinter и зовёт scoreSliceSample:
+// второй реализации замера нет, и разойтись двум входам не на чем.
+// Возвращает число уже напечатанных примеров. Счётчик shown у этого входа
+// копился между элементами в цикле; сейчас его везде передают нулём, но
+// выбросить параметр значит сломать вход и его проверки покрытия, поэтому
+// unparam здесь заглушен осознанно.
+//
+//nolint:unparam // shown — часть формы входа со второй ветки, убирать нельзя
+func scoreSample(s sample, eng *engine.Engine, sys config.System, defs config.Defaults,
+	lower bool, examples int, onlyType string, shown int,
+	byType, byCategory, bySource map[string]*stat) int {
+	acc := &sliceStats{byType: byType, byCategory: byCategory, bySource: bySource}
+	ex := &examplePrinter{limit: examples, onlyType: onlyType, shown: shown}
+	scoreSliceSample(&scanner{eng: eng, sys: sys, defs: defs}, &s, lower, acc, ex)
+	return ex.shown
 }
 
 // runDatasets прогоняет замер по нескольким наборам и печатает общую таблицу
@@ -235,6 +257,15 @@ func scoreSetSample(sc *scanner, s *sample, lower bool, acc *setStats, setName s
 		set.extra += extra
 		set.outside += outside
 	}
+}
+
+// scoreDatasetSample — плоский вход замера по наборам: карты тип×набор и по
+// набору приходят отдельно, конвейер — тремя значениями. Пара к scoreSample,
+// пришёл оттуда же и так же зовёт scoreSetSample.
+func scoreDatasetSample(s sample, eng *engine.Engine, sys config.System, defs config.Defaults,
+	lower bool, setName string, byType map[string]map[string]*stat, bySet map[string]*stat) {
+	acc := &setStats{byType: byType, bySet: bySet}
+	scoreSetSample(&scanner{eng: eng, sys: sys, defs: defs}, &s, lower, acc, setName)
 }
 
 // printTypeSets печатает таблицу тип×набор: по каждому типу видно, на каком
@@ -335,8 +366,16 @@ type scanner struct {
 }
 
 // newScanner собирает конвейер с теми же детекторами, что и сервис, и с
-// профилем проверяющей системы.
+// профилем проверяющей системы, и складывает три части в одно значение.
 func newScanner(minConf float64, preset mask.Preset) *scanner {
+	eng, sys, defs := buildEngine(minConf, preset)
+	return &scanner{eng: eng, sys: sys, defs: defs}
+}
+
+// buildEngine собирает конвейер с теми же детекторами, что и сервис, и с
+// профилем проверяющей системы. Держится отдельно от newScanner: три части
+// нужны и порознь — там, где scanner не собирают.
+func buildEngine(minConf float64, preset mask.Preset) (*engine.Engine, config.System, config.Defaults) {
 	reg := pii.NewRegistry()
 	reg.Register(
 		pii.NewNumericDetector(),
@@ -368,7 +407,7 @@ func newScanner(minConf float64, preset mask.Preset) *scanner {
 			OrgAddresses:  true,
 		},
 	}
-	return &scanner{eng: engine.New(reg), sys: sys, defs: defs}
+	return engine.New(reg), sys, defs
 }
 
 // mask отдаёт только замаскированный текст: остальные поля ответа движка при

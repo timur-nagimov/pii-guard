@@ -6,6 +6,7 @@ package mask
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"pii-guard/internal/pii"
 )
@@ -71,6 +72,13 @@ type Options struct {
 type TokenState struct {
 	counters   map[pii.Type]int
 	valueToken map[string]string
+	// synthetic — соответствие «значение → подстановка» для вида synthetic.
+	// Нужно, чтобы одно и то же значение в одном запросе всегда получало одну
+	// и ту же подстановку, а разные значения не сталкивались.
+	synthetic map[string]string
+	// syntheticUsed — уже выданные подстановки, чтобы избежать коллизий в
+	// пределах запроса.
+	syntheticUsed map[string]bool
 }
 
 // PresetFor возвращает пресет для типа с учётом переопределений.
@@ -109,13 +117,19 @@ func Apply(text string, spans []pii.Span, opts Options) Result {
 	res := Result{}
 	counters := make(map[pii.Type]int)
 	valueToken := make(map[string]string)
+	synthetic := make(map[string]string)
+	syntheticUsed := make(map[string]bool)
 	if opts.Shared != nil {
 		if opts.Shared.counters == nil {
 			opts.Shared.counters = make(map[pii.Type]int)
 			opts.Shared.valueToken = make(map[string]string)
+			opts.Shared.synthetic = make(map[string]string)
+			opts.Shared.syntheticUsed = make(map[string]bool)
 		}
 		counters = opts.Shared.counters
 		valueToken = opts.Shared.valueToken
+		synthetic = opts.Shared.synthetic
+		syntheticUsed = opts.Shared.syntheticUsed
 	}
 
 	prev := 0
@@ -134,6 +148,23 @@ func Apply(text string, spans []pii.Span, opts Options) Result {
 				res.Placeholders = append(res.Placeholders, Placeholder{Token: tok, Value: value, Type: s.Type})
 			}
 			b.WriteString(tok)
+		case PresetSynthetic:
+			key := string(s.Type) + "\x00" + value
+			sub, seen := synthetic[key]
+			if !seen {
+				seed := hashValue(value)
+				sub = syntheticValue(value, s.Type, seed)
+				// Разные значения не должны сталкиваться в пределах запроса:
+				// при совпадении подстановка пересчитывается с другим сидом.
+				for syntheticUsed[sub] {
+					seed++
+					sub = syntheticValue(value, s.Type, seed)
+				}
+				synthetic[key] = sub
+				syntheticUsed[sub] = true
+				res.Placeholders = append(res.Placeholders, Placeholder{Token: sub, Value: value, Type: s.Type})
+			}
+			b.WriteString(sub)
 		default:
 			b.WriteString(maskValue(value, preset))
 		}
@@ -169,11 +200,6 @@ func maskValue(value string, preset Preset) string {
 		return maskPartial(value)
 	case PresetInitials:
 		return maskInitials(value)
-	case PresetSynthetic:
-		// Правдоподобная подстановка — отдельный пресет со своим словарём.
-		// Пока он не подключён, значение маскируется полностью: это никогда
-		// не приводит к утечке.
-		return maskRunes(value, false)
 	default:
 		return maskRunes(value, false)
 	}
@@ -260,4 +286,126 @@ func itoa(v int) string {
 		v /= 10
 	}
 	return string(buf[i:])
+}
+
+// maskShareThreshold — доля знаков маски в тексте, начиная с которой текст
+// считается уже замаскированным. Порог выбран так, чтобы явно замаскированный
+// текст (звёздочки, плейсхолдеры, инициалы) проходил, а обычный текст с редкой
+// звёздочкой или одиночным инициалом — нет.
+const maskShareThreshold = 0.5
+
+// LooksMasked сообщает, что текст уже похож на маску данного вида: в нём
+// существенная доля знаков заменена звёздочками, либо текст состоит из
+// плейсхолдеров вида [FIO_1], либо из инициалов. Нужно, чтобы не маскировать
+// повторно текст, который клиент прислал на восстановление после истечения
+// срока хранения: звёздочки стали бы «исходником», и оригинал был бы потерян.
+func LooksMasked(text string, preset Preset) bool {
+	if text == "" {
+		return false
+	}
+	switch preset {
+	case PresetToken:
+		return tokenShare(text) >= maskShareThreshold
+	case PresetInitials:
+		return initialsShare(text) >= maskShareThreshold
+	default:
+		return starShare(text) >= maskShareThreshold
+	}
+}
+
+// starShare считает долю звёздочек среди непустых знаков текста. Пробелы не
+// считаются: они остаются в маске и не говорят о маскировании.
+func starShare(text string) float64 {
+	total := 0
+	stars := 0
+	for _, r := range text {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		total++
+		if r == '*' {
+			stars++
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return float64(stars) / float64(total)
+}
+
+// tokenShare считает долю знаков, занятых плейсхолдерами вида [FIO_1].
+func tokenShare(text string) float64 {
+	total := 0
+	masked := 0
+	for i := 0; i < len(text); {
+		if text[i] == '[' {
+			end := strings.IndexByte(text[i+1:], ']')
+			if end >= 0 {
+				tok := text[i : i+end+2]
+				if isToken(tok) {
+					masked += len(tok)
+					total += len(tok)
+					i += len(tok)
+					continue
+				}
+			}
+		}
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if !unicode.IsSpace(r) {
+			total += size
+		}
+		i += size
+	}
+	if total == 0 {
+		return 0
+	}
+	return float64(masked) / float64(total)
+}
+
+// isToken проверяет, что строка имеет вид [ТИП_номер]: тип из заглавных букв и
+// подчёркиваний, номер из цифр.
+func isToken(s string) bool {
+	if len(s) < 5 || s[0] != '[' || s[len(s)-1] != ']' {
+		return false
+	}
+	inner := s[1 : len(s)-1]
+	idx := strings.LastIndexByte(inner, '_')
+	if idx <= 0 || idx == len(inner)-1 {
+		return false
+	}
+	for _, r := range inner[:idx] {
+		if !unicode.IsUpper(r) && r != '_' {
+			return false
+		}
+	}
+	for _, r := range inner[idx+1:] {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// initialsShare считает долю знаков, занятых инициалами вида «И.». Инициалом
+// считается буква, за которой сразу идёт точка, и сама эта точка.
+func initialsShare(text string) float64 {
+	total := 0
+	masked := 0
+	runes := []rune(text)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if unicode.IsSpace(r) {
+			continue
+		}
+		total++
+		if unicode.IsLetter(r) && i+1 < len(runes) && runes[i+1] == '.' {
+			masked++
+		} else if r == '.' && i > 0 && unicode.IsLetter(runes[i-1]) {
+			masked++
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return float64(masked) / float64(total)
 }

@@ -183,7 +183,7 @@ func TestInspectValidation(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/v1/inspect", strings.NewReader(c.body))
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/inspect", strings.NewReader(c.body))
 			req.Header.Set("Content-Type", "application/json")
 			h.ServeHTTP(rec, req)
 			if rec.Code != c.code {
@@ -197,7 +197,7 @@ func TestInspectValidation(t *testing.T) {
 func TestInspectMethodNotAllowed(t *testing.T) {
 	h := newInspectServer(t)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/inspect", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/inspect", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("ожидался код 405, получен %d", rec.Code)
 	}
@@ -269,7 +269,7 @@ func doInspect(t *testing.T, h http.Handler, body map[string]any) inspectRespons
 		t.Fatalf("не удалось собрать запрос: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/inspect", bytes.NewReader(raw))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/inspect", bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 

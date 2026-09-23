@@ -114,7 +114,7 @@ type Config struct {
 // DefaultConfig возвращает настройки по умолчанию.
 func DefaultConfig() Config {
 	return Config{
-		Level:          "info",
+		Level:          levelInfo,
 		Format:         FormatJSON,
 		Redact:         true,
 		RepeatWindow:   10 * time.Second,
@@ -267,7 +267,7 @@ type Logger struct {
 // остановке сервиса, иначе последние записи аудита могут не дойти до файла.
 func New(cfg Config) (*Logger, error) {
 	if cfg.Level == "" {
-		cfg.Level = "info"
+		cfg.Level = levelInfo
 	}
 	if cfg.Format == "" {
 		cfg.Format = FormatJSON

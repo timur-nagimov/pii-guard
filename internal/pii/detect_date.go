@@ -3,6 +3,7 @@ package pii
 import (
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -46,22 +47,74 @@ const dateSeparators = "./-–—"
 // фрагмента здесь разделяется на два по контексту, поэтому оба типа
 // обслуживает один детектор: он читает окружение даты ровно один раз.
 type dateDetector struct {
+	// mode — режим обработки дат без явного якоря. Значение детектора
+	// неизменяемо и свободно копируется: разбор числовых дат, дат словами и
+	// определение типа по контексту лежат в трёх файлах и работают с копией.
+	// Смена режима на лету публикует новое значение целиком, см.
+	// dateModeSwitch.
 	mode string
+}
+
+// DateDetector — детектор дат, чей режим можно менять на лету. Нужен сервису,
+// чтобы режим по умолчанию следовал за файлом настроек без перезапуска.
+type DateDetector interface {
+	Detector
+	// SetMode меняет режим обработки дат без явного якоря.
+	SetMode(mode string)
+}
+
+// dateModeSwitch — детектор дат с режимом, сменяемым на лету. Режим не
+// правится на месте: новое значение детектора публикуется целиком и читается
+// атомарно. Так применение настроек не ждёт перезапуска и не создаёт гонки с
+// запросами, которые уже разбирают текст со старым режимом.
+type dateModeSwitch struct {
+	det atomic.Pointer[dateDetector]
 }
 
 // NewDateDetector создаёт детектор дат в заданном режиме. Неизвестное
 // значение режима приводится к режиму по умолчанию: ошибка в конфигурации не
 // должна выключать целый тип персональных данных.
-func NewDateDetector(mode string) Detector {
+func NewDateDetector(mode string) DateDetector {
+	s := &dateModeSwitch{}
+	s.SetMode(mode)
+	return s
+}
+
+// SetMode меняет режим обработки дат без явного якоря. Вызывается при
+// применении новых настроек: режим по умолчанию обязан следовать за файлом,
+// иначе ослабление режима не действовало бы до перезапуска.
+func (s *dateModeSwitch) SetMode(mode string) {
+	s.det.Store(&dateDetector{mode: dateKnownMode(mode)})
+}
+
+// dateKnownMode приводит неизвестное значение режима к режиму по умолчанию.
+func dateKnownMode(mode string) string {
 	switch mode {
 	case DateModeAnchorOnly, DateModeAny:
-		return dateDetector{mode: mode}
+		return mode
 	default:
-		return dateDetector{mode: DateModePIIContext}
+		return DateModePIIContext
 	}
 }
 
+// current возвращает действующий снимок детектора. Нулевой указатель здесь
+// невозможен при обычном создании, но режим по умолчанию безопаснее пустого:
+// пустой режим выключил бы разбор дат без якоря целиком.
+func (s *dateModeSwitch) current() dateDetector {
+	if det := s.det.Load(); det != nil {
+		return *det
+	}
+	return dateDetector{mode: DateModePIIContext}
+}
+
 // Types перечисляет типы, которые находит детектор.
+func (s *dateModeSwitch) Types() []Type { return s.current().Types() }
+
+// Detect разбирает документ детектором в действующем режиме.
+func (s *dateModeSwitch) Detect(d *Doc) []Span { return s.current().Detect(d) }
+
+// Types перечисляет типы, которые находит детектор. Список от режима не
+// зависит: режим решает только судьбу даты без якоря.
 func (dateDetector) Types() []Type { return []Type{TypeDOB, TypeIssueDate} }
 
 // Detect ищет даты трёх видов: числовые, записанные словами и одиночный год

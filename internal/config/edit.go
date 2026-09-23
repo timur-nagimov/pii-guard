@@ -119,6 +119,28 @@ func SetSystemEnabled(path, system string, enabled bool) (EditResult, error) {
 	})
 }
 
+// SetSystemAllowPersons задаёт список имён, которые система выводит из-под
+// маскирования. Пустой список означает, что исключений нет.
+func SetSystemAllowPersons(path, system string, persons []string) (EditResult, error) {
+	return editFile(path, func(root *yaml.Node) (string, error) {
+		sys, err := systemNode(root, system)
+		if err != nil {
+			return "", err
+		}
+		excl := findMapValue(sys, "exclusions")
+		if excl == nil {
+			excl = &yaml.Node{Kind: yaml.MappingNode}
+			setMapValue(sys, "exclusions", excl)
+		}
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
+		for _, p := range persons {
+			seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: p})
+		}
+		setMapValue(excl, "allow_persons", seq)
+		return fmt.Sprintf("система %q выводит из-под маскирования имён: %d", system, len(persons)), nil
+	})
+}
+
 // AddCustomType добавляет свой тип персональных данных.
 //
 // Правило проверяется до записи: неверное выражение отвергается здесь, а не
@@ -172,13 +194,14 @@ func customTypeIndex(list *yaml.Node, name string) int {
 	return -1
 }
 
-// customTypeNode собирает узел описания своего типа.
+// customTypeNode собирает узел описания своего типа для файла настроек.
 //
 // Необязательные поля не пишутся вовсе, когда равны нулю: файл настроек
 // читают глазами, и строка вроде «group: 0» в нём выглядит настройкой, хотя
-// означает её отсутствие. Признак require_anchor пишется всегда — от него
-// зависит, ищется тип по всему тексту или только рядом с якорем, и
-// умалчивать о таком нельзя.
+// означает её отсутствие, — правка не должна раздувать файл пустыми
+// записями. Признак require_anchor пишется всегда — от него зависит, ищется
+// тип по всему тексту или только рядом с якорем, и умалчивать о таком
+// нельзя.
 func customTypeNode(ct *CustomType) *yaml.Node {
 	item := &yaml.Node{Kind: yaml.MappingNode}
 	setMapValue(item, "name", &yaml.Node{Kind: yaml.ScalarNode, Value: string(ct.Name)})

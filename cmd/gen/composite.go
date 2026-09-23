@@ -545,3 +545,17 @@ func (g *Generator) phoneIntl() string {
 		return "+7 (" + code + ") " + a + "-" + b + "-" + c
 	}
 }
+
+// genLowercaseFIO порождает имя человека целиком строчными буквами: так пишут
+// в чатах и в свободных заметках. Срез проверяет требование независимости от
+// регистра: детектор обязан находить имя и в тексте, где всё строчными.
+func genLowercaseFIO(g *Generator) []frag {
+	p := g.person()
+	openings := []string{
+		"клиент ", "заявитель ", "обратился ", "перезвонить ",
+		"в анкете указан ", "данные по заявке: ", "оформляем перевод: ",
+		"получатель перевода ", "созаёмщики по договору: ",
+	}
+	value := strings.ToLower(g.fioVariant(p, g.anyCase()))
+	return frags(lit(g.pick(openings)), val(pii.TypeFIO, value))
+}

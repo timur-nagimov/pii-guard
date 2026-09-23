@@ -24,7 +24,7 @@ const cardHolderMaxNameWords = 3
 // основой слова: «держатель», «держателя», «держателем» это одно и то же
 // указание, а хвост слова проверяет cardHolderAnchorEnd.
 var cardHolderAnchors = []string{
-	"держател", "владелец карты", "владельца карты",
+	anchorWordHolder, "владелец карты", "владельца карты",
 	"имя на карте", "на карте указано", "на карте написано",
 	"cardholder", "card holder", "holder name",
 }
@@ -33,9 +33,9 @@ var cardHolderAnchors = []string{
 // латиницей маскируется и без явного якоря держателя: на карточном реквизите
 // подпись держателя не подписывают словом «держатель».
 var cardHolderNearAnchors = []string{
-	"номер карты", "карт", "card", "pan", "visa", "mastercard", "maestro",
+	"номер карты", anchorWordCard, "card", "pan", "visa", "mastercard", "maestro",
 	"valid", "thru", "expires", "срок действия", "действительна до",
-	"действует до", "cvv", "cvc", "код безопасности",
+	"действует до", anchorWordCVV2, anchorWordCVV, "код безопасности",
 }
 
 // cardHolderStopWords — слова, которые не могут быть именем держателя. Список
@@ -49,7 +49,20 @@ var cardHolderStopWords = map[string]bool{
 	"standard": true, "premium": true, "business": true, "credit": true,
 	"debit": true, "bank": true, "alfa": true, "alfabank": true,
 	"sber": true, "tinkoff": true, "valid": true, "thru": true,
-	"expires": true, "secure": true, "cvv": true, "cvc": true, "pan": true,
+	"expires": true, "secure": true, anchorWordCVV2: true, anchorWordCVV: true, "pan": true,
+	// Названия компаний и продуктов латиницей: рядом с картой они похожи на
+	// имя держателя, но персональными данными не являются.
+	"apple": true, "google": true, "pay": true, "chrome": true, "maps": true,
+	"yandex": true, "microsoft": true, "adobe": true, "whatsapp": true,
+	"telegram": true, "instagram": true, "facebook": true, "youtube": true,
+	"netflix": true, "spotify": true, "airbnb": true, "uber": true,
+	"booking": true, "amazon": true, "samsung": true, "xiaomi": true,
+	"huawei": true, "lenovo": true, "dell": true, "hp": true, "intel": true,
+	"amd": true, "nvidia": true, "caterpillar": true, "bosch": true,
+	"siemens": true, "philips": true, "panasonic": true, "online": true,
+	"browser": true, "office": true, "reader": true, "messenger": true,
+	"content": true, "type": true, "user": true, "agent": true, "err": true,
+	"timeout": true, "http": true, "error": true, "json": true, "format": true,
 
 	"мир": true, "виза": true, "альфа": true, "альфабанк": true,
 	"сбер": true, "сбербанк": true, "тинькофф": true, "банк": true,
@@ -67,7 +80,7 @@ var cardHolderServiceWords = map[string]bool{
 	"карты": true, "карта": true, "карте": true, "картой": true,
 	"указано": true, "указан": true, "указана": true, "имя": true,
 	"фио": true, "держатель": true, "держателя": true, "владелец": true,
-	"владельца": true, "номер": true, "на": true, "по": true, "для": true,
+	"владельца": true, anchorWordNumber: true, "на": true, "по": true, "для": true,
 	"card": true, "cardholder": true, "holder": true, "name": true,
 	"number": true, "the": true, "and": true, "for": true, "your": true,
 	"our": true, "this": true, "that": true, "with": true, "from": true,
@@ -466,7 +479,7 @@ func cardHolderOverlaps(spans []Span, s Span) bool {
 // extraDocAnchorsSNILS — якоря страхового номера. Числовой детектор уже разбирает
 // привычные формы, здесь добираются остальные.
 var extraDocAnchorsSNILS = []string{
-	"снилс", "страховой номер", "страховое свидетельство", "пенсионное страхование",
+	anchorWordSNILS, "страховой номер", "страховое свидетельство", "пенсионное страхование",
 }
 
 // extraDocAnchorsForeign — якоря заграничного паспорта. Основа «заграничн»
@@ -524,8 +537,8 @@ var extraDocAnchorsTicket = []string{
 // extraDocSeriesWords — слова, которые стоят между якорем, серией и номером и
 // не разрывают их связь: «военный билет серии АС номер 7812345».
 var extraDocSeriesWords = map[string]bool{
-	"серия": true, "серии": true, "серию": true, "сер": true,
-	"номер": true, "номера": true, "номером": true, "бланк": true,
+	anchorWordSeriesFull: true, "серии": true, "серию": true, "сер": true,
+	anchorWordNumber: true, "номера": true, "номером": true, "бланк": true,
 	"бланка": true, "no": true, "nr": true, "series": true, "number": true,
 }
 
@@ -663,8 +676,8 @@ func extraDocLowerSlice(d *Doc, lo, hi int) string {
 // Окна задаются в рунах, поэтому кириллический якорь достаёт до значения.
 // Окно сворачивается по омоглифам: «Cтрaxoвoй» с латинскими буквами совпадает
 // с якорем «страховой».
-func extraDocAnchorNear(d *Doc, start, end int, anchors []string, before, after int) bool {
-	lo, hi := d.WindowRunes(start, end, before, after)
+func extraDocAnchorNear(d *Doc, start, end int, anchors []string) bool {
+	lo, hi := d.WindowRunes(start, end, anchorWindow, nearAnchorWindow)
 	window := FoldHomoglyphs(extraDocLowerSlice(d, lo, hi))
 	for _, a := range anchors {
 		if extraDocAnchorEnd(window, FoldHomoglyphs(a)) >= 0 {
@@ -701,7 +714,7 @@ func extraDocSNILS(d *Doc, run *NumRun) (Span, bool) {
 	if len(run.Digits) != 11 {
 		return Span{}, false
 	}
-	if !extraDocAnchorNear(d, run.Start, run.End, extraDocAnchorsSNILS, anchorWindow, nearAnchorWindow) {
+	if !extraDocAnchorNear(d, run.Start, run.End, extraDocAnchorsSNILS) {
 		return Span{}, false
 	}
 	if extraDocSNILSByNumeric(d, run) {
@@ -777,7 +790,7 @@ func extraDocBirthCert(d *Doc, run *NumRun) (Span, bool) {
 		return Span{}, false
 	}
 	if start, ok := extraDocCertSeries(d, run.Start); ok {
-		if extraDocAnchorNear(d, start, run.End, extraDocAnchorsBirthCertNear, anchorWindow, nearAnchorWindow) {
+		if extraDocAnchorNear(d, start, run.End, extraDocAnchorsBirthCertNear) {
 			return extraDocSpan(d, start, run.End, TypeBirthCert, ConfHigh, "birth_cert:series_number")
 		}
 		return Span{}, false
@@ -821,11 +834,11 @@ func extraDocMilitary(d *Doc, runs []NumRun, i int) (Span, bool) {
 	return extraDocSpan(d, run.Start, firstEnd, TypeMilitaryID, ConfAnchored, "military_id:anchor")
 }
 
-// extraDocMilitarySeries решает по номеру, перед которым уже найдена
-// двухбуквенная серия: с якорем это военный билет наверняка, без якоря
-// годится только эталонная форма номера.
+// extraDocMilitarySeries разбирает военный билет с двухбуквенной серией и
+// номером из шести-восьми цифр: с якорем это военный билет наверняка, без
+// якоря годится только эталонная форма номера.
 func extraDocMilitarySeries(d *Doc, start, firstEnd, n int) (Span, bool) {
-	if extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsMilitary, anchorWindow, nearAnchorWindow) {
+	if extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsMilitary) {
 		return extraDocSpan(d, start, firstEnd, TypeMilitaryID, ConfHigh, "military_id:series_number")
 	}
 	// Без якоря номер берётся только для ровно семи цифр: «АН-2850498» в
@@ -834,16 +847,17 @@ func extraDocMilitarySeries(d *Doc, start, firstEnd, n int) (Span, bool) {
 	// разбитые номера без якоря не отличить от случайных обозначений.
 	// Слово «билет» без военного якоря — это билет на поезд или самолёт,
 	// а не военный билет, поэтому такой номер без якоря не берём.
-	if n == 7 && !extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsTicket, anchorWindow, nearAnchorWindow) {
+	if n == 7 && !extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsTicket) {
 		return extraDocSpan(d, start, firstEnd, TypeMilitaryID, ConfAnchored, "military_id:series_standard")
 	}
 	return Span{}, false
 }
 
-// extraDocMilitarySplit собирает номер, разбитый на две группы — «АС-41 05371».
-// Серию и обе группы берём одним фрагментом, но только если между группами
-// нет ничего, кроме связок в пределах одной строки: иначе это два разных
-// числа, случайно оказавшихся рядом.
+// extraDocMilitarySplit собирает номер, разбитый на две группы — «АС-41 05371»:
+// две цифры и пять цифр. Серия обязательна, иначе «41 05371» без серии не
+// отличить от случайных чисел. Серию и обе группы берём одним фрагментом, но
+// только если между группами нет ничего, кроме связок в пределах одной строки:
+// иначе это два разных числа, случайно оказавшихся рядом.
 func extraDocMilitarySplit(d *Doc, runs []NumRun, i int) (Span, bool) {
 	run, next := &runs[i], &runs[i+1]
 	if len(next.Digits) != 5 {
@@ -857,7 +871,7 @@ func extraDocMilitarySplit(d *Doc, runs []NumRun, i int) (Span, bool) {
 	if strings.ContainsAny(gap, "\n\r") || utf8.RuneCountInString(gap) > 16 || !onlyConnectors(gap) {
 		return Span{}, false
 	}
-	if !extraDocAnchorNear(d, start, next.End, extraDocAnchorsMilitary, anchorWindow, nearAnchorWindow) {
+	if !extraDocAnchorNear(d, start, next.End, extraDocAnchorsMilitary) {
 		return Span{}, false
 	}
 	return extraDocSpan(d, start, next.End, TypeMilitaryID, ConfHigh, "military_id:series_number_split")

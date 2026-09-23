@@ -102,17 +102,7 @@ func run(f flags) error {
 	ctx, cancel := runContext(f.duration)
 	defer cancel()
 
-	var c counters
-	l := &loadRun{
-		client:   newClient(f.workers),
-		target:   target,
-		texts:    texts,
-		interval: sendInterval(f.rps, f.workers),
-		seed:     f.seed,
-		c:        &c,
-	}
-	latencies, elapsed := l.run(ctx, f.workers)
-	printReport(&c, sortedLatencies(latencies), f.rps, elapsed)
+	runLoad(ctx, newClient(f.workers), target, texts, f.rps, f.workers, f.seed)
 	return nil
 }
 
@@ -184,6 +174,22 @@ type loadRun struct {
 	c        *counters
 }
 
+// runLoad гоняет отправителей до конца контекста и печатает итоги. Вынесена из
+// main, чтобы прогон можно было проверить тестом без запуска команды.
+func runLoad(ctx context.Context, client *http.Client, target string, texts []string, rps, workers int, seed uint64) {
+	var c counters
+	l := &loadRun{
+		client:   client,
+		target:   target,
+		texts:    texts,
+		interval: sendInterval(rps, workers),
+		seed:     seed,
+		c:        &c,
+	}
+	latencies, elapsed := l.run(ctx, workers)
+	reportResults(&c, latencies, rps, elapsed)
+}
+
 // run поднимает отправителей и ждёт конца прогона. Задержки собираются в
 // отдельный ряд на отправителя: общий ряд под замком стоил бы дороже самой
 // отправки и занизил бы измеряемый предел.
@@ -202,6 +208,21 @@ func (l *loadRun) run(ctx context.Context, workers int) (perWorker [][]time.Dura
 	return perWorker, time.Since(started)
 }
 
+// runWorker гоняет запросы одного отправителя, пока жив контекст, и собирает
+// задержки успешных ответов. Возвращает список задержек для этого отправителя.
+// Отдельный вход без сборки прогона целиком нужен тесту одного отправителя.
+func runWorker(ctx context.Context, client *http.Client, target string, texts []string, interval time.Duration, seed uint64, id int, c *counters) []time.Duration {
+	l := &loadRun{
+		client:   client,
+		target:   target,
+		texts:    texts,
+		interval: interval,
+		seed:     seed,
+		c:        c,
+	}
+	return l.worker(ctx, id)
+}
+
 // worker шлёт запросы до конца прогона и возвращает задержки удачных ответов.
 func (l *loadRun) worker(ctx context.Context, id int) []time.Duration {
 	// Отправитель выбирает тексты по своему зерну: прогон с тем же ключом
@@ -210,10 +231,7 @@ func (l *loadRun) worker(ctx context.Context, id int) []time.Duration {
 	local := make([]time.Duration, 0, 4096)
 	next := time.Now()
 	for ctx.Err() == nil {
-		if l.interval > 0 {
-			next = next.Add(l.interval)
-			waitTurn(ctx, time.Until(next))
-		}
+		next = waitInterval(ctx, l.interval, next)
 		text := l.texts[rnd.IntN(len(l.texts))]
 		reqID := fmt.Sprintf("load-%d-%d", id, l.c.sent.Add(1))
 		lat, status, sendErr := send(ctx, l.client, l.target, text, reqID)
@@ -238,6 +256,18 @@ func (l *loadRun) worker(ctx context.Context, id int) []time.Duration {
 	return local
 }
 
+// waitInterval выдерживает паузу до следующего запроса отправителя и возвращает
+// время следующего запроса. При нулевом интервале отправители работают без пауз
+// и показывают предел связки.
+func waitInterval(ctx context.Context, interval time.Duration, next time.Time) time.Time {
+	if interval <= 0 {
+		return next
+	}
+	next = next.Add(interval)
+	waitTurn(ctx, time.Until(next))
+	return next
+}
+
 // waitTurn выдерживает паузу до следующего запроса. Конец прогона паузу
 // прерывает, но сам по себе цикл не останавливает: решение о выходе принимает
 // отправитель по итогу очередного запроса.
@@ -260,6 +290,12 @@ func sortedLatencies(perWorker [][]time.Duration) []time.Duration {
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i] < all[j] })
 	return all
+}
+
+// reportResults печатает итоги прогона: частоту, счётчики, причины сбоев и
+// задержки. Задержки приходят по отправителям и сводятся в общий ряд.
+func reportResults(c *counters, latencies [][]time.Duration, rps int, elapsed time.Duration) {
+	printReport(c, sortedLatencies(latencies), rps, elapsed)
 }
 
 // printReport печатает итог прогона. Причины сбоев идут отдельной строкой:

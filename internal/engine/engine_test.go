@@ -561,6 +561,92 @@ func TestChunkPanicHandlerSilentOnHealthyText(t *testing.T) {
 	}
 }
 
+// TestChunkPanicMarksDegraded проверяет, что сбой куска длинного текста
+// помечает результат признаком деградации: ответ обязан нести заголовок
+// деградации, а текст — остаться обработанным остальными кусками.
+func TestChunkPanicMarksDegraded(t *testing.T) {
+	sys, defs := allTypesSystem(t)
+	eng := newTestEngine()
+	eng.chunkHook = func(chunk int) {
+		if chunk == 0 {
+			panic("сбой разбора куска")
+		}
+	}
+
+	text := longChunkedText()
+	res := eng.Mask(text, sys, defs)
+
+	if !res.Degraded {
+		t.Fatal("сбой куска не помечен признаком деградации")
+	}
+	if len([]rune(res.Text)) != len([]rune(text)) {
+		t.Fatalf("длина ответа в рунах %d вместо %d", len([]rune(res.Text)), len([]rune(text)))
+	}
+}
+
+// TestChunkPanicEveryChunkMarksDegraded проверяет крайний случай: падают все
+// куски, текст остаётся без изменений, но признак деградации выставлен.
+func TestChunkPanicEveryChunkMarksDegraded(t *testing.T) {
+	sys, defs := allTypesSystem(t)
+	eng := newTestEngine()
+	eng.chunkHook = func(int) { panic("сбой разбора куска") }
+
+	text := longChunkedText()
+	res := eng.Mask(text, sys, defs)
+
+	if !res.Degraded {
+		t.Fatal("сбой всех кусков не помечен признаком деградации")
+	}
+	if res.Text != text {
+		t.Fatal("текст изменился, хотя все куски пропущены")
+	}
+}
+
+// panicDetector — детектор, который падает при первом же разборе. Нужен, чтобы
+// проверить, что сбой детектора помечает результат деградацией и сообщает имя
+// отказавшего типа.
+type panicDetector struct{}
+
+func (panicDetector) Types() []pii.Type { return []pii.Type{pii.TypePhone} }
+
+func (panicDetector) Detect(*pii.Doc) []pii.Span { panic("сбой детектора") }
+
+// TestDetectorPanicMarksDegraded проверяет, что сбой отдельного детектора
+// помечает результат деградацией и сообщает имя отказавшего типа без значений.
+func TestDetectorPanicMarksDegraded(t *testing.T) {
+	reg := pii.NewRegistry()
+	reg.Register(pii.NewEmailDetector(), panicDetector{})
+	eng := New(reg)
+
+	sys, defs := allTypesSystem(t)
+	res := eng.Mask("Телефон +79161234567, почта ivan@example.com", sys, defs)
+
+	if !res.Degraded {
+		t.Fatal("сбой детектора не помечен признаком деградации")
+	}
+	if len(res.FailedTypes) != 1 || res.FailedTypes[0] != string(pii.TypePhone) {
+		t.Fatalf("отказавшие типы %v, ожидался ровно PHONE", res.FailedTypes)
+	}
+	// Адрес почты обработан исправным детектором и замаскирован.
+	if strings.Contains(res.Text, "ivan@example.com") {
+		t.Fatalf("исправный детектор не отработал: %q", res.Text)
+	}
+}
+
+// TestHealthyTextNotDegraded проверяет, что на исправном тексте признак
+// деградации не выставляется и список отказавших типов пуст.
+func TestHealthyTextNotDegraded(t *testing.T) {
+	sys, defs := allTypesSystem(t)
+	res := newTestEngine().Mask("Телефон +79161234567, почта ivan@example.com", sys, defs)
+
+	if res.Degraded {
+		t.Fatal("исправный текст помечен признаком деградации")
+	}
+	if len(res.FailedTypes) != 0 {
+		t.Fatalf("на исправном тексте отказавшие типы %v", res.FailedTypes)
+	}
+}
+
 // TestSplitBoundsAlignedToRunes закрепляет свойство, нарушение которого нашло
 // ночное ревью кода: обе границы куска обязаны попадать на начало руны.
 //

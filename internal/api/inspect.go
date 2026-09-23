@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"pii-guard/internal/config"
 	"pii-guard/internal/engine"
 	"pii-guard/internal/logging"
 	"pii-guard/internal/mask"
@@ -129,11 +130,11 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	var req inspectRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, cfg.Server.MaxBodyBytes))
 	if err := dec.Decode(&req); err != nil {
-		s.writeValidation(w, r, "json_invalid", []string{"body"}, "не удалось разобрать JSON")
+		s.writeValidation(w, r, "json_invalid", []string{fieldBody}, "не удалось разобрать JSON")
 		return
 	}
 	if req.Text == "" {
-		s.writeValidation(w, r, "missing", []string{"body", "text"}, "поле text обязательно и не может быть пустым")
+		s.writeValidation(w, r, "missing", []string{fieldBody, "text"}, "поле text обязательно и не может быть пустым")
 		return
 	}
 
@@ -154,7 +155,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// одном и том же тексте, не трогая настройки.
 	if p := mask.Preset(req.Preset); req.Preset != "" {
 		if !p.Valid() {
-			s.writeValidation(w, r, "value_error", []string{"body", "preset"}, "неизвестный вид маскирования")
+			s.writeValidation(w, r, "value_error", []string{fieldBody, "preset"}, "неизвестный вид маскирования")
 			return
 		}
 		sys.Preset = p
@@ -165,20 +166,10 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	res := s.engine.Mask(req.Text, sys, cfg.Defaults)
 	took := time.Since(started)
 
-	out := inspectResponse{
-		System:       sys.Name,
-		Preset:       string(sys.MaskOptions(cfg.Defaults).Default),
-		Masked:       res.Text,
-		Counts:       countsToStrings(res),
-		TookMs:       float64(took.Microseconds()) / 1000,
-		TextBytes:    len(req.Text),
-		TextRunes:    len([]rune(req.Text)),
-		Spans:        inspectSpans(req.Text, res.Text, res.Spans),
-		Skipped:      inspectSkippedSpans(req.Text, res.Skipped),
-		Edges:        inspectEdges(res.Edges),
-		Subjects:     inspectSubjects(res.Subjects),
-		Placeholders: inspectPlaceholders(res.Placeholders),
-	}
+	// Сборка ответа вынесена из обработчика отдельной функцией: обработчик
+	// занимается разбором запроса и проверками, а перевод результата движка в
+	// форму ответа живёт рядом с этой формой и проверяется сам по себе.
+	out := buildInspectResponse(req.Text, res, sys, cfg.Defaults, took)
 
 	s.writeJSON(w, http.StatusOK, out)
 	// Идентификатор запроса и имя системы в записи не повторяются: их
@@ -197,6 +188,27 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	s.auditProcess(r, sys, processEvent{
 		dir: "inspect", size: out.TextBytes, counts: out.Counts, took: took,
 	}, "ok")
+}
+
+// buildInspectResponse собирает ответ разбора из результата движка: фрагменты,
+// снятые с маскирования, связи, субъектов и подстановки. Каждая часть переводится
+// своей функцией — так видно, что именно собирается, и каждую можно проверить
+// отдельно.
+func buildInspectResponse(text string, res engine.Result, sys config.System, def config.Defaults, took time.Duration) inspectResponse {
+	return inspectResponse{
+		System:       sys.Name,
+		Preset:       string(sys.MaskOptions(def).Default),
+		Masked:       res.Text,
+		Counts:       countsToStrings(res),
+		TookMs:       float64(took.Microseconds()) / 1000,
+		TextBytes:    len(text),
+		TextRunes:    len([]rune(text)),
+		Spans:        inspectSpans(text, res.Text, res.Spans),
+		Skipped:      inspectSkippedSpans(text, res.Skipped),
+		Edges:        inspectEdges(res.Edges),
+		Subjects:     inspectSubjects(res.Subjects),
+		Placeholders: inspectPlaceholders(res.Placeholders),
+	}
 }
 
 // inspectSubjects переводит субъектов движка в форму ответа разбора.

@@ -4,8 +4,10 @@ package engine
 
 import (
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"pii-guard/internal/config"
@@ -44,6 +46,68 @@ type Result struct {
 	Subjects []Subject
 	// Edges — основания считать пары фрагментов относящимися к одному человеку.
 	Edges []Edge
+	// Degraded — признак того, что часть детекторов или кусков длинного текста
+	// отказала и текст обработан не полностью. Ответ с таким признаком обязан
+	// нести заголовок деградации, а значения отказавших типов в нём могут
+	// остаться незамаскированными.
+	Degraded bool
+	// FailedTypes — имена типов, чьи детекторы отказали. Только имена, без
+	// значений: список безопасно писать в журнал и в показатели.
+	FailedTypes []string
+}
+
+// degradation собирает сведения о сбоях за один запрос. Сборщик живёт только
+// внутри одного вызова Mask: куски длинного текста разбираются параллельными
+// горутинами, поэтому доступ к нему защищён замком.
+type degradation struct {
+	mu       sync.Mutex
+	degraded bool
+	types    map[pii.Type]bool
+}
+
+// newDegradation создаёт пустой сборщик сбоев.
+func newDegradation() *degradation {
+	return &degradation{types: make(map[pii.Type]bool)}
+}
+
+// addTypes отмечает, что отказал детектор перечисленных типов. Сбой детектора
+// это деградация: его тип пропущен, и ответ обязан нести признак деградации.
+func (d *degradation) addTypes(types []pii.Type) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.degraded = true
+	for _, t := range types {
+		d.types[t] = true
+	}
+}
+
+// markDegraded отмечает, что обработка куска завершилась сбоем.
+func (d *degradation) markDegraded() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	d.degraded = true
+	d.mu.Unlock()
+}
+
+// failed возвращает признак деградации и отсортированный список имён
+// отказавших типов.
+func (d *degradation) failed() (bool, []string) {
+	if d == nil {
+		return false, nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]string, 0, len(d.types))
+	for t := range d.types {
+		out = append(out, string(t))
+	}
+	sort.Strings(out)
+	return d.degraded, out
 }
 
 // Meta возвращает метаданные фрагментов без самих значений — их безопасно
@@ -61,8 +125,14 @@ func (r Result) Meta() []store.SpanMeta {
 // и повторять её на каждом запросе незачем.
 type Engine struct {
 	registry *pii.Registry
-	filters  sync.Map
-	onPanic  PanicHandler
+	// filters — готовые контекстные фильтры систем. Хранится указатель на
+	// карту, а не сама карта: сброс при применении новых настроек подменяет
+	// указатель атомарно, и уже идущие запросы дорабатывают прежней картой.
+	// Иначе присваивание sync.Map{} целиком при живых чтениях было бы гонкой
+	// данных, которую детектор гонок не видит без теста на перезагрузку под
+	// нагрузкой.
+	filters atomic.Pointer[sync.Map]
+	onPanic PanicHandler
 
 	// docPool переиспользует разобранные документы между запросами. Разбор
 	// строит копию текста в нижнем регистре, срез токенов и индекс рун, и на
@@ -86,6 +156,7 @@ type PanicHandler func(chunk int, recovered any)
 // New создаёт конвейер поверх набора детекторов.
 func New(reg *pii.Registry) *Engine {
 	e := &Engine{registry: reg}
+	e.filters.Store(&sync.Map{})
 	e.docPool.New = func() any { return &pii.Doc{} }
 	return e
 }
@@ -110,7 +181,8 @@ func (e *Engine) OnPanic(h PanicHandler) { e.onPanic = h }
 // contextFilter возвращает готовый фильтр для системы, собирая его при первом
 // обращении.
 func (e *Engine) contextFilter(sys config.System) *pii.ContextFilter {
-	if v, ok := e.filters.Load(sys.Name); ok {
+	filters := e.filters.Load()
+	if v, ok := filters.Load(sys.Name); ok {
 		if f, valid := v.(*pii.ContextFilter); valid {
 			return f
 		}
@@ -122,13 +194,15 @@ func (e *Engine) contextFilter(sys config.System) *pii.ContextFilter {
 		AllowAddresses: sys.Exclusions.AllowAddresses,
 		AllowValues:    sys.Exclusions.AllowValues,
 	})
-	e.filters.Store(sys.Name, f)
+	filters.Store(sys.Name, f)
 	return f
 }
 
 // ResetFilters сбрасывает собранные фильтры. Вызывается после применения
 // новых настроек, иначе система работала бы по прежним спискам исключений.
-func (e *Engine) ResetFilters() { e.filters = sync.Map{} }
+// Сброс подменяет карту целиком атомарно: уже идущие запросы дорабатывают
+// прежней картой, а новые собирают фильтры заново.
+func (e *Engine) ResetFilters() { e.filters.Store(&sync.Map{}) }
 
 // filterDatesByMode убирает даты, найденные по контексту, если система
 // требует только явный якорь.
@@ -159,7 +233,8 @@ func (e *Engine) Mask(text string, sys config.System, defs config.Defaults) Resu
 	// срезы токенов и индекса рун переживали запрос и не выделялись заново.
 	doc := e.getDoc(text)
 	defer e.putDoc(doc)
-	spans := e.detectDoc(doc)
+	deg := newDegradation()
+	spans := e.detectDoc(doc, deg)
 	spans = filterByTypes(spans, sys)
 	spans = filterDatesByMode(spans, sys.DateMode(defs))
 
@@ -199,6 +274,7 @@ func (e *Engine) Mask(text string, sys config.System, defs config.Defaults) Resu
 	if sys.ContextRulesOn(defs) {
 		keptLinks = linkSubjects(doc, kept)
 	}
+	degraded, failedTypes := deg.failed()
 	return Result{
 		Text:         applied.Text,
 		Spans:        kept,
@@ -207,20 +283,23 @@ func (e *Engine) Mask(text string, sys config.System, defs config.Defaults) Resu
 		Counts:       counts,
 		Subjects:     keptLinks.Subjects,
 		Edges:        keptLinks.Edges,
+		Degraded:     degraded,
+		FailedTypes:  failedTypes,
 	}
 }
 
 // detect прогоняет детекторы по тексту, разбирая его самостоятельно.
 func (e *Engine) detect(text string) []pii.Span {
-	return e.detectDoc(pii.NewDoc(text))
+	return e.detectDoc(pii.NewDoc(text), newDegradation())
 }
 
 // detectDoc прогоняет детекторы по уже разобранному документу, при
-// необходимости кусками параллельно.
-func (e *Engine) detectDoc(doc *pii.Doc) []pii.Span {
+// необходимости кусками параллельно. Сбои детекторов и кусков отмечаются в
+// сборщике деградации.
+func (e *Engine) detectDoc(doc *pii.Doc, deg *degradation) []pii.Span {
 	text := doc.Text
 	if len(text) <= chunkThreshold {
-		return e.registry.Detect(doc)
+		return e.registry.DetectWith(doc, deg.addTypes)
 	}
 
 	bounds := splitBounds(text)
@@ -237,7 +316,7 @@ func (e *Engine) detectDoc(doc *pii.Doc) []pii.Span {
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
-				results[i] = e.detectChunk(text, bounds[i], i)
+				results[i] = e.detectChunk(text, bounds[i], i, deg)
 			}
 		}()
 	}
@@ -263,10 +342,11 @@ func (e *Engine) detectDoc(doc *pii.Doc) []pii.Span {
 // наружу через обработчик. Перехват стоит на одном куске, а не на всей рабочей
 // горутине, намеренно: горутина обязана вернуться к очереди заданий, иначе
 // оставшиеся куски некому забрать и отправитель заданий встанет навсегда.
-func (e *Engine) detectChunk(text string, bound [2]int, chunk int) (found []pii.Span) {
+func (e *Engine) detectChunk(text string, bound [2]int, chunk int, deg *degradation) (found []pii.Span) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			found = nil
+			deg.markDegraded()
 			if e.onPanic != nil {
 				e.onPanic(chunk, rec)
 			}
@@ -276,7 +356,7 @@ func (e *Engine) detectChunk(text string, bound [2]int, chunk int) (found []pii.
 		e.chunkHook(chunk)
 	}
 	lo, hi := bound[0], bound[1]
-	found = e.registry.Detect(pii.NewDoc(text[lo:hi]))
+	found = e.registry.DetectWith(pii.NewDoc(text[lo:hi]), deg.addTypes)
 	for j := range found {
 		found[j].Start += lo
 		found[j].End += lo
@@ -339,7 +419,7 @@ func dedupSpans(parts [][]pii.Span) []pii.Span {
 	var out []pii.Span
 	for _, part := range parts {
 		for _, s := range part {
-			key := [3]int{s.Start, s.End, int(pii.Priority(s.Type))}
+			key := [3]int{s.Start, s.End, pii.Priority(s.Type)}
 			if seen[key] {
 				continue
 			}
