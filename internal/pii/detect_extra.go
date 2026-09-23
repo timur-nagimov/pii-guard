@@ -138,25 +138,32 @@ func (extraDetector) detectAlnum(d *Doc) []Span {
 		// Пробуем собрать госномер: буква, три цифры, две буквы, две или три
 		// цифры, с одиночными пробелами между группами.
 		if start, end, ok := plateSpan(d, toks, i); ok {
-			if extraAnchorNear(d, start, end, anchorsPlate, anchorWindow, nearAnchorWindow) {
-				if s, ok := extraSpan(d, start, end, TypePlate, ConfHigh, "plate:anchor"); ok {
-					out = append(out, s)
-				}
-			}
-			i = tokenIndexAt(d, toks, end)
+			out = appendAnchored(d, out, start, end, anchorsPlate, anchorWindow, TypePlate, "plate:anchor")
+			i = tokenIndexAt(toks, end)
 			continue
 		}
 		// Пробуем собрать VIN: семнадцать знаков латиницы и цифр без пробелов.
 		if start, end, ok := vinSpan(d, toks, i); ok {
-			if extraAnchorNear(d, start, end, anchorsVIN, vinAnchorWindow, nearAnchorWindow) {
-				if s, ok := extraSpan(d, start, end, TypeVIN, ConfHigh, "vin:anchor"); ok {
-					out = append(out, s)
-				}
-			}
-			i = tokenIndexAt(d, toks, end)
+			out = appendAnchored(d, out, start, end, anchorsVIN, vinAnchorWindow, TypeVIN, "vin:anchor")
+			i = tokenIndexAt(toks, end)
 		}
 	}
 	return out
+}
+
+// appendAnchored дописывает фрагмент, если рядом со значением нашёлся якорь.
+// Обе буквенно-цифровые формы без якоря не маскируются: госномер и VIN сами по
+// себе неотличимы от артикула или кода товара, а форма найдена в любом случае —
+// разбор всё равно перескакивает её целиком.
+func appendAnchored(d *Doc, out []Span, start, end int, anchors []string, before int, t Type, reason string) []Span {
+	if !extraAnchorNear(d, start, end, anchors, before, nearAnchorWindow) {
+		return out
+	}
+	s, ok := extraSpan(d, start, end, t, ConfHigh, reason)
+	if !ok {
+		return out
+	}
+	return append(out, s)
 }
 
 // plateLetters — буквы, допустимые в госномере: только те, что имеют латинские
@@ -180,7 +187,7 @@ func plateSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 	}
 	// Три цифры.
 	pos = skipPlateSpace(d, toks, pos)
-	if !isDigitToken(d, toks, pos, 3) {
+	if !isDigitToken(toks, pos, 3) {
 		return 0, 0, false
 	}
 	pos++
@@ -192,7 +199,7 @@ func plateSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 	}
 	// Две или три цифры региона.
 	pos = skipPlateSpace(d, toks, pos)
-	if !isDigitToken(d, toks, pos, 2) && !isDigitToken(d, toks, pos, 3) {
+	if !isDigitToken(toks, pos, 2) && !isDigitToken(toks, pos, 3) {
 		return 0, 0, false
 	}
 	pos++
@@ -211,29 +218,39 @@ func plateSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 func takePlateLetters(d *Doc, toks []Token, pos, n int) (int, bool) {
 	got := 0
 	for pos < len(toks) && got < n {
-		tok := toks[pos]
-		if tok.Kind != KindLat && tok.Kind != KindCyr {
+		cnt, ok := plateLettersInToken(d, toks[pos])
+		if !ok || got+cnt > n {
 			return 0, false
 		}
-		if got > 0 && d.Text[toks[pos-1].End:tok.Start] != "" {
+		// Токены группы обязаны идти вплотную: пробел между буквами означает,
+		// что это уже не одна группа номера, а разные слова.
+		if got > 0 && d.Text[toks[pos-1].End:toks[pos].Start] != "" {
 			return 0, false
 		}
-		runes := []rune(d.Text[tok.Start:tok.End])
-		if got+len(runes) > n {
-			return 0, false
-		}
-		for _, r := range runes {
-			if !plateLetters[unicode.ToLower(r)] {
-				return 0, false
-			}
-		}
-		got += len(runes)
+		got += cnt
 		pos++
 	}
 	if got != n {
 		return 0, false
 	}
 	return pos, true
+}
+
+// plateLettersInToken считает буквы госномера в одном токене. Токен годится
+// только целиком: чужая буква внутри означает, что это обычное слово, а не
+// часть номера.
+func plateLettersInToken(d *Doc, tok Token) (int, bool) {
+	if tok.Kind != KindLat && tok.Kind != KindCyr {
+		return 0, false
+	}
+	got := 0
+	for _, r := range d.Text[tok.Start:tok.End] {
+		if !plateLetters[unicode.ToLower(r)] {
+			return 0, false
+		}
+		got++
+	}
+	return got, true
 }
 
 // skipPlateSpace пропускает один одиночный пробел между группами госномера.
@@ -245,7 +262,7 @@ func skipPlateSpace(d *Doc, toks []Token, pos int) int {
 }
 
 // isDigitToken сообщает, что токен — ровно n цифр.
-func isDigitToken(d *Doc, toks []Token, pos, n int) bool {
+func isDigitToken(toks []Token, pos, n int) bool {
 	if pos >= len(toks) || toks[pos].Kind != KindDigit {
 		return false
 	}
@@ -262,21 +279,29 @@ func vinSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 		return 0, 0, false
 	}
 	start := toks[i].Start
+	end, count := vinRun(d, toks, i)
+	if count != 17 {
+		return 0, 0, false
+	}
+	if !vinCharsOK(d.Text[start:end]) {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+// vinRun тянет последовательность знаков номера вправо от токена i и
+// возвращает её конец и число знаков в ней.
+//
+// Номер переносят и разрывают пробелом: «BFXP336J ZLY4XJ5Z2». Один разрыв
+// допускаем, считая только знаки самого номера; больше одного — это уже
+// перечисление, а не номер.
+func vinRun(d *Doc, toks []Token, i int) (int, int) {
 	end := toks[i].End
-	count := utf8.RuneCountInString(d.Text[start:end])
-	// Номер переносят и разрывают пробелом: «BFXP336J ZLY4XJ5Z2». Один разрыв
-	// допускаем, считая только знаки самого номера; больше одного — это уже
-	// перечисление, а не номер.
+	count := utf8.RuneCountInString(d.Text[toks[i].Start:end])
 	gaps := 0
-	j := i
-	for j+1 < len(toks) {
+	for j := i; j+1 < len(toks); {
 		next := toks[j+1]
-		// Пробел — самостоятельный токен, а не пустота между соседями: номер
-		// «BFXP336J ZLY4XJ5Z2» состоит из двух частей, и разрыв виден только
-		// так. Один разрыв допускаем, больше — это уже перечисление.
-		if next.Kind == KindSpace && d.Text[next.Start:next.End] == " " &&
-			gaps == 0 && count < 17 && j+2 < len(toks) &&
-			(toks[j+2].Kind == KindDigit || toks[j+2].Kind == KindLat) {
+		if vinGapAfter(d, toks, j, gaps, count) {
 			gaps++
 			j++
 			next = toks[j+1]
@@ -288,31 +313,47 @@ func vinSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 		count += utf8.RuneCountInString(d.Text[next.Start:next.End])
 		j++
 	}
-	if count != 17 {
-		return 0, 0, false
+	return end, count
+}
+
+// vinGapAfter сообщает, что за токеном j стоит допустимый разрыв номера.
+//
+// Пробел — самостоятельный токен, а не пустота между соседями: номер
+// «BFXP336J ZLY4XJ5Z2» состоит из двух частей, и разрыв виден только так.
+// Один разрыв допускаем, больше — это уже перечисление.
+func vinGapAfter(d *Doc, toks []Token, j, gaps, count int) bool {
+	if gaps != 0 || count >= 17 || j+2 >= len(toks) {
+		return false
 	}
-	// Буквы I, O и Q из VIN исключены: их убрали, чтобы не путать с единицей
-	// и нулём. Заодно считаем цифры: в настоящем номере они есть всегда, и это
-	// отсекает слова из семнадцати латинских букв.
+	space := toks[j+1]
+	if space.Kind != KindSpace || d.Text[space.Start:space.End] != " " {
+		return false
+	}
+	return toks[j+2].Kind == KindDigit || toks[j+2].Kind == KindLat
+}
+
+// vinCharsOK проверяет знаки собранного номера.
+//
+// Буквы I, O и Q из VIN исключены: их убрали, чтобы не путать с единицей
+// и нулём. Заодно считаем цифры: в настоящем номере они есть всегда, и это
+// отсекает слова из семнадцати латинских букв.
+func vinCharsOK(s string) bool {
 	digits := 0
-	for _, r := range d.Text[start:end] {
+	for _, r := range s {
 		switch {
 		case r >= '0' && r <= '9':
 			digits++
 		case r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z':
 			if vinForbidden[unicode.ToLower(r)] {
-				return 0, 0, false
+				return false
 			}
 		}
 	}
-	if digits == 0 {
-		return 0, 0, false
-	}
-	return start, end, true
+	return digits > 0
 }
 
 // tokenIndexAt возвращает индекс токена, содержащего байтовое смещение.
-func tokenIndexAt(d *Doc, toks []Token, off int) int {
+func tokenIndexAt(toks []Token, off int) int {
 	for k := range toks {
 		if toks[k].End > off {
 			return k
@@ -346,29 +387,35 @@ func (extraDetector) detectIP(d *Doc) []Span {
 		if end < 0 {
 			continue
 		}
-		candidate := text[i:end]
-		if !isIPv4(candidate) {
+		// Форма проверяется до перескока: «1234.5.6.7» адресом не является, но
+		// со второй цифры начинается настоящий адрес «234.5.6.7».
+		if !isIPv4(text[i:end]) {
 			continue
 		}
-		// Сетевой диапазон в записи CIDR (10.0.0.0/8) на человека не указывает.
-		if end < len(text) && text[end] == '/' {
-			i = end - 1
-			continue
-		}
-		if isServiceIPv4(candidate) {
-			i = end - 1
-			continue
-		}
-		if !extraAnchorNear(d, i, end, anchorsIP, anchorWindow, nearAnchorWindow) {
-			i = end - 1
-			continue
-		}
-		if s, ok := extraSpan(d, i, end, TypeIPAddress, ConfHigh, "ip:anchor"); ok {
+		if s, ok := ipSpan(d, i, end); ok {
 			out = append(out, s)
 		}
+		// Кандидат разобран целиком, поэтому разбор продолжается за ним: иначе
+		// тот же адрес собирался бы заново с каждой своей цифры.
 		i = end - 1
 	}
 	return out
+}
+
+// ipSpan решает, маскировать ли разобранный адрес: отсеивает записи, которые на
+// человека не указывают, и требует якорь.
+func ipSpan(d *Doc, start, end int) (Span, bool) {
+	// Сетевой диапазон в записи CIDR (10.0.0.0/8) на человека не указывает.
+	if end < len(d.Text) && d.Text[end] == '/' {
+		return Span{}, false
+	}
+	if isServiceIPv4(d.Text[start:end]) {
+		return Span{}, false
+	}
+	if !extraAnchorNear(d, start, end, anchorsIP, anchorWindow, nearAnchorWindow) {
+		return Span{}, false
+	}
+	return extraSpan(d, start, end, TypeIPAddress, ConfHigh, "ip:anchor")
 }
 
 // ipv4End возвращает конец IPv4-кандидата, начинающегося в позиции i, либо
