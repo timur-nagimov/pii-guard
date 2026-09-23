@@ -265,14 +265,14 @@ func TestTTLDefault(t *testing.T) {
 // TestMaxRecords проверяет предел числа записей. Предел защищает сервис от
 // исчерпания памяти, поэтому важно, что он соблюдается при любом числе записей.
 func TestMaxRecords(t *testing.T) {
-	const max = 10
-	s := newTestStore(t, Config{TTL: time.Hour, MaxRecords: max})
+	const limit = 10
+	s := newTestStore(t, Config{TTL: time.Hour, MaxRecords: limit})
 	for i := 0; i < 200; i++ {
 		if _, err := s.Put(fmt.Sprintf("id-%d", i), "текст", "маска", "sys", nil); err != nil {
 			t.Fatal(err)
 		}
-		if n := s.Len(); n > max {
-			t.Fatalf("после %d записей в хранилище %d записей, предел %d", i+1, n, max)
+		if n := s.Len(); n > limit {
+			t.Fatalf("после %d записей в хранилище %d записей, предел %d", i+1, n, limit)
 		}
 	}
 	// Последняя запись обязана быть доступна: вытесняются самые ранние.

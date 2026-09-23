@@ -62,7 +62,7 @@ type rawFragment struct {
 // LoadDataset читает набор из файла. Поддержаны два написания: массив JSON и
 // построчный JSON, по объекту на строку.
 func LoadDataset(path string) ([]Sample, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // путь к набору задаёт оператор ключом запуска
 	if err != nil {
 		return nil, fmt.Errorf("не удалось прочитать набор %s: %w", path, err)
 	}
@@ -71,8 +71,8 @@ func LoadDataset(path string) ([]Sample, error) {
 		return nil, err
 	}
 	out := make([]Sample, 0, len(items))
-	for i, item := range items {
-		s, err := item.normalize()
+	for i := range items {
+		s, err := items[i].normalize()
 		if err != nil {
 			return nil, fmt.Errorf("элемент %d: %w", i+1, err)
 		}
@@ -119,7 +119,7 @@ func decodeJSONL(raw []byte) ([]rawSample, error) {
 }
 
 // normalize приводит элемент набора к единому виду и проверяет разметку.
-func (r rawSample) normalize() (Sample, error) {
+func (r *rawSample) normalize() (Sample, error) {
 	s := Sample{
 		PayloadID:     firstNonEmpty(r.PayloadID, r.ID),
 		Category:      firstNonEmpty(r.Category, "без категории"),
@@ -143,7 +143,7 @@ func (r rawSample) normalize() (Sample, error) {
 }
 
 // markup выбирает первое непустое поле с разметкой фрагментов.
-func (r rawSample) markup() []rawFragment {
+func (r *rawSample) markup() []rawFragment {
 	switch {
 	case len(r.Spans) > 0:
 		return r.Spans
@@ -155,7 +155,7 @@ func (r rawSample) markup() []rawFragment {
 }
 
 // normalize восстанавливает границы фрагмента и его значение по тексту.
-func (rf rawFragment) normalize(text string) (Fragment, error) {
+func (rf *rawFragment) normalize(text string) (Fragment, error) {
 	f := Fragment{Type: firstNonEmpty(rf.Type, rf.Label, "UNKNOWN")}
 	value := firstNonEmpty(rf.Value, rf.Text)
 	start, end, err := rf.bounds(text, value)
@@ -169,7 +169,7 @@ func (rf rawFragment) normalize(text string) (Fragment, error) {
 
 // bounds считает границы фрагмента: по смещениям, по смещению начала и длине
 // значения либо поиском значения в тексте.
-func (rf rawFragment) bounds(text, value string) (int, int, error) {
+func (rf *rawFragment) bounds(text, value string) (start, end int, err error) {
 	switch {
 	case rf.Start != nil && rf.End != nil:
 		return checkBounds(*rf.Start, *rf.End, len(text))
@@ -188,7 +188,7 @@ func (rf rawFragment) bounds(text, value string) (int, int, error) {
 
 // checkBounds отбрасывает разметку, выходящую за пределы текста: такой
 // фрагмент нельзя оценить, и молча подрезать его опаснее, чем упасть.
-func checkBounds(start, end, size int) (int, int, error) {
+func checkBounds(start, end, size int) (from, to int, err error) {
 	if start < 0 || end > size || end <= start {
 		return 0, 0, fmt.Errorf("границы [%d,%d) не укладываются в текст длиной %d", start, end, size)
 	}

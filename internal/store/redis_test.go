@@ -133,11 +133,11 @@ func (f *fakeRedis) get(args []string) []byte {
 }
 
 // value возвращает сохранённое значение по ключу.
-func (f *fakeRedis) value(key string) ([]byte, int64, bool) {
+func (f *fakeRedis) value(key string) (val []byte, px int64, ok bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	v, ok := f.data[key]
-	return v, f.px[key], ok
+	val, ok = f.data[key]
+	return val, f.px[key], ok
 }
 
 // put кладёт значение мимо сервиса: так готовится испорченная запись.

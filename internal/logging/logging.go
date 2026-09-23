@@ -207,16 +207,26 @@ func envDuration(name string) (time.Duration, bool) {
 	return v, true
 }
 
+// Имена уровней журнала. Разбор имени и обратная печать обязаны знать одно и
+// то же написание: ручка смены уровня на ходу возвращает имя в ответе, и
+// разойдись они — сервис перестал бы понимать то, что сам же отдал.
+const (
+	levelDebug = "debug"
+	levelInfo  = "info"
+	levelWarn  = "warn"
+	levelError = "error"
+)
+
 // ParseLevel переводит имя уровня в значение slog.
 func ParseLevel(s string) (slog.Level, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "debug":
+	case levelDebug:
 		return slog.LevelDebug, nil
-	case "", "info":
+	case "", levelInfo:
 		return slog.LevelInfo, nil
-	case "warn", "warning":
+	case levelWarn, "warning":
 		return slog.LevelWarn, nil
-	case "error":
+	case levelError:
 		return slog.LevelError, nil
 	default:
 		return slog.LevelInfo, fmt.Errorf("неизвестный уровень журнала %q", s)
@@ -227,13 +237,13 @@ func ParseLevel(s string) (slog.Level, error) {
 func LevelName(l slog.Level) string {
 	switch {
 	case l <= slog.LevelDebug:
-		return "debug"
+		return levelDebug
 	case l < slog.LevelWarn:
-		return "info"
+		return levelInfo
 	case l < slog.LevelError:
-		return "warn"
+		return levelWarn
 	default:
-		return "error"
+		return levelError
 	}
 }
 
@@ -286,7 +296,7 @@ func New(cfg Config) (*Logger, error) {
 	h = newGuard(h, cfg.Redact, stats)
 	rep := newRepeatHandler(h, cfg.RepeatWindow, repeatMin, stats)
 
-	base := slog.New(rep).With(commonAttrs(cfg)...)
+	base := slog.New(rep).With(commonAttrs(&cfg)...)
 
 	l := &Logger{
 		log: base, level: lv, stats: stats, repeat: rep,
@@ -306,7 +316,7 @@ func New(cfg Config) (*Logger, error) {
 	return l, nil
 }
 
-func commonAttrs(cfg Config) []any {
+func commonAttrs(cfg *Config) []any {
 	attrs := []any{slog.String(FieldService, cfg.Service)}
 	if cfg.Instance != "" {
 		attrs = append(attrs, slog.String(FieldInstance, cfg.Instance))
