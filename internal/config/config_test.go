@@ -657,3 +657,35 @@ systems:
 		t.Errorf("о выключенной системе не предупредили, предупреждения: %v", cfg.Warnings)
 	}
 }
+
+// TestDuplicateKeyHashRejected закрепляет защиту от случайного поведения.
+// Один хеш ключа у двух систем делает выбор системы зависящим от порядка
+// обхода карты, а он в Go не определён: на одинаковых запросах сервис
+// опознавал бы то одну систему, то другую. Снаружи это выглядит как плавающее
+// поведение без причины.
+func TestDuplicateKeyHashRejected(t *testing.T) {
+	const h = "1111111111111111111111111111111111111111111111111111111111111111"
+	_, err := Parse([]byte(`
+systems:
+  alpha:
+    enabled: true
+    auth:
+      header: X-Key
+      key_sha256: "` + h + `"
+  beta:
+    enabled: true
+    auth:
+      header: X-Key
+      key_sha256: "` + h + `"
+`))
+	if err == nil {
+		t.Fatal("настройки с одинаковым хешем у двух систем приняты")
+	}
+	if !strings.Contains(err.Error(), "делят один хеш") {
+		t.Fatalf("сообщение %q не объясняет причину", err)
+	}
+	// Сообщение должно быть устойчивым: имена перечисляются по порядку.
+	if !strings.Contains(err.Error(), "alpha") || !strings.Contains(err.Error(), "beta") {
+		t.Errorf("в сообщении нет обеих систем: %v", err)
+	}
+}
