@@ -122,6 +122,67 @@ func TestRequiredFieldsStillAdded(t *testing.T) {
 	}
 }
 
+// checkPayloadIDRecord проверяет одну запись против политики. Отпечаток
+// обязателен не сам по себе: по нему записи одного запроса всё ещё сходятся,
+// а исходное значение по нему не восстановить.
+func checkPayloadIDRecord(t *testing.T, i int, rec map[string]any, id string, literal bool) {
+	t.Helper()
+	got, _ := rec[FieldPayloadID].(string)
+	switch {
+	case literal && got != id:
+		t.Errorf("запись %d: годный идентификатор изменён: %q", i, got)
+	case !literal && got == id:
+		t.Errorf("запись %d: идентификатор попал в журнал дословно: %q", i, got)
+	case !literal && !strings.HasPrefix(got, idHashPrefix):
+		t.Errorf("запись %d: идентификатор записан не отпечатком: %q", i, got)
+	}
+}
+
+// checkPayloadIDCounters проверяет счётчики после одного случая. Замена
+// идентификатора считается своим счётчиком: счётчик вычищенных значений
+// означает ошибку в нашем коде, а непригодный идентификатор присылает клиент.
+func checkPayloadIDCounters(t *testing.T, l *Logger, literal bool) {
+	t.Helper()
+	replaced, redactions := l.Stats().IDReplaced.Load(), l.Stats().Redactions.Load()
+	if literal && replaced != 0 {
+		t.Errorf("годный идентификатор посчитан заменённым: %d", replaced)
+	}
+	if !literal && replaced != 2 {
+		t.Errorf("счётчик заменённых идентификаторов равен %d, ожидалось 2", replaced)
+	}
+	if redactions != 0 {
+		t.Errorf("замена идентификатора попала в счётчик вычищенных значений: %d", redactions)
+	}
+}
+
+// runPayloadIDCase проводит один идентификатор обоими путями записи. Пути
+// разные, поэтому и проверяются оба: политику легко починить в одном месте и
+// забыть о втором.
+func runPayloadIDCase(t *testing.T, id string, literal bool) {
+	t.Helper()
+	l, buf := newTestLogger(t, DefaultConfig())
+
+	// Путь первый: журнал аудита, уровень info, поле собирает пакет.
+	l.Audit().Write(context.Background(), AuditEvent{
+		Op: "mask", System: "crm", Result: "ok", PayloadID: id,
+	})
+	// Путь второй: обычная запись, поле собирает место вызова.
+	l.Slog().LogAttrs(context.Background(), slog.LevelInfo, "обработан запрос",
+		Event(EventProcess), slog.String(FieldPayloadID, id), Took(0))
+
+	recs := records(t, buf)
+	if len(recs) != 2 {
+		t.Fatalf("ожидались две записи, получено %d", len(recs))
+	}
+	for i, rec := range recs {
+		checkPayloadIDRecord(t, i, rec, id, literal)
+	}
+	if !literal && strings.Contains(buf.String(), id) {
+		t.Fatalf("значение %q осталось в журнале: %s", id, buf.String())
+	}
+	checkPayloadIDCounters(t, l, literal)
+}
+
 // TestPayloadIDPolicy — дефект второй. Поле payload_id приходит от клиента.
 // Идентификатор, похожий на номер карты, телефон или почту, в журнал
 // дословно не попадает; обычный шестнадцатеричный идентификатор попадает.
@@ -141,47 +202,7 @@ func TestPayloadIDPolicy(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			l, buf := newTestLogger(t, DefaultConfig())
-
-			// Путь первый: журнал аудита, уровень info, поле собирает пакет.
-			l.Audit().Write(context.Background(), AuditEvent{
-				Op: "mask", System: "crm", Result: "ok", PayloadID: c.id,
-			})
-			// Путь второй: обычная запись, поле собирает место вызова.
-			l.Slog().LogAttrs(context.Background(), slog.LevelInfo, "обработан запрос",
-				Event(EventProcess), slog.String(FieldPayloadID, c.id), Took(0))
-
-			recs := records(t, buf)
-			if len(recs) != 2 {
-				t.Fatalf("ожидались две записи, получено %d", len(recs))
-			}
-			for i, rec := range recs {
-				got, _ := rec[FieldPayloadID].(string)
-				switch {
-				case c.literal && got != c.id:
-					t.Errorf("запись %d: годный идентификатор изменён: %q", i, got)
-				case !c.literal && got == c.id:
-					t.Errorf("запись %d: идентификатор попал в журнал дословно: %q", i, got)
-				case !c.literal && !strings.HasPrefix(got, idHashPrefix):
-					t.Errorf("запись %d: идентификатор записан не отпечатком: %q", i, got)
-				}
-			}
-			if !c.literal && strings.Contains(buf.String(), c.id) {
-				t.Fatalf("значение %q осталось в журнале: %s", c.id, buf.String())
-			}
-			// Замена идентификатора считается своим счётчиком: счётчик
-			// вычищенных значений означает ошибку в нашем коде, а
-			// непригодный идентификатор присылает клиент.
-			replaced, redactions := l.Stats().IDReplaced.Load(), l.Stats().Redactions.Load()
-			if c.literal && replaced != 0 {
-				t.Errorf("годный идентификатор посчитан заменённым: %d", replaced)
-			}
-			if !c.literal && replaced != 2 {
-				t.Errorf("счётчик заменённых идентификаторов равен %d, ожидалось 2", replaced)
-			}
-			if redactions != 0 {
-				t.Errorf("замена идентификатора попала в счётчик вычищенных значений: %d", redactions)
-			}
+			runPayloadIDCase(t, c.id, c.literal)
 		})
 	}
 }

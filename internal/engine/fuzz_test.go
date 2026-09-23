@@ -78,19 +78,27 @@ func FuzzSplitBounds(f *testing.F) {
 		}
 		bounds := splitBounds(text)
 		for _, b := range bounds {
-			if b[0] < 0 || b[1] > len(text) || b[0] > b[1] {
-				t.Fatalf("кусок %d:%d вне границ текста длиной %d", b[0], b[1], len(text))
-			}
-			// Граница обязана попадать на начало руны. Нулевая позиция всегда
-			// граница: alignRune не сдвигает её, и она не может быть битой.
-			if b[0] > 0 && b[0] < len(text) && !isRuneStart(text[b[0]]) {
-				t.Fatalf("начало куска %d не на границе руны", b[0])
-			}
-			if b[1] > 0 && b[1] < len(text) && !isRuneStart(text[b[1]]) {
-				t.Fatalf("конец куска %d не на границе руны", b[1])
-			}
+			checkChunkBound(t, text, b)
 		}
 	})
+}
+
+// checkChunkBound проверяет один кусок разбиения: границы обязаны лежать
+// внутри текста и попадать на начало руны. Битая граница режет руну пополам,
+// и срез по такому куску отдаёт мусор вместо текста.
+func checkChunkBound(t *testing.T, text string, b [2]int) {
+	t.Helper()
+	if b[0] < 0 || b[1] > len(text) || b[0] > b[1] {
+		t.Fatalf("кусок %d:%d вне границ текста длиной %d", b[0], b[1], len(text))
+	}
+	// Граница обязана попадать на начало руны. Нулевая позиция всегда
+	// граница: alignRune не сдвигает её, и она не может быть битой.
+	if b[0] > 0 && b[0] < len(text) && !isRuneStart(text[b[0]]) {
+		t.Fatalf("начало куска %d не на границе руны", b[0])
+	}
+	if b[1] > 0 && b[1] < len(text) && !isRuneStart(text[b[1]]) {
+		t.Fatalf("конец куска %d не на границе руны", b[1])
+	}
 }
 
 // isRuneStart сообщает, что байт начинает руну.
