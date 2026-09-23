@@ -59,7 +59,7 @@ func newRulesServer(t *testing.T) (http.Handler, string) {
 	t.Cleanup(st.Close)
 
 	reg := pii.NewRegistry()
-	reg.Register(pii.NewNumericDetector(), pii.NewEmailDetector())
+	reg.Register(pii.NewNumericDetector(), pii.NewEmailDetector(), pii.NewFIODetector())
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	eng := engine.New(reg)
@@ -502,5 +502,49 @@ func TestSystemTypesChangeAffectsMasking(t *testing.T) {
 	}
 	if strings.Contains(got, "ivan@example.com") {
 		t.Errorf("почта не замаскирована, хотя тип оставлен: %q", got)
+	}
+}
+
+// Добавление имени в список разрешённых через ручку снимает маску в следующем
+// запросе без перезапуска: ровно ради этого список правится через интерфейс.
+func TestAllowPersonsChangeAffectsMasking(t *testing.T) {
+	h, _ := newRulesServer(t)
+	const text = "Клиент Иван Петров, паспорт 4509 123456"
+
+	mask := func(id string) string {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"payload": text, "payload_id": id})
+		r := httptest.NewRequest(http.MethodPost, "/process", bytes.NewReader(body))
+		r.RemoteAddr = "127.0.0.1:1"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("маскирование ответило кодом %d: %s", rec.Code, rec.Body.String())
+		}
+		var out struct {
+			Result string `json:"result"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+			t.Fatalf("ответ не разобран: %v", err)
+		}
+		return out.Result
+	}
+
+	// До правки имя клиента маскируется.
+	if got := mask("before"); strings.Contains(got, "Иван Петров") {
+		t.Fatalf("имя не замаскировано до добавления в список: %q", got)
+	}
+
+	// Добавляем имя в список разрешённых.
+	rec := post(t, h, "127.0.0.1:1", nil, map[string]any{
+		"op": "set_system_allow_persons", "system": "alfasonar", "persons": []string{"Иван Петров"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("список имён не изменён: %s", rec.Body.String())
+	}
+
+	// После правки имя остаётся открытым.
+	if got := mask("after"); strings.Contains(got, "Иван Петров") == false {
+		t.Errorf("имя замаскировано, хотя добавлено в список разрешённых: %q", got)
 	}
 }

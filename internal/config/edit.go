@@ -119,6 +119,28 @@ func SetSystemEnabled(path, system string, enabled bool) (EditResult, error) {
 	})
 }
 
+// SetSystemAllowPersons задаёт список имён, которые система выводит из-под
+// маскирования. Пустой список означает, что исключений нет.
+func SetSystemAllowPersons(path, system string, persons []string) (EditResult, error) {
+	return editFile(path, func(root *yaml.Node) (string, error) {
+		sys, err := systemNode(root, system)
+		if err != nil {
+			return "", err
+		}
+		excl := findMapValue(sys, "exclusions")
+		if excl == nil {
+			excl = &yaml.Node{Kind: yaml.MappingNode}
+			setMapValue(sys, "exclusions", excl)
+		}
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
+		for _, p := range persons {
+			seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: p})
+		}
+		setMapValue(excl, "allow_persons", seq)
+		return fmt.Sprintf("система %q выводит из-под маскирования имён: %d", system, len(persons)), nil
+	})
+}
+
 // AddCustomType добавляет свой тип персональных данных.
 //
 // Правило проверяется до записи: неверное выражение отвергается здесь, а не

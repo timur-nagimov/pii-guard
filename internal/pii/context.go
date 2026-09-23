@@ -426,6 +426,20 @@ var ctxRoleMarkers = []string{
 	"чемпион", "лауреат", "классик", "автор", "роман", "стихотворен",
 	"поэм", "симфони", "памятник", "музе", "имени", "в честь",
 	"по мотивам", "драматург", "скульптор", "философ",
+	// Должности: по ним упоминание современника опознаётся как публичное
+	// лицо, а не как клиент.
+	"губернатор", "мэр", "глава", "председател", "депутат",
+	"предпринимател", "основател", "блогер", "телеведущ", "миллиардер",
+	"политик", "бизнесмен",
+}
+
+// ctxQuestionMarkers — вопросительные формы к модели. В отличие от должностей,
+// они сами по себе имя не снимают: вопрос сотрудника про неизвестного человека
+// может касаться клиента, поэтому имя обязано остаться замаскированным. Снятие
+// происходит только вместе со сверкой со словарём известных людей.
+var ctxQuestionMarkers = []string{
+	"кто такой", "кто такая", "расскажи о", "расскажи про", "биография",
+	"чем известен", "что сделал", "что думал",
 }
 
 // ctxBankAnchors — слова банковского контекста. Рядом с ними даже известная
@@ -449,12 +463,19 @@ var ctxStopWords = map[string]bool{
 // (в) в абзаце нет банковского контекста. Нужны два условия, причём (в) само
 // по себе не срабатывает: без него имя вообще не снимается, иначе тёзка
 // клиента перестанет маскироваться.
+//
+// Должность снимает имя сама по себе: «губернатор Собянин» — это публичное
+// лицо, а не клиент. Вопросительная форма к модели снимает имя только вместе
+// со словарём: «Кто такой Иван Петров?» может быть вопросом сотрудника про
+// клиента, поэтому имя остаётся замаскированным.
 func (s *ctxScan) isPublicFigure(i int) bool {
 	if !s.cleanParagraph(i) {
 		return false
 	}
-	role := s.hasRole(i)
-	return role || s.f.knownFigure(s.spanText(i), role)
+	if s.hasRole(i) {
+		return true
+	}
+	return s.f.knownFigure(s.spanText(i), s.hasQuestion(i))
 }
 
 // hasRole ищет ролевой признак или годы жизни в скобках рядом с именем.
@@ -463,6 +484,14 @@ func (s *ctxScan) hasRole(i int) bool {
 	lo, hi := s.d.WindowRunes(sp.Start, sp.End, ctxFigureWindow, ctxFigureWindow)
 	window := s.low[lo:hi]
 	return ctxHasMarker(window, ctxRoleMarkers) || ctxHasLifeYears(window)
+}
+
+// hasQuestion ищет вопросительную форму к модели рядом с именем.
+func (s *ctxScan) hasQuestion(i int) bool {
+	sp := s.spans[i]
+	lo, hi := s.d.WindowRunes(sp.Start, sp.End, ctxFigureWindow, ctxFigureWindow)
+	window := s.low[lo:hi]
+	return ctxHasMarker(window, ctxQuestionMarkers)
 }
 
 // cleanParagraph сообщает, что в абзаце нет банковского контекста: ни якорей,
@@ -496,9 +525,11 @@ func ctxBankingType(t Type) bool {
 }
 
 // knownFigure ищет имя в словаре известных людей. Полное совпадение фамилии и
-// имени принимается всегда, совпадение по одной фамилии — только вместе с
-// ролевым признаком: одна фамилия слишком часто встречается у обычных людей.
-func (f *ContextFilter) knownFigure(value string, role bool) bool {
+// имени принимается всегда. Совпадение по одной фамилии принимается только
+// вместе с вопросительной формой и только для редкой фамилии: «Петров» и
+// «Кузнецова» частые, и вопрос про них может касаться клиента, а «Достоевский»
+// в общем словаре фамилий отсутствует.
+func (f *ContextFilter) knownFigure(value string, question bool) bool {
 	words := ctxWords(ctxNormalizeValue(value))
 	stems := make([]string, 0, len(words))
 	for _, w := range words {
@@ -511,15 +542,22 @@ func (f *ContextFilter) knownFigure(value string, role bool) bool {
 			}
 		}
 	}
-	if !role {
+	if !question {
 		return false
 	}
 	for _, st := range stems {
-		if f.figureSurname[st] {
+		if f.figureSurname[st] && ctxRareSurname(st) {
 			return true
 		}
 	}
 	return false
+}
+
+// ctxRareSurname сообщает, что основа фамилии не встречается в общем словаре
+// фамилий. Частая фамилия в вопросе к модели может принадлежать клиенту,
+// поэтому совпадение по одной фамилии принимается только для редких.
+func ctxRareSurname(stem string) bool {
+	return !dict.LookupSurname(stem)
 }
 
 // ctxOrgMarkers — признаки того, что адрес принадлежит организации, а не
