@@ -94,28 +94,36 @@ func checkRecord(t *testing.T, r Record, types map[string]bool) {
 	}
 	prevEnd := 0
 	for i, s := range r.Spans {
-		switch {
-		case s.Start < 0 || s.End > len(r.Text) || s.Start >= s.End:
-			t.Fatalf("%s: фрагмент %d вне границ текста: %d..%d при длине %d", r.ID, i, s.Start, s.End, len(r.Text))
-		case s.Start < prevEnd:
-			t.Fatalf("%s: фрагмент %d пересекается с предыдущим", r.ID, i)
-		case !types[s.Type]:
-			t.Fatalf("%s: неизвестный тип %q", r.ID, s.Type)
-		}
+		checkRecordSpan(t, r, i, s, prevEnd, types)
 		prevEnd = s.End
-		got := r.Text[s.Start:s.End]
-		if !utf8.ValidString(got) {
-			t.Fatalf("%s: фрагмент %d обрывает букву посреди кодовой последовательности: %q", r.ID, i, got)
-		}
-		if got != r.Values[i] {
-			t.Fatalf("%s: фрагмент %d указывает на %q вместо подставленного %q", r.ID, i, got, r.Values[i])
-		}
-		if strings.ContainsAny(got, "\n\r") {
-			t.Fatalf("%s: фрагмент %d пересекает перевод строки: %q", r.ID, i, got)
-		}
-		if strings.TrimSpace(got) != got {
-			t.Fatalf("%s: фрагмент %d захватил пробелы по краям: %q", r.ID, i, got)
-		}
+	}
+}
+
+// checkRecordSpan проверяет один фрагмент записи. prevEnd — конец предыдущего
+// фрагмента: разметка идёт слева направо и фрагменты не вправе пересекаться,
+// иначе одно значение попало бы сразу в две метки.
+func checkRecordSpan(t *testing.T, r Record, i int, s Span, prevEnd int, types map[string]bool) {
+	t.Helper()
+	switch {
+	case s.Start < 0 || s.End > len(r.Text) || s.Start >= s.End:
+		t.Fatalf("%s: фрагмент %d вне границ текста: %d..%d при длине %d", r.ID, i, s.Start, s.End, len(r.Text))
+	case s.Start < prevEnd:
+		t.Fatalf("%s: фрагмент %d пересекается с предыдущим", r.ID, i)
+	case !types[s.Type]:
+		t.Fatalf("%s: неизвестный тип %q", r.ID, s.Type)
+	}
+	got := r.Text[s.Start:s.End]
+	if !utf8.ValidString(got) {
+		t.Fatalf("%s: фрагмент %d обрывает букву посреди кодовой последовательности: %q", r.ID, i, got)
+	}
+	if got != r.Values[i] {
+		t.Fatalf("%s: фрагмент %d указывает на %q вместо подставленного %q", r.ID, i, got, r.Values[i])
+	}
+	if strings.ContainsAny(got, "\n\r") {
+		t.Fatalf("%s: фрагмент %d пересекает перевод строки: %q", r.ID, i, got)
+	}
+	if strings.TrimSpace(got) != got {
+		t.Fatalf("%s: фрагмент %d захватил пробелы по краям: %q", r.ID, i, got)
 	}
 }
 
@@ -151,30 +159,39 @@ func TestSpansAreByteOffsets(t *testing.T) {
 	checked := 0
 	for _, r := range NewGenerator(21, false).Generate(800) {
 		for i, s := range r.Spans {
-			runesBefore := utf8.RuneCountInString(r.Text[:s.Start])
-			if runesBefore == s.Start {
-				continue // до фрагмента только однобайтовые знаки, проверять нечего
-			}
-			checked++
-			if r.Text[s.Start:s.End] != r.Values[i] {
-				t.Fatalf("%s: байтовый срез не совпал со значением %q", r.ID, r.Values[i])
-			}
-			// Срез по тем же числам, но в рунах, обязан отличаться: это и
-			// означает, что смещения байтовые, а не символьные. Проверка
-			// осмысленна только когда в самом значении есть многобайтовые
-			// знаки: для чисто однобайтового значения байтовый и рунный срезы
-			// совпадают, и отличить их по значению нельзя.
-			if utf8.RuneCountInString(r.Values[i]) != len(r.Values[i]) {
-				runes := []rune(r.Text)
-				if s.End <= len(runes) && string(runes[s.Start:s.End]) == r.Values[i] {
-					t.Fatalf("%s: срез по рунам совпал со значением, смещения похожи на символьные", r.ID)
-				}
+			if checkByteOffsetSpan(t, r, i, s) {
+				checked++
 			}
 		}
 	}
 	if checked < 100 {
 		t.Fatalf("проверено всего %d фрагментов с кириллицей перед ними", checked)
 	}
+}
+
+// checkByteOffsetSpan проверяет один фрагмент на байтовые смещения и сообщает,
+// была ли проверка осмысленной: если до фрагмента только однобайтовые знаки,
+// байтовый и символьный отсчёт совпадают и отличить их нельзя.
+func checkByteOffsetSpan(t *testing.T, r Record, i int, s Span) bool {
+	t.Helper()
+	if utf8.RuneCountInString(r.Text[:s.Start]) == s.Start {
+		return false
+	}
+	if r.Text[s.Start:s.End] != r.Values[i] {
+		t.Fatalf("%s: байтовый срез не совпал со значением %q", r.ID, r.Values[i])
+	}
+	// Срез по тем же числам, но в рунах, обязан отличаться: это и означает,
+	// что смещения байтовые, а не символьные. Проверка осмысленна только
+	// когда в самом значении есть многобайтовые знаки: для чисто
+	// однобайтового значения байтовый и рунный срезы совпадают, и отличить
+	// их по значению нельзя.
+	if utf8.RuneCountInString(r.Values[i]) != len(r.Values[i]) {
+		runes := []rune(r.Text)
+		if s.End <= len(runes) && string(runes[s.Start:s.End]) == r.Values[i] {
+			t.Fatalf("%s: срез по рунам совпал со значением, смещения похожи на символьные", r.ID)
+		}
+	}
+	return true
 }
 
 // TestJSONRoundTripKeepsOffsets проверяет, что после записи в JSON Lines и
@@ -623,36 +640,50 @@ func TestSampleFile(t *testing.T) {
 			t.Fatalf("строка %d не разбирается: %v", lines+1, err)
 		}
 		lines++
-		for i, s := range r.Spans {
-			if s.Start < 0 || s.End > len(r.Text) || s.Start >= s.End {
-				t.Fatalf("%s: фрагмент %d вне границ текста", r.ID, i)
-			}
-			if !types[s.Type] {
-				t.Fatalf("%s: неизвестный тип %q", r.ID, s.Type)
-			}
-			// Инвариант разметки: срез текста по байтовым границам метки обязан
-			// указывать на само значение, а не на соседний текст. Смещения в
-			// наборе байтовые, поэтому проверка идёт байтовым срезом; срез по
-			// рунам на кириллице дал бы смещённый фрагмент и не поймал бы
-			// поломку. Пустой или обрамлённый пробелами срез означает, что
-			// границы метки разъехались с текстом.
-			got := r.Text[s.Start:s.End]
-			if !utf8.ValidString(got) {
-				t.Fatalf("%s: фрагмент %d обрывает букву посреди кодовой последовательности: %q", r.ID, i, got)
-			}
-			if got == "" || strings.TrimSpace(got) != got {
-				t.Fatalf("%s: фрагмент %d указывает на %q вместо значения", r.ID, i, got)
-			}
-		}
-		if isNegativeCategory(r.Category) && len(r.Spans) != 0 {
-			t.Fatalf("%s: отрицательная категория с разметкой", r.ID)
-		}
+		checkSampleRecord(t, r, types)
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatalf("чтение выборки: %v", err)
 	}
 	if lines < 100 {
 		t.Fatalf("в пробной выборке %d строк, ожидалось не меньше ста", lines)
+	}
+}
+
+// checkSampleRecord проверяет одну запись пробной выборки. В отличие от
+// порождённых записей значений под рукой нет — выборка хранит только текст и
+// границы, поэтому проверяется согласованность границ с текстом.
+func checkSampleRecord(t *testing.T, r Record, types map[string]bool) {
+	t.Helper()
+	for i, s := range r.Spans {
+		checkSampleSpan(t, r, i, s, types)
+	}
+	if isNegativeCategory(r.Category) && len(r.Spans) != 0 {
+		t.Fatalf("%s: отрицательная категория с разметкой", r.ID)
+	}
+}
+
+// checkSampleSpan проверяет один фрагмент записи из пробной выборки.
+//
+// Инвариант разметки: срез текста по байтовым границам метки обязан указывать
+// на само значение, а не на соседний текст. Смещения в наборе байтовые,
+// поэтому проверка идёт байтовым срезом; срез по рунам на кириллице дал бы
+// смещённый фрагмент и не поймал бы поломку. Пустой или обрамлённый пробелами
+// срез означает, что границы метки разъехались с текстом.
+func checkSampleSpan(t *testing.T, r Record, i int, s Span, types map[string]bool) {
+	t.Helper()
+	if s.Start < 0 || s.End > len(r.Text) || s.Start >= s.End {
+		t.Fatalf("%s: фрагмент %d вне границ текста", r.ID, i)
+	}
+	if !types[s.Type] {
+		t.Fatalf("%s: неизвестный тип %q", r.ID, s.Type)
+	}
+	got := r.Text[s.Start:s.End]
+	if !utf8.ValidString(got) {
+		t.Fatalf("%s: фрагмент %d обрывает букву посреди кодовой последовательности: %q", r.ID, i, got)
+	}
+	if got == "" || strings.TrimSpace(got) != got {
+		t.Fatalf("%s: фрагмент %d указывает на %q вместо значения", r.ID, i, got)
 	}
 }
 
@@ -749,16 +780,7 @@ func TestNameForms(t *testing.T) {
 // TestTextHelpers — проверка вспомогательных преобразований формы записи.
 func TestTextHelpers(t *testing.T) {
 	t.Run("разрыв значения по пробелу", func(t *testing.T) {
-		in := frags(lit("Паспорт: "), val(pii.TypePassport, "1234 567890"))
-		out := splitLastValue(in)
-		r := buildRecord("split", "test", out)
-		if !strings.Contains(r.Text, "1234\n567890") {
-			t.Fatalf("значение не разорвано переводом строки: %q", r.Text)
-		}
-		if len(r.Spans) != 2 {
-			t.Fatalf("получено %d фрагментов вместо двух", len(r.Spans))
-		}
-		checkRecord(t, r, knownTypes())
+		checkSplitLastValue(t)
 	})
 	t.Run("короткое значение не разрывается", func(t *testing.T) {
 		in := frags(val(pii.TypeCVV, "123"))
@@ -766,51 +788,37 @@ func TestTextHelpers(t *testing.T) {
 			t.Error("значение из трёх знаков разорвано")
 		}
 	})
-	t.Run("неразрывный пробел", func(t *testing.T) {
-		if got := withNBSP("а б"); got != "а"+nbsp+"б" {
-			t.Errorf("получено %q", got)
-		}
-	})
-	t.Run("двойные пробелы", func(t *testing.T) {
-		if got := withDoubleSpaces("а б"); got != "а  б" {
-			t.Errorf("получено %q", got)
-		}
-	})
-	t.Run("длинный дефис", func(t *testing.T) {
-		if got := replaceHyphens("8-916", hyphenLong); got != "8"+hyphenLong+"916" {
-			t.Errorf("получено %q", got)
-		}
-	})
-	t.Run("первая буква в нижний регистр", func(t *testing.T) {
-		if got := lowerFirst("Паспорт выдан"); got != "паспорт выдан" {
-			t.Errorf("получено %q", got)
-		}
-	})
-	t.Run("первая буква в верхний регистр", func(t *testing.T) {
-		if got := upperFirst("прошу закрыть счёт"); got != "Прошу закрыть счёт" {
-			t.Errorf("получено %q", got)
-		}
-	})
+	// Однознаковые преобразования проверяются таблицей: у каждого один вход и
+	// ровно один ожидаемый вид записи, поэтому отдельное тело проверки им не
+	// нужно. Значения считаются заранее: преобразования чистые и от порядка
+	// запуска не зависят.
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"неразрывный пробел", withNBSP("а б"), "а" + nbsp + "б"},
+		{"двойные пробелы", withDoubleSpaces("а б"), "а  б"},
+		{"длинный дефис", replaceHyphens("8-916", hyphenLong), "8" + hyphenLong + "916"},
+		{"первая буква в нижний регистр", lowerFirst("Паспорт выдан"), "паспорт выдан"},
+		{"первая буква в верхний регистр", upperFirst("прошу закрыть счёт"), "Прошу закрыть счёт"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.got != c.want {
+				t.Errorf("получено %q, ожидалось %q", c.got, c.want)
+			}
+		})
+	}
 	t.Run("омоглифы меняют только похожие буквы", func(t *testing.T) {
 		g := NewGenerator(1, false)
 		const src = "абвгдеж"
+		// Замена случайна, поэтому одной попытки мало: серия из пятидесяти
+		// проверяет и то, что замена вообще происходит, и то, что она ни разу
+		// не портит буквы без латинского двойника.
 		replaced := false
 		for i := 0; i < 50; i++ {
-			got := g.replaceHomoglyphs(src)
-			if len([]rune(got)) != len([]rune(src)) {
-				t.Fatalf("число букв изменилось: %q", got)
-			}
-			for k, r := range []rune(got) {
-				orig := []rune(src)[k]
-				if r == orig {
-					continue
-				}
-				lat, ok := homoglyphs[orig]
-				if !ok || r != lat {
-					t.Fatalf("буква %q заменена на %q без латинского двойника", orig, r)
-				}
-				replaced = true
-			}
+			replaced = checkHomoglyphPass(t, src, g.replaceHomoglyphs(src)) || replaced
 		}
 		if !replaced {
 			t.Error("ни одна буква ни разу не заменена")
@@ -818,14 +826,96 @@ func TestTextHelpers(t *testing.T) {
 	})
 }
 
+// checkSplitLastValue проверяет разрыв значения переводом строки: значение,
+// разорванное по пробелу, обязано остаться размеченным двумя фрагментами, а не
+// одним на весь разрыв.
+func checkSplitLastValue(t *testing.T) {
+	t.Helper()
+	in := frags(lit("Паспорт: "), val(pii.TypePassport, "1234 567890"))
+	out := splitLastValue(in)
+	r := buildRecord("split", "test", out)
+	if !strings.Contains(r.Text, "1234\n567890") {
+		t.Fatalf("значение не разорвано переводом строки: %q", r.Text)
+	}
+	if len(r.Spans) != 2 {
+		t.Fatalf("получено %d фрагментов вместо двух", len(r.Spans))
+	}
+	checkRecord(t, r, knownTypes())
+}
+
+// checkHomoglyphPass сверяет одну замену омоглифов и сообщает, заменилась ли
+// хоть одна буква: подменять разрешено только буквы с латинским двойником и
+// только по одной на знак, иначе текст перестанет быть тем же словом.
+func checkHomoglyphPass(t *testing.T, src, got string) bool {
+	t.Helper()
+	if len([]rune(got)) != len([]rune(src)) {
+		t.Fatalf("число букв изменилось: %q", got)
+	}
+	replaced := false
+	for k, r := range []rune(got) {
+		orig := []rune(src)[k]
+		if r == orig {
+			continue
+		}
+		lat, ok := homoglyphs[orig]
+		if !ok || r != lat {
+			t.Fatalf("буква %q заменена на %q без латинского двойника", orig, r)
+		}
+		replaced = true
+	}
+	return replaced
+}
+
+// valueCase — один случай табличной проверки: имя подтеста и тело проверки.
+type valueCase struct {
+	name  string
+	check func(t *testing.T)
+}
+
 // TestValueShapes — табличная проверка порождаемых значений: длины, наличие
-// разделителей, контрольные суммы и верные, и заведомо неверные.
+// разделителей, контрольные суммы и верные, и заведомо неверные. Случаи
+// разложены по группам значений, но генератор у них общий и порядок случаев
+// задаёт последовательность случайных чисел, поэтому группы склеиваются в
+// одном и том же порядке.
 func TestValueShapes(t *testing.T) {
 	g := NewGenerator(99, false)
-	cases := []struct {
-		name  string
-		check func(t *testing.T)
-	}{
+	var cases []valueCase
+	for _, group := range [][]valueCase{
+		innValueCases(g),
+		cardValueCases(g),
+		numericValueCases(g),
+		passportValueCases(g),
+		otherDocValueCases(g),
+		emailValueCases(g),
+		dateValueCases(),
+		translitValueCases(g),
+		personValueCases(g),
+		distortionValueCases(g),
+		addressValueCases(g),
+	} {
+		cases = append(cases, group...)
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) { c.check(t) })
+	}
+}
+
+// emailAppears ищет редкое написание адреса серией попыток: написание
+// выбирается случайно, поэтому по одной попытке нельзя судить, порождается ли
+// оно вообще.
+func emailAppears(g *Generator, p person, match func(string) bool) bool {
+	for i := 0; i < 200; i++ {
+		if match(g.email(p)) {
+			return true
+		}
+	}
+	return false
+}
+
+// innValueCases — случаи ИНН: у него есть контрольная сумма, поэтому
+// проверяются обе стороны — и верное значение, и намеренно испорченное.
+func innValueCases(g *Generator) []valueCase {
+	return []valueCase{
 		{"ИНН из десяти цифр проходит проверку", func(t *testing.T) {
 			v := g.inn(false, true)
 			if len(v) != 10 || !pii.INNValid(v) {
@@ -848,6 +938,13 @@ func TestValueShapes(t *testing.T) {
 				t.Errorf("ИНН %q неожиданно верен", v)
 			}
 		}},
+	}
+}
+
+// cardValueCases — случаи номера карты: он обязан проходить алгоритм Луна,
+// а испорченный — не проходить, иначе набор не проверяет распознавание.
+func cardValueCases(g *Generator) []valueCase {
+	return []valueCase{
 		{"номер карты проходит алгоритм Луна", func(t *testing.T) {
 			number := g.cardNumber(true)
 			if !pii.Luhn(pii.DigitsOnly(number)) {
@@ -866,6 +963,14 @@ func TestValueShapes(t *testing.T) {
 				t.Errorf("в номере %q не шестнадцать цифр", number)
 			}
 		}},
+	}
+}
+
+// numericValueCases — значения из одних цифр: СНИЛС, телефон, почтовый
+// индекс и код подразделения. У них проверяется длина и контрольная сумма
+// там, где она есть.
+func numericValueCases(g *Generator) []valueCase {
+	return []valueCase{
 		{"СНИЛС проходит проверку", func(t *testing.T) {
 			v := g.snils(true)
 			if !pii.SNILSValid(pii.DigitsOnly(v)) {
@@ -893,6 +998,13 @@ func TestValueShapes(t *testing.T) {
 				t.Errorf("код подразделения %q неверной формы", v)
 			}
 		}},
+	}
+}
+
+// passportValueCases — документы, удостоверяющие личность: паспорт,
+// водительское удостоверение и заграничный паспорт.
+func passportValueCases(g *Generator) []valueCase {
+	return []valueCase{
 		{"паспорт содержит десять цифр", func(t *testing.T) {
 			total := 0
 			for _, fr := range g.passportFrags() {
@@ -915,6 +1027,13 @@ func TestValueShapes(t *testing.T) {
 				t.Errorf("загранпаспорт %q неверной формы", v)
 			}
 		}},
+	}
+}
+
+// otherDocValueCases — остальные документы: вид на жительство,
+// свидетельство о рождении и военный билет.
+func otherDocValueCases(g *Generator) []valueCase {
+	return []valueCase{
 		{"вид на жительство из девяти или десяти цифр", func(t *testing.T) {
 			v := g.residencePermit()
 			if n := len(pii.DigitsOnly(v)); n != 9 && n != 10 {
@@ -932,6 +1051,14 @@ func TestValueShapes(t *testing.T) {
 				t.Errorf("военный билет %q неверной формы", v)
 			}
 		}},
+	}
+}
+
+// emailValueCases — случаи почтового адреса. Кроме общей формы проверяется
+// то, что редкие написания вообще порождаются: без них набор не научит
+// узнавать адрес в кириллической зоне и адрес с плюсом.
+func emailValueCases(g *Generator) []valueCase {
+	return []valueCase{
 		{"почта содержит собаку и точку", func(t *testing.T) {
 			v := g.email(g.person())
 			if !strings.Contains(v, "@") || !strings.Contains(v, ".") {
@@ -939,25 +1066,22 @@ func TestValueShapes(t *testing.T) {
 			}
 		}},
 		{"почта в зоне рф встречается", func(t *testing.T) {
-			p := g.person()
-			found := false
-			for i := 0; i < 200 && !found; i++ {
-				found = strings.HasSuffix(g.email(p), ".рф")
-			}
-			if !found {
+			if !emailAppears(g, g.person(), func(v string) bool { return strings.HasSuffix(v, ".рф") }) {
 				t.Error("адрес в кириллической зоне ни разу не встретился")
 			}
 		}},
 		{"почта с плюсом встречается", func(t *testing.T) {
-			p := g.person()
-			found := false
-			for i := 0; i < 200 && !found; i++ {
-				found = strings.Contains(g.email(p), "+")
-			}
-			if !found {
+			if !emailAppears(g, g.person(), func(v string) bool { return strings.Contains(v, "+") }) {
 				t.Error("адрес с плюсом ни разу не встретился")
 			}
 		}},
+	}
+}
+
+// dateValueCases — случаи даты: форматов двенадцать, и они обязаны
+// отличаться друг от друга, иначе набор проверяет один и тот же вид записи.
+func dateValueCases() []valueCase {
+	return []valueCase{
 		{"двенадцать форматов даты различаются", func(t *testing.T) {
 			d := dateVal{day: 5, month: 3, year: 1984}
 			seen := make(map[string]bool)
@@ -980,6 +1104,13 @@ func TestValueShapes(t *testing.T) {
 				t.Errorf("получено %q", got)
 			}
 		}},
+	}
+}
+
+// translitValueCases — перевод имени в латиницу: он участвует и в адресе
+// почты, и в имени держателя карты.
+func translitValueCases(g *Generator) []valueCase {
+	return []valueCase{
 		{"транслитерация фамилии", func(t *testing.T) {
 			if got := translit("Иванов"); got != "ivanov" {
 				t.Errorf("получено %q", got)
@@ -1001,6 +1132,13 @@ func TestValueShapes(t *testing.T) {
 				t.Errorf("имя держателя %q неверной формы", v)
 			}
 		}},
+	}
+}
+
+// personValueCases — сведения о человеке из документов: гражданство, место
+// рождения и орган выдачи.
+func personValueCases(g *Generator) []valueCase {
+	return []valueCase{
 		{"гражданство непустое", func(t *testing.T) {
 			if g.citizenship() == "" {
 				t.Error("гражданство пустое")
@@ -1019,6 +1157,13 @@ func TestValueShapes(t *testing.T) {
 				t.Errorf("орган выдачи %q без географии", v)
 			}
 		}},
+	}
+}
+
+// distortionValueCases — искажения написания: опечатка и смешанный регистр
+// обязаны менять вид записи, но не сами буквы и не строку целиком.
+func distortionValueCases(g *Generator) []valueCase {
+	return []valueCase{
 		{"опечатка не ломает строку", func(t *testing.T) {
 			v := g.typo("Иванов Иван Иванович")
 			if v == "" || strings.ContainsAny(v, "\n\r") {
@@ -1031,6 +1176,12 @@ func TestValueShapes(t *testing.T) {
 				t.Errorf("смешанный регистр дал %q", v)
 			}
 		}},
+	}
+}
+
+// addressValueCases — случаи адреса: и кириллицей, и латиницей.
+func addressValueCases(g *Generator) []valueCase {
+	return []valueCase{
 		{"адрес содержит дом", func(t *testing.T) {
 			if v := g.addressBody(); !strings.Contains(v, "д. ") && !strings.Contains(v, "дом ") {
 				t.Errorf("адрес %q без номера дома", v)
@@ -1041,8 +1192,5 @@ func TestValueShapes(t *testing.T) {
 				t.Errorf("адрес %q неверной формы", v)
 			}
 		}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) { c.check(t) })
 	}
 }

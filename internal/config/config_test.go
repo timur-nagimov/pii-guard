@@ -47,6 +47,26 @@ func TestLoadSampleConfig(t *testing.T) {
 		t.Fatalf("пример настроек не разобрался: %v", err)
 	}
 
+	checkSampleServer(t, cfg)
+	checkSampleStoreAndDefaults(t, cfg)
+
+	if len(cfg.Systems) != 4 {
+		t.Fatalf("систем в примере %d, ожидалось 4", len(cfg.Systems))
+	}
+	checkSampleAnonymousSystem(t, cfg)
+	checkSampleKiloSystem(t, cfg, hashes)
+	checkSampleJurySystems(t, cfg)
+
+	if len(cfg.CustomTypes) != 1 || cfg.CustomTypes[0].Name != pii.TypeSNILS {
+		t.Errorf("добавленные настройкой типы разобраны неверно: %+v", cfg.CustomTypes)
+	}
+}
+
+// checkSampleServer сверяет раздел слушателей: адреса и пределы задаются
+// примером настроек, а не кодом, поэтому опечатка в файле тихо поменяла бы
+// поведение поставки.
+func checkSampleServer(t *testing.T, cfg *Config) {
+	t.Helper()
 	if cfg.Server.HTTP != ":8080" || cfg.Server.HTTPS != ":8443" {
 		t.Errorf("адреса слушателей разобраны неверно: %+v", cfg.Server)
 	}
@@ -56,6 +76,12 @@ func TestLoadSampleConfig(t *testing.T) {
 	if cfg.Server.WriteTimeout != 9*time.Second {
 		t.Errorf("таймаут записи %v, ожидалось 9s", cfg.Server.WriteTimeout)
 	}
+}
+
+// checkSampleStoreAndDefaults сверяет хранилище и значения по умолчанию: на них
+// опирается каждая система, у которой свои настройки не заданы.
+func checkSampleStoreAndDefaults(t *testing.T, cfg *Config) {
+	t.Helper()
 	// Пятнадцать минут, а не час: срок жизни записи согласован с пределом их
 	// числа. Миллион записей при плановой тысяче запросов в секунду
 	// набирается за 16.7 минуты, поэтому час был бы обещанием, которого
@@ -69,11 +95,12 @@ func TestLoadSampleConfig(t *testing.T) {
 	if cfg.Defaults.ContextRulesEnabled {
 		t.Error("контекстные правила в примере должны быть выключены")
 	}
+}
 
-	if len(cfg.Systems) != 4 {
-		t.Fatalf("систем в примере %d, ожидалось 4", len(cfg.Systems))
-	}
-
+// checkSampleAnonymousSystem сверяет систему без ключа: заголовков она не шлёт,
+// поэтому именно её настройки достаются проверяющей стороне.
+func checkSampleAnonymousSystem(t *testing.T, cfg *Config) {
+	t.Helper()
 	anon, ok := cfg.AnonymousSystem()
 	if !ok {
 		t.Fatal("в примере нет системы без ключа, а проверяющая система заголовков не шлёт")
@@ -96,7 +123,12 @@ func TestLoadSampleConfig(t *testing.T) {
 	if got := anon.UnknownIDMode(cfg.Defaults); got != OnUnknownPassthrough {
 		t.Errorf("поведение при неизвестном идентификаторе %q", got)
 	}
+}
 
+// checkSampleKiloSystem сверяет систему с ключом: у неё проверяется вся цепочка
+// от заголовка до подставленного из окружения хеша.
+func checkSampleKiloSystem(t *testing.T, cfg *Config, hashes map[string]string) {
+	t.Helper()
 	kilo, ok := cfg.System("kilo")
 	if !ok {
 		t.Fatal("система kilo не разобралась")
@@ -116,9 +148,13 @@ func TestLoadSampleConfig(t *testing.T) {
 	if kilo.Upstream.Model == "" || kilo.Upstream.Timeout != time.Minute {
 		t.Errorf("настройки языковой модели разобраны неверно: %+v", kilo.Upstream)
 	}
+}
 
-	// Профили жюри маскируют звёздочками все типы без исключений: видимый
-	// кусок паспорта в ответе модуля защиты выглядит как утечка.
+// checkSampleJurySystems сверяет профили жюри: они маскируют звёздочками все
+// типы без исключений, потому что видимый кусок паспорта в ответе модуля
+// защиты выглядит как утечка.
+func checkSampleJurySystems(t *testing.T, cfg *Config) {
+	t.Helper()
 	jury, _ := cfg.System("jury_demo")
 	if jury.Preset != mask.PresetFull {
 		t.Errorf("пресет системы jury_demo %q, ожидался %q", jury.Preset, mask.PresetFull)
@@ -134,10 +170,6 @@ func TestLoadSampleConfig(t *testing.T) {
 	noDemask, _ := cfg.System("jury_nodemask")
 	if noDemask.Demask {
 		t.Error("системе jury_nodemask обратное преобразование запрещено настройками")
-	}
-
-	if len(cfg.CustomTypes) != 1 || cfg.CustomTypes[0].Name != pii.TypeSNILS {
-		t.Errorf("добавленные настройкой типы разобраны неверно: %+v", cfg.CustomTypes)
 	}
 }
 
