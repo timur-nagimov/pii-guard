@@ -29,8 +29,7 @@ type chatRequest struct {
 	// System выбирает профиль системы-потребителя по имени. Поле нужно странице
 	// проверки, которая переключает профили, не зная ключей; модели оно не
 	// передаётся.
-	System string         `json:"system,omitempty"`
-	rest   map[string]any `json:"-"`
+	System string `json:"system,omitempty"`
 }
 
 type chatMessage struct {
@@ -55,24 +54,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	cfg := s.Config()
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, cfg.Server.MaxBodyBytes))
-	if err != nil {
-		s.writeError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "тело запроса превышает допустимый размер")
+	raw, req, bodySize, ok := s.readChatRequest(w, r, cfg)
+	if !ok {
 		return
 	}
-
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		s.writeValidation(w, r, "json_invalid", []string{"body"}, "не удалось разобрать JSON")
-		return
-	}
-	var req chatRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		s.writeValidation(w, r, "json_invalid", []string{"body", "messages"}, "не удалось разобрать список сообщений")
-		return
-	}
-	// Поле system — выбор профиля для страницы проверки, модели оно не нужно.
-	delete(raw, "system")
 
 	// Страница проверки выбирает профиль системы по имени; ключ доступа ей не
 	// нужен. Имя задано — подменяем систему, имени нет — остаёмся на системе,
@@ -88,42 +73,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	s.extendWriteDeadline(w, r, sys)
 
-	// Маскируем текст каждого сообщения и запоминаем подстановки.
-	opts := sys.MaskOptions(cfg.Defaults)
-	if opts.Default != mask.PresetToken {
-		// Для обращения к модели годится только пресет с плейсхолдерами.
-		opts = mask.Options{Default: mask.PresetToken, PerType: nil}
-	}
+	// Карты заводит обработчик, а не само маскирование: они живут дольше его.
+	// Обратное соответствие нужно уже на ответе модели, а число найденных
+	// фрагментов уходит в аудит на каждом исходе, включая тот, где модель не
+	// ответила вовсе.
 	back := make(map[string]string)
 	counts := make(map[string]int)
-	masked := make([]chatMessage, len(req.Messages))
-	// Счётчик плейсхолдеров общий на весь запрос: иначе в каждом сообщении
-	// первый телефон получал бы [PHONE_1], и разные значения столкнулись бы в
-	// одной подстановке, а обратное преобразование подставило бы одно последнее.
-	shared := &mask.TokenState{}
-	for i, msg := range req.Messages {
-		text, isString := decodeContent(msg.Content)
-		if !isString {
-			masked[i] = msg
-			continue
-		}
-		res := s.engine.Mask(text, sys, cfg.Defaults)
-		for t, n := range res.Counts {
-			counts[string(t)] += n
-		}
-		opts.Shared = shared
-		applied := mask.Apply(text, res.Spans, opts)
-		for _, ph := range applied.Placeholders {
-			back[ph.Token] = ph.Value
-		}
-		encoded, err := json.Marshal(applied.Text)
-		if err != nil {
-			s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "не удалось подготовить запрос")
-			return
-		}
-		masked[i] = chatMessage{Role: msg.Role, Content: encoded}
+	messages, err := s.maskChatMessages(req.Messages, sys, cfg, back, counts)
+	if err != nil {
+		s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "не удалось подготовить запрос")
+		return
 	}
-	raw["messages"] = masked
+	raw["messages"] = messages
 	// Потоковый режим у модели не запрашиваем никогда: ответ нужен целиком,
 	// чтобы вернуть в нём исходные значения. Поле задаётся явно и всегда,
 	// потому что платформа отвергает запрос без него четырёхсотым кодом
@@ -148,7 +109,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusBadGateway, "upstream_unavailable", "языковая модель недоступна")
 		// Текст уже ушёл модели, поэтому обращение к персональным данным
 		// состоялось независимо от того, дождались мы ответа или нет.
-		s.auditProcess(r, sys, "", "proxy", len(body), counts, time.Since(begin), "error")
+		s.auditProcess(r, sys, "", "proxy", bodySize, counts, time.Since(begin), "error")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -171,7 +132,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, resp.StatusCode, "upstream_rejected",
 			"языковая модель отказала кодом "+itoa(resp.StatusCode)+" без объяснения; "+
 				"проверьте адрес и ключ доступа в разделе upstream настроек системы")
-		s.auditProcess(r, sys, "", "proxy", len(body), counts, time.Since(begin), "error")
+		s.auditProcess(r, sys, "", "proxy", bodySize, counts, time.Since(begin), "error")
 		return
 	}
 
@@ -184,7 +145,75 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.log.WarnContext(r.Context(), "не удалось записать ответ",
 			logging.Event(logging.EventProxy), logging.Component("proxy"), logging.Err(err))
 	}
-	s.auditProcess(r, sys, "", "proxy", len(body), counts, time.Since(begin), "ok")
+	s.auditProcess(r, sys, "", "proxy", bodySize, counts, time.Since(begin), "ok")
+}
+
+// readChatRequest читает тело запроса и разбирает его дважды: в карту raw —
+// чтобы чужие поля дошли до модели без изменений — и в chatRequest, из
+// которого берутся только нужные нам поля. Ответ об ошибке пишет сама, потому
+// что у каждого разбора свой код и свой список полей. Размер тела возвращается
+// отдельно: он нужен аудиту уже после того, как само тело больше не
+// понадобится.
+func (s *Server) readChatRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config) (raw map[string]any, req chatRequest, bodySize int, ok bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, cfg.Server.MaxBodyBytes))
+	if err != nil {
+		s.writeError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "тело запроса превышает допустимый размер")
+		return nil, chatRequest{}, 0, false
+	}
+
+	if err := json.Unmarshal(body, &raw); err != nil {
+		s.writeValidation(w, r, "json_invalid", []string{"body"}, "не удалось разобрать JSON")
+		return nil, chatRequest{}, 0, false
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.writeValidation(w, r, "json_invalid", []string{"body", "messages"}, "не удалось разобрать список сообщений")
+		return nil, chatRequest{}, 0, false
+	}
+	// Поле system — выбор профиля для страницы проверки, модели оно не нужно.
+	delete(raw, "system")
+	return raw, req, len(body), true
+}
+
+// maskChatMessages маскирует текст каждого сообщения и попутно заполняет две
+// карты вызывающего: back — подстановка плейсхолдер → исходное значение, по
+// ней значения возвращаются в ответ модели, и counts — число найденных
+// фрагментов по типам для аудита.
+//
+// Сообщение, у которого содержимое задано не строкой, уходит модели как есть:
+// разбирать чужую форму содержимого мы не берёмся, а выбросить его нельзя.
+func (s *Server) maskChatMessages(msgs []chatMessage, sys config.System, cfg *config.Config, back map[string]string, counts map[string]int) ([]chatMessage, error) {
+	opts := sys.MaskOptions(cfg.Defaults)
+	if opts.Default != mask.PresetToken {
+		// Для обращения к модели годится только пресет с плейсхолдерами.
+		opts = mask.Options{Default: mask.PresetToken, PerType: nil}
+	}
+	out := make([]chatMessage, len(msgs))
+	// Счётчик плейсхолдеров общий на весь запрос: иначе в каждом сообщении
+	// первый телефон получал бы [PHONE_1], и разные значения столкнулись бы в
+	// одной подстановке, а обратное преобразование подставило бы одно последнее.
+	shared := &mask.TokenState{}
+	for i, msg := range msgs {
+		text, isString := decodeContent(msg.Content)
+		if !isString {
+			out[i] = msg
+			continue
+		}
+		res := s.engine.Mask(text, sys, cfg.Defaults)
+		for t, n := range res.Counts {
+			counts[string(t)] += n
+		}
+		opts.Shared = shared
+		applied := mask.Apply(text, res.Spans, opts)
+		for _, ph := range applied.Placeholders {
+			back[ph.Token] = ph.Value
+		}
+		encoded, err := json.Marshal(applied.Text)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = chatMessage{Role: msg.Role, Content: encoded}
+	}
+	return out, nil
 }
 
 // defaultUpstreamTimeout — срок ожидания ответа модели, когда он не задан
@@ -255,6 +284,15 @@ func (s *Server) callUpstream(r *http.Request, sys config.System, body []byte) (
 		timeout = defaultUpstreamTimeout
 	}
 	url := upstreamChatURL(sys.Upstream.URL)
+	// Схему проверяем отдельно, хотя адрес модели берётся из настроек сервиса,
+	// а не из запроса: подменить его снаружи нельзя, обращения по адресу,
+	// пришедшему от пользователя, здесь не бывает. Проверка закрывает другой
+	// случай — опечатку оператора в настройках: адрес вида file:// или unix://
+	// превратился бы в обращение к локальному ресурсу, а говорить с моделью
+	// можно только по http и https.
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return nil, errors.New("адрес языковой модели должен начинаться с http:// или https://")
+	}
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -268,6 +306,7 @@ func (s *Server) callUpstream(r *http.Request, sys config.System, body []byte) (
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
+	//nolint:gosec // адрес задан настройками сервиса, схема проверена выше
 	return s.upstreamClient(sys, timeout).Do(req)
 }
 
