@@ -33,18 +33,27 @@ func (c *streakCounter) observe(kind outcomeKind) bool {
 	case outcomeOK:
 		c.current = 0
 	case outcomeInvalid:
-		c.current++
-		if c.current > c.longest {
-			c.longest = c.current
-		}
-		if c.current >= c.limit {
-			c.tripped = true
-		}
+		c.noteInvalid()
 	case outcomeThrottled, outcomeAborted:
 		// Перегрузка не портит серию: проверяющая система ждёт и повторяет.
 		// Оборванный концом прогона запрос тем более ни на что не влияет.
+	default:
+		// Исходов всего четыре. Если появится пятый, он не должен молча
+		// сойти за успех и сбросить серию — здесь с ним не делается ничего.
 	}
 	return c.tripped
+}
+
+// noteInvalid продлевает серию невалидных ответов. Вызывается под захваченной
+// блокировкой счётчика.
+func (c *streakCounter) noteInvalid() {
+	c.current++
+	if c.current > c.longest {
+		c.longest = c.current
+	}
+	if c.current >= c.limit {
+		c.tripped = true
+	}
 }
 
 // longestStreak возвращает самую длинную серию невалидных ответов.

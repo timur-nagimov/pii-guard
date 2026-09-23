@@ -100,8 +100,12 @@ func (sc *scanner) feedSep(r rune) string {
 		} else {
 			sc.groupOnlyDots = false
 		}
-	} else if r == '.' && sc.atSeen {
-		sc.dotAfterAt = true
+	} else {
+		// Вне группы цифр вид группы уточнять нечем, и важен только один
+		// знак: точка после собачки отделяет доменную зону адреса почты.
+		if r == '.' && sc.atSeen {
+			sc.dotAfterAt = true
+		}
 	}
 	return sc.endWord(r)
 }
@@ -162,6 +166,9 @@ func (sc *scanner) addLetter(r rune) {
 		if r < 'A' || r > 'Z' {
 			sc.wordKind = wordOther
 		}
+	default:
+		// wordOther уточнять нечем: вид слова понижается только в эту
+		// сторону и обратно уже не поднимается.
 	}
 	sc.wordLen++
 }

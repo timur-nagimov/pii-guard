@@ -220,6 +220,9 @@ func issuerPunctStops(low string, i, lineEnd int) (bool, bool) {
 		return issuerSentenceEnd(low, i), true
 	case '-', '–', '—':
 		return unicode.IsSpace(dwRuneBefore(low, i)), true
+	default:
+		// Прочие знаки название не обрывают: цифры разбираются сразу ниже,
+		// остальное уходит на проверку стоп-слов.
 	}
 	if r >= '0' && r <= '9' {
 		return issuerDigitStops(low, i, lineEnd), true

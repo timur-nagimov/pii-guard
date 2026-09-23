@@ -110,6 +110,9 @@ func (m *maker) email() string {
 		login += m.num(2)
 	case 2:
 		login = strings.ToLower(m.pick(latinNames)) + "_" + login
+	default:
+		// Четвёртый бросок оставляет логин голой фамилией: такие адреса
+		// встречаются не реже составных, добавлять к ним нечего.
 	}
 	return login + "@" + m.pick(mailHosts)
 }

@@ -507,6 +507,9 @@ func isTollFree(digits string) bool {
 	switch digits[1:4] {
 	case "800", "803", "804":
 		return true
+	default:
+		// Остальные коды принадлежат операторам и регионам: такой номер
+		// вполне может быть личным, бесплатным его считать нельзя.
 	}
 	return false
 }

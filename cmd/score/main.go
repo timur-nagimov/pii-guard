@@ -510,13 +510,14 @@ func runeIndex(text string) []int {
 	}
 	// Заполняем продолжения многобайтовых рун номером их начала.
 	cur := 0
-	for i := 0; i <= len(text); i++ {
-		if i < len(text) && isRuneStart(text[i]) {
+	for i := 0; i < len(text); i++ {
+		if isRuneStart(text[i]) {
 			cur = idx[i]
-		} else if i < len(text) {
+		} else {
 			idx[i] = cur
 		}
 	}
+	// Позиция за последним байтом руны не имеет, её номер ставится отдельно.
 	idx[len(text)] = n
 	return idx
 }

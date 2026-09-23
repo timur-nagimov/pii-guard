@@ -172,16 +172,23 @@ func femaleNounForm(w string, c gcase) string {
 		}
 		return stem + "е"
 	case strings.HasSuffix(w, "а"):
-		if c == caseGen {
-			if hissing(stem) {
-				return stem + "и"
-			}
-			return stem + "ы"
-		}
-		return stem + "е"
+		return hardEnding(stem, c)
 	default:
 		return w
 	}
+}
+
+// hardEnding возвращает окончание твёрдого склонения для основы имени на «а».
+// В родительном падеже после шипящей пишется «и», а не «ы»: это правило
+// написания, а не склонения, поэтому основа проверяется отдельно.
+func hardEnding(stem string, c gcase) string {
+	if c != caseGen {
+		return stem + "е"
+	}
+	if hissing(stem) {
+		return stem + "и"
+	}
+	return stem + "ы"
 }
 
 // nameForm возвращает имя в нужном падеже.
