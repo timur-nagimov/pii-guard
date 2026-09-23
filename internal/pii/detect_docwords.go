@@ -121,15 +121,46 @@ func dwAnyAnchor(hay string, anchors []string) (string, bool) {
 // Сравнение идёт по свёрнутой строке, где латинские омоглифы заменены на
 // кириллические: «грaждaнcтво» с латинскими буквами совпадает с якорем
 // «гражданство». Возвращается длина совпадения в байтах исходной строки.
+// anchorSet — список якорей, подготовленный один раз: свёрнутые строки и
+// набор первых букв. Подбор якоря вызывается на каждом слове текста, и перебор
+// всего списка с повторным сворачиванием на каждом слове был виден на горячем
+// пути: добавление семи якорей замедлило маскирование на шестую часть.
+type anchorSet struct {
+	folded []string
+	first  map[rune]bool
+}
+
+// newAnchorSet готовит якоря к подбору.
+func newAnchorSet(anchors []string) *anchorSet {
+	set := &anchorSet{
+		folded: make([]string, 0, len(anchors)),
+		first:  make(map[rune]bool, len(anchors)),
+	}
+	for _, a := range anchors {
+		na := FoldHomoglyphs(a)
+		if na == "" {
+			continue
+		}
+		set.folded = append(set.folded, na)
+		r, _ := firstRune(na)
+		set.first[r] = true
+	}
+	return set
+}
+
 // Возвращается длина совпадения В ИСХОДНОЙ строке, а не длина самого якоря:
 // сворачивание омоглифов приравнивает однобайтовую латинскую букву
 // двухбайтовой кириллической, поэтому длины расходятся. Пока наружу отдавалась
 // длина якоря, в тексте «Выдaвший оргaн: Отделом внутренних дел» значение
 // искали на два байта не там, и орган выдачи не находился совсем.
-func dwMatchLongestAnchor(s string, at int, anchors []string) (int, bool) {
+func dwMatchLongestAnchor(s string, at int, set *anchorSet) (int, bool) {
+	// Первая буква слова отсекает почти все слова текста до перебора списка.
+	r, _ := firstRune(s[at:])
+	if !set.first[foldRune(r)] {
+		return 0, false
+	}
 	bestLen := 0
-	for _, a := range anchors {
-		na := FoldHomoglyphs(a)
+	for _, na := range set.folded {
 		matched, n := dwFoldPrefixLen(s[at:], na)
 		if !matched || n <= bestLen {
 			continue
@@ -449,7 +480,7 @@ func issuerByAnchor(d *Doc) []Span {
 		if dwIsWordRune(dwRuneBefore(d.Lower, tok.Start)) {
 			continue
 		}
-		anchorLen, ok := dwMatchLongestAnchor(d.Lower, tok.Start, issuerAnchors)
+		anchorLen, ok := dwMatchLongestAnchor(d.Lower, tok.Start, issuerAnchorSet)
 		if !ok {
 			continue
 		}
@@ -747,7 +778,7 @@ func (citizenshipDetector) Detect(d *Doc) []Span {
 		if dwIsWordRune(dwRuneBefore(d.Lower, tok.Start)) {
 			continue
 		}
-		anchorLen, ok := dwMatchLongestAnchor(d.Lower, tok.Start, citizenshipAnchors)
+		anchorLen, ok := dwMatchLongestAnchor(d.Lower, tok.Start, citizenshipAnchorSet)
 		if !ok {
 			continue
 		}
@@ -994,3 +1025,10 @@ func driverStandardSeries(series string) bool {
 	}
 	return true
 }
+
+// Якоря готовятся один раз при запуске: подбор идёт на каждом слове каждого
+// текста, и повторная подготовка там недопустима.
+var (
+	issuerAnchorSet      = newAnchorSet(issuerAnchors)
+	citizenshipAnchorSet = newAnchorSet(citizenshipAnchors)
+)
