@@ -65,7 +65,11 @@ type Server struct {
 	heavySem chan struct{}
 
 	// upstreams кеширует клиентов к языковой модели по имени системы.
-	upstreams sync.Map
+	// Хранится указатель на карту, а не сама карта: сброс при применении
+	// новых настроек подменяет указатель атомарно, и уже идущие запросы
+	// дорабатывают прежней картой. Иначе присваивание sync.Map{} целиком при
+	// живых чтениях было бы гонкой данных.
+	upstreams atomic.Pointer[sync.Map]
 
 	ready atomic.Bool
 }
@@ -74,6 +78,7 @@ type Server struct {
 func New(cfg *config.Config, st *store.Store, eng *engine.Engine, m *metrics.Metrics, log *slog.Logger) *Server {
 	s := &Server{store: st, engine: eng, metrics: m, log: log}
 	s.cfg.Store(cfg)
+	s.upstreams.Store(&sync.Map{})
 	s.sem = make(chan struct{}, cfg.Limits.Inflight)
 	s.heavySem = make(chan struct{}, cfg.Limits.HeavyInflight)
 	s.ready.Store(true)
@@ -110,8 +115,9 @@ func (s *Server) Config() *config.Config { return s.cfg.Load() }
 func (s *Server) SetConfig(cfg *config.Config) {
 	s.cfg.Store(cfg)
 	// Настройки обращения к модели могли измениться, поэтому кешированных
-	// клиентов нужно собрать заново.
-	s.upstreams = sync.Map{}
+	// клиентов нужно собрать заново. Подмена карты атомарная: уже идущие
+	// запросы дорабатывают прежней картой.
+	s.upstreams.Store(&sync.Map{})
 }
 
 // SetReady переключает готовность принимать запросы. При завершении работы
@@ -186,8 +192,13 @@ func isLoopback(remoteAddr string) bool {
 // withRecover перехватывает сбой обработчика. Пятисотый код недопустим:
 // пять подряд невалидных ответов останавливают прогон проверяющей системы,
 // поэтому в худшем случае отвечаем кодом временной недоступности.
+//
+// Если заголовок и тело уже ушли клиенту, дописывать ответ нельзя: это дало бы
+// второй заголовок и испорченное тело. Поэтому обёртка ответа запоминает, был
+// ли заголовок отправлен, и при сбое после отправки перехват молчит.
 func (s *Server) withRecover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sw := &statusWriter{ResponseWriter: w}
 		defer func() {
 			if rec := recover(); rec != nil {
 				s.metrics.ObservePanic("handler")
@@ -196,12 +207,40 @@ func (s *Server) withRecover(next http.Handler) http.Handler {
 					logging.Component("api"),
 					slog.String(logging.FieldPath, r.URL.Path),
 					slog.Any("panic", rec))
+				if sw.wroteHeader {
+					// Ответ уже ушёл клиенту: дописывать нечего.
+					return
+				}
 				w.Header().Set("Retry-After", "1")
 				s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "временная ошибка обработки")
 			}
 		}()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(sw, r)
 	})
+}
+
+// statusWriter запоминает, отправлен ли заголовок ответа клиенту. Нужен
+// перехвату сбоя, чтобы не писать второй ответ поверх уже отправленного.
+type statusWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+// WriteHeader запоминает отправку заголовка и не пишет его повторно.
+func (w *statusWriter) WriteHeader(code int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// Write отправляет тело, считая заголовок отправленным, если его ещё не было.
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -348,6 +387,10 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, code int, er
 	}})
 }
 
+// fieldBody — имя поля тела запроса в сообщениях о неверном вводе. Повторяется
+// во всех ручках, поэтому вынесено в константу.
+const fieldBody = "body"
+
 func (s *Server) writeValidation(w http.ResponseWriter, r *http.Request, kind string, loc []string, msg string) {
 	s.metrics.ObserveStatus(systemLabel(r), "error", "422")
 	s.writeJSON(w, http.StatusUnprocessableEntity, validationBody{
@@ -367,7 +410,13 @@ func (s *Server) writeValidation(w http.ResponseWriter, r *http.Request, kind st
 // свободным списком каждое поле упаковывается в пустой интерфейс, и это
 // выделение памяти на каждое поле каждого запроса. LogAttrs принимает поля
 // как есть.
-func (s *Server) logProcess(r *http.Request, system string, ev processEvent, degraded bool) {
+//
+// Сведения об обработке передаются одной структурой processEvent, а не
+// свободным списком: список из девяти параметров упирался в замечание Sonar
+// S107 и на месте вызова читался как набор безымянных значений. Признак
+// деградации и имена отказавших типов остаются отдельными доводами: они
+// описывают не сам текст, а то, как прошла обработка.
+func (s *Server) logProcess(r *http.Request, system string, ev processEvent, degraded bool, failedTypes []string) {
 	ctx := context.Background()
 	if r != nil {
 		ctx = r.Context()
@@ -402,6 +451,11 @@ func (s *Server) logProcess(r *http.Request, system string, ev processEvent, deg
 	}
 	if degraded {
 		attrs = append(attrs, slog.Bool("degraded", true))
+	}
+	// Имена отказавших типов пишутся без значений: по ним видно, что именно
+	// не удалось обработать, и при этом персональные данные наружу не уходят.
+	if len(failedTypes) > 0 {
+		attrs = append(attrs, slog.Any("failed_types", failedTypes))
 	}
 	s.log.LogAttrs(ctx, slog.LevelDebug, "обработан запрос", attrs...)
 }

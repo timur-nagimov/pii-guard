@@ -609,3 +609,30 @@ func TestDateFormsFromCorpus(t *testing.T) {
 		})
 	}
 }
+
+// TestDateDetectorSetMode проверяет, что режим детектора дат меняется на лету:
+// ослабление режима начинает находить даты без якоря без пересоздания
+// детектора. Это то, ради чего сервис держит детектор отдельной ссылкой и
+// меняет его режим при применении новых настроек.
+func TestDateDetectorSetMode(t *testing.T) {
+	det := NewDateDetector(DateModeAnchorOnly)
+	text := "Клиент Иванов Иван Иванович, 12.03.1985"
+
+	// В строгом режиме дата без явного якоря не находится.
+	if got := det.Detect(NewDoc(text)); len(got) != 0 {
+		t.Fatalf("в строгом режиме найдена дата без якоря: %+v", got)
+	}
+
+	// Ослабление режима до pii_context: рядом с ФИО дата находится.
+	det.SetMode(DateModePIIContext)
+	got := det.Detect(NewDoc(text))
+	if len(got) != 1 || got[0].Type != TypeDOB {
+		t.Fatalf("после ослабления режима дата не найдена: %+v", got)
+	}
+
+	// Ужесточение обратно: дата снова не находится.
+	det.SetMode(DateModeAnchorOnly)
+	if got := det.Detect(NewDoc(text)); len(got) != 0 {
+		t.Fatalf("после ужесточения режима дата продолжает находиться: %+v", got)
+	}
+}

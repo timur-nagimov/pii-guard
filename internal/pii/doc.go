@@ -123,9 +123,9 @@ func classify(r rune) Kind {
 // границу, индекс остаётся неубывающим, и поиск по нему продолжает работать.
 func int32Offset(off int) int32 {
 	// Обе границы проверяются явно, хотя отрицательным off не бывает: он
-	// приходит из range по строке и из len. Нижняя проверка нужна, чтобы из
-	// самой функции было видно — в int32 попадает только то, что в него
-	// помещается, и гадать об этом не приходится ни читателю, ни линтеру.
+	// приходит из обхода строки по байтам и из len. Нижняя проверка нужна,
+	// чтобы из самой функции было видно — в int32 попадает только то, что в
+	// него помещается, и гадать об этом не приходится ни читателю, ни линтеру.
 	if off < 0 {
 		return 0
 	}
@@ -140,6 +140,12 @@ func int32Offset(off int) int32 {
 // текстах, сохраняется, и на горячем пути не тратится на повторное выделение.
 func (d *Doc) tokenize() {
 	n := len(d.Text)
+	// Индекс начал рун хранится в int32, поэтому текст длиннее двух гигабайт
+	// не разбирается: смещения не помещаются в тип. Такие тексты в задачу не
+	// входят, а проверка диапазона снимает предупреждение о переполнении.
+	if n > math.MaxInt32 {
+		return
+	}
 	if d.Tokens == nil {
 		d.Tokens = make([]Token, 0, n/4+1)
 	} else {
@@ -153,29 +159,35 @@ func (d *Doc) tokenize() {
 
 	cur := Token{Start: 0, End: 0, Kind: KindOther}
 	started := false
-	for i, r := range d.Text {
+	for i := 0; i < n; {
+		// Руну и её размер берём одним декодированием: шаг цикла считается по
+		// байтам, поэтому размер нужен в любом случае. Нулевой размер бывает
+		// только на пустом остатке строки; шаг в один байт не даёт зациклиться.
+		r, sz := utf8.DecodeRuneInString(d.Text[i:])
+		if sz == 0 {
+			sz = 1
+		}
+		// Смещение в индекс кладётся через int32Offset: верхняя граница текста
+		// уже проверена выше, но явное приведение оставляет проверку видимой в
+		// точке использования и снимает предупреждение о сужении типа.
 		d.runeStarts = append(d.runeStarts, int32Offset(i))
 		// Размер руны берём из DecodeRuneInString, а не из utf8.RuneLen(r):
 		// для невалидного UTF-8 range отдаёт RuneError и съедает один байт,
 		// тогда как RuneLen(RuneError) возвращает три. Конец токена по
 		// RuneLen вылезал бы за границы строки и ронял срез по нему в
 		// детекторах.
-		size := 1
-		if _, sz := utf8.DecodeRuneInString(d.Text[i:]); sz > 0 {
-			size = sz
-		}
+		size := sz
 		k := classify(r)
 		if !started {
 			cur = Token{Kind: k, Start: i, End: i + size}
 			started = true
-			continue
-		}
-		if k == cur.Kind {
+		} else if k == cur.Kind {
 			cur.End = i + size
-			continue
+		} else {
+			d.Tokens = append(d.Tokens, cur)
+			cur = Token{Kind: k, Start: i, End: i + size}
 		}
-		d.Tokens = append(d.Tokens, cur)
-		cur = Token{Kind: k, Start: i, End: i + size}
+		i += size
 	}
 	if started {
 		d.Tokens = append(d.Tokens, cur)

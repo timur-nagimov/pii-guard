@@ -20,15 +20,17 @@ const (
 	fioRoleSurnameStrong
 	fioRoleSurnameWeak
 	fioRoleSurnameAdjective
+	fioRoleSurnameLatin
 	fioRolePatronymic
 	fioRolePatronymicWeak
 	fioRoleInitial
 	fioRoleUnknownCap
+	fioRoleInitialsPair
 )
 
 // Наборы признаков, которые в правилах используются вместе.
 const (
-	fioRoleAnySurname    = fioRoleSurnameDict | fioRoleSurnameStrong | fioRoleSurnameAdjective | fioRoleSurnameWeak
+	fioRoleAnySurname    = fioRoleSurnameDict | fioRoleSurnameStrong | fioRoleSurnameAdjective | fioRoleSurnameWeak | fioRoleSurnameLatin
 	fioRoleAnyPatronymic = fioRolePatronymic | fioRolePatronymicWeak
 	// fioRoleNameCore — признаки, которые сами по себе опознают компонент
 	// имени. К такому компоненту разрешено приклеить незнакомое слово с
@@ -64,13 +66,17 @@ const fioMaxGapRunes = 3
 // fioWord описывает слово-кандидат в компоненты имени вместе с разобранными
 // признаками. Слово хранится в байтовых границах исходного текста.
 type fioWord struct {
-	start   int
-	end     int
-	norm    string
-	key     string
-	capital bool
-	latin   bool
-	dot     bool
+	start int
+	end   int
+	norm  string
+	key   string
+	// latinKey хранит исходную латинскую запись слова. Для латинских слов
+	// словарь проверяется и по ней: обратная транслитерация теряет мягкий
+	// знак («olga» → «олга») и путает «ья» и «я» («tatiana» → «татяна»).
+	latinKey string
+	capital  bool
+	latin    bool
+	dot      bool
 	// shout означает, что слово написано целиком заглавными: так пишут
 	// сокращения вроде ООО и ЗАО, а не имена людей.
 	shout bool
@@ -175,8 +181,9 @@ func fioGlueLowerSurname(d *Doc, w fioWord, last, end int) (word fioWord, wordLa
 
 // fioWordEnd находит конец слова, приклеивая части через дефис: двойные
 // фамилии вроде Петров-Водкин и составные имена вроде Анна-Мария это один
-// компонент. Часть после дефиса обязана начинаться с заглавной буквы, иначе
-// к имени приклеится обычное слово.
+// компонент. Часть после дефиса обязана начинаться с заглавной буквы либо
+// быть похожей на фамилию: «Петров-Водкин» и «петров-водкин» это одна
+// фамилия, а «иванов-то» и «нагимов-банк» — нет.
 func fioWordEnd(d *Doc, i int) (int, int) {
 	toks := d.Tokens
 	end, last := toks[i].End, i
@@ -189,7 +196,10 @@ func fioWordEnd(d *Doc, i int) (int, int) {
 			break
 		}
 		if !fioStartsUpper(d.Text[next.Start:next.End]) {
-			break
+			part := fioNewWord(d, next.Start, next.End)
+			if part.capital || !fioLowerSurnamePart(part) {
+				break
+			}
 		}
 		end, last = next.End, last+2
 	}
@@ -208,6 +218,7 @@ func fioNewWord(d *Doc, start, end int) fioWord {
 	w.key = w.norm
 	if w.latin {
 		w.key = dict.TranslitToCyr(w.norm)
+		w.latinKey = w.norm
 	}
 	w.roles = fioWordRoles(w)
 	if w.roles == 0 && fioUnknownCapable(w) {
@@ -240,7 +251,7 @@ func fioUnknownCapable(w fioWord) bool {
 	if fioAddressMarkers[w.norm] || fioAnchors[w.norm] || fioFillerWords[w.norm] {
 		return false
 	}
-	if fioStopWords[w.norm] || fioCommonWords[w.norm] {
+	if fioStopWord(w.norm) || fioCommonWords[w.norm] {
 		return false
 	}
 	return !fioGeoWord(w.norm)
@@ -301,23 +312,106 @@ func fioLowerSurnamePart(w fioWord) bool {
 // по отдельности: достаточно, чтобы имени соответствовала любая из них.
 func fioWordRoles(w fioWord) fioRole {
 	if fioRuneCount(w.norm) == 1 {
-		// Со строчной буквы инициал принимается только с точкой: в переписке
-		// пишут «лебедев л. л.», и без этого вся связка с именем терялась.
-		// Одинокая строчная буква без точки — предлог или начало слова.
+		// Инициалом считается одиночная буква с точкой независимо от регистра:
+		// «Иванов И. И.» и «иванов и. и.» это одно и то же имя. В переписке
+		// пишут «лебедев л. л.», и без строчных инициалов вся связка с именем
+		// терялась. Одинокая строчная буква без точки — предлог или начало
+		// слова.
 		//
-		// Буквы адресных сокращений инициалом со строчной буквы не бывают:
-		// «г. Ростов» — это город, и маска на нём закрывала адрес отделения
-		// банка. С заглавной буквы такого риска нет: «Г. Иванов» это инициал.
-		if w.capital || (w.dot && !fioLowerAbbrev[w.norm]) {
+		// Адресные маркеры («ш.», «пл.», «им.») инициалами не бывают вовсе:
+		// они помечают улицу, а не человека. Служебные буквы «г.», «д.»,
+		// «с.», «п.» со строчной буквы это тоже адресные сокращения — «г.
+		// Ростов», «д. Михайловка», — но рядом со вторым инициалом они
+		// остаются настоящим инициалом: «николаева а.г.». Поэтому признак им
+		// выдаётся здесь, а отсекаются они там, где решение принимается по
+		// одному слову или по паре: fioSingleShape и fioInitialsPair.
+		if w.capital || (w.dot && !fioAddressMarkers[w.norm]) {
 			return fioRoleInitial
 		}
 		return 0
+	}
+	// Две заглавные буквы это пара инициалов: «Сорокина ВЯ» значит Сорокина
+	// Вера Яковлевна, а «Максимов ДР.» — Максимов Дмитрий Романович. Слово
+	// целиком заглавными вроде «ООО» и «ЗАО» сюда не попадает: у него три
+	// буквы, а не две. Сокращения «ул.», «пл.», «г.» инициалами не бывают, а
+	// правовые формы вроде «ИП» и «АО» стоят перед именем или названием, но
+	// инициалами тоже не бывают.
+	if fioRuneCount(w.norm) == 2 && w.shout && !fioAddressMarkers[w.norm] && !fioOrgAbbrev(w.norm) {
+		return fioRoleInitialsPair
 	}
 	var roles fioRole
 	for _, part := range strings.Split(w.key, "-") {
 		roles |= fioPartRoles(part, w.capital)
 	}
+	// Латинская запись проверяется по латинскому словарю напрямую: обратная
+	// транслитерация теряет мягкий знак и путает «ья» и «я», поэтому русский
+	// словарь не находит «olga» и «tatiana». Английские имена и фамилии в
+	// русском словаре отсутствуют вовсе.
+	if w.latin {
+		for _, part := range strings.Split(w.latinKey, "-") {
+			roles |= fioLatinPartRoles(part)
+		}
+	}
 	return roles
+}
+
+// fioOrgAbbrev сообщает, что сокращение заглавными это правовая форма, а не
+// пара инициалов: «АО Полюс» это организация, а «ИП Новиков Сергей Петрович»
+// — человек с полным именем, у которого фамилия, имя и отчество написаны
+// целиком. «ИП» и «ЧП» проверяются отдельно от fioOrgForms: в том наборе их
+// нет намеренно, потому что имя после них принадлежит живому человеку и
+// маскироваться должно.
+func fioOrgAbbrev(norm string) bool {
+	return fioOrgForms[norm] || norm == "ип" || norm == "чп"
+}
+
+// fioLowerServiceInitial сообщает, что одиночная буква со строчной это
+// служебное адресное сокращение: «г. Ростов», «д. Михайловка», «с.
+// Петровское», «п. Ленино». Инициалом такая буква становится только рядом со
+// вторым инициалом, поэтому там, где решение принимается по одному слову или
+// по паре, она отбрасывается.
+func fioLowerServiceInitial(w fioWord) bool {
+	return w.has(fioRoleInitial) && !w.capital && fioLowerAbbrev[w.norm]
+}
+
+// fioLatinPartRoles определяет признаки латинской части слова по латинскому
+// словарю и по транслитерированным окончаниям русских фамилий.
+func fioLatinPartRoles(p string) fioRole {
+	if fioRuneCount(p) < 2 {
+		return 0
+	}
+	var roles fioRole
+	if dict.LookupLatinName(p) {
+		roles |= fioRoleName
+	}
+	if dict.LookupLatinSurname(p) {
+		roles |= fioRoleSurnameDict
+	}
+	if fioLatinSurnameSuffix(p) {
+		roles |= fioRoleSurnameLatin
+	}
+	return roles
+}
+
+// fioLatinSurnameSuffix сообщает, что латинское слово похоже на фамилию по
+// транслитерированному русскому окончанию: -ov, -ova, -ev, -eva, -in, -ina,
+// -sky, -skaya, -enko, -uk. Такие слова встречаются в латинской записи
+// русских фамилий, которых нет в словаре.
+func fioLatinSurnameSuffix(p string) bool {
+	lower := strings.ToLower(p)
+	for _, suf := range fioLatinSurnameSuffixes {
+		if strings.HasSuffix(lower, suf) {
+			return true
+		}
+	}
+	return false
+}
+
+// fioLatinSurnameSuffixes — транслитерированные окончания русских фамилий.
+var fioLatinSurnameSuffixes = []string{
+	"ov", "ova", "ev", "eva", "in", "ina", "yn", "yna",
+	"sky", "skaya", "skiy", "skoy", "enko", "uk", "yuk", "chuk",
+	"shvili", "dze", "yan", "yanova",
 }
 
 // fioPartRoles определяет признаки одной части слова.
@@ -387,6 +481,10 @@ func fioSurnameSuffixRole(p string) fioRole {
 // fioAdjacent сообщает, что два слова идут подряд и относятся к одному имени.
 // Между компонентами допускаются только пробелы и точки после инициалов,
 // перевод строки и запятая цепочку разрывают.
+//
+// Исключение — запятая между фамилией и именем: «Иванов, Иван Иванович» это
+// один человек, а не два. Запятая допускается только когда слева фамилия, а
+// справа имя: «Иванов, Петров» остаётся списком двух людей.
 func fioAdjacent(d *Doc, a, b fioWord) bool {
 	if b.start < a.end {
 		return false
@@ -395,11 +493,19 @@ func fioAdjacent(d *Doc, a, b fioWord) bool {
 	if fioRuneCount(gap) > fioMaxGapRunes {
 		return false
 	}
+	comma := false
 	for _, r := range gap {
 		// Неразрывный пробел встречается в тексте из офисных редакторов.
+		if r == ',' {
+			comma = true
+			continue
+		}
 		if r != ' ' && r != '\t' && r != '.' && r != '\u00a0' {
 			return false
 		}
+	}
+	if comma && (!a.has(fioRoleAnySurname) || !b.has(fioRoleName)) {
+		return false
 	}
 	return true
 }
@@ -555,6 +661,9 @@ func fioPairShape(a, b fioWord) (float64, string, bool) {
 	case a.has(fioRoleName) && b.has(fioRoleAnySurname),
 		a.has(fioRoleAnySurname) && b.has(fioRoleName):
 		return ConfAnchored, "fio:surname+name", true
+	case a.has(fioRoleSurnameDict) && b.has(fioRoleInitialsPair),
+		a.has(fioRoleInitialsPair) && b.has(fioRoleSurnameDict):
+		return ConfHigh, "fio:surname+initials", true
 	default:
 		// Прочие пары слов именем не считаются: пара без признаков имени
 		// разбирается дальше как одиночное слово.
@@ -568,6 +677,22 @@ func fioInitialsPair(a, b fioWord) bool {
 	// в хвосте VIN принималось за имя: латинская буква с точкой склеивалась с
 	// обычным русским словом, и ложное имя вытесняло настоящий номер.
 	if a.latin != b.latin {
+		return false
+	}
+	// Служебная буква со строчной в паре с одним словом это адресное
+	// сокращение, а не инициал: «г. Ростов» и «д. Михайловка» помечают место.
+	// В тройке с двумя инициалами такая буква остаётся инициалом, поэтому
+	// отсекается только пара.
+	if fioLowerServiceInitial(a) || fioLowerServiceInitial(b) {
+		return false
+	}
+	// Фамилия из списка исключений это город или обычное слово: «г. Ростов»
+	// и «ул. Пушкина» не должны маскироваться. В тройке с двумя инициалами
+	// такое слово безопасно, поэтому здесь отсекается только пара.
+	if a.has(fioRoleAnySurname) && fioStopWord(a.norm) {
+		return false
+	}
+	if b.has(fioRoleAnySurname) && fioStopWord(b.norm) {
 		return false
 	}
 	if a.has(fioRoleAnySurname) && b.isInitial() {
@@ -584,24 +709,34 @@ func fioSingleShape(d *Doc, w fioWord) (float64, string, bool) {
 	if w.has(fioRoleInitial) && !w.dot {
 		return 0, "", false
 	}
+	// Служебная буква со строчной одиночным компонентом имени не бывает даже
+	// рядом с якорем: «клиент г. Москва» это адрес, а не человек.
+	if fioLowerServiceInitial(w) {
+		return 0, "", false
+	}
 	if w.has(fioRolePatronymic) && w.capital && !w.latin {
 		return ConfAnchored, "fio:patronymic", true
 	}
 	if _, ok := fioMarkerBefore(d, w.start, fioAnchors); ok {
 		return ConfAnchored, "fio:anchor", true
 	}
-	// Дальше решение принимается без якоря, поэтому одиночная латиница и
-	// слова со строчной буквы отбрасываются, а обычные слова с фамильными
-	// окончаниями отсекаются списком исключений.
-	if !w.capital || w.latin || fioStopWords[w.norm] {
+	// Дальше решение принимается без якоря. Одиночная латиница и обычные
+	// слова с фамильными окончаниями отсекаются списком исключений. Имя из
+	// словаря опознаётся независимо от регистра: «анастасия» в чате это то же
+	// имя, что «Анастасия» в анкете. Фамилия по одному слову требует заглавной
+	// буквы: иначе фамилией станет «иванов» в «сто иванов».
+	if w.latin || fioStopWord(w.norm) {
 		return 0, "", false
 	}
 	switch {
 	case w.has(fioRoleSurnameDict):
+		if !w.capital {
+			return 0, "", false
+		}
 		return ConfAnchored, "fio:surname", true
 	case w.has(fioRoleName) && !fioHomonyms[w.norm]:
 		return ConfAnchored, "fio:name", true
-	case w.has(fioRoleSurnameStrong) && !fioAtSentenceStart(d, w.start):
+	case w.has(fioRoleSurnameStrong) && w.capital && !fioAtSentenceStart(d, w.start):
 		return ConfMedium, "fio:surname_suffix", true
 	default:
 		// Одиночное слово без словарного признака и без сильного окончания
@@ -616,7 +751,21 @@ func fioMakeSpan(d *Doc, first, last fioWord, conf float64, reason string) (Span
 	if first.latin && last.latin {
 		reason = "fio:latin+" + strings.TrimPrefix(reason, "fio:")
 	}
-	return fioSpanRange(d, first.start, last.end, conf, reason)
+	sp, ok := fioSpanRange(d, first.start, last.end, conf, reason)
+	if !ok {
+		return Span{}, false
+	}
+	// Точка после последнего инициала входит во фрагмент: «Иванов И. И.» это
+	// одно имя, и эталон в наборе данных включает точку. Нормализация границ
+	// отрезает её, поэтому она возвращается на место.
+	if last.isInitial() && last.end < len(d.Text) && d.Text[last.end] == '.' && sp.End == last.end {
+		sp.End++
+	}
+	// То же для пары инициалов без точек: «Максимов ДР.» включает точку.
+	if last.has(fioRoleInitialsPair) && last.end < len(d.Text) && d.Text[last.end] == '.' && sp.End == last.end {
+		sp.End++
+	}
+	return sp, true
 }
 
 // fioSpanRange собирает фрагмент по границам в байтах: обрезает знаки по
@@ -680,6 +829,29 @@ func fioOrgFormBefore(d *Doc, start int) bool {
 	trimmed = strings.TrimRight(trimmed, " \t\u00a0")
 	i := strings.LastIndexAny(trimmed, " \t\n\r(.,;:")
 	return fioOrgForms[dict.Normalize(trimmed[i+1:])]
+}
+
+// fioStopWordsExtra дополняет перечень fioStopWords словами, на которых
+// детектор ошибался: падежные формы месяцев («в августе», «к марту») и
+// «марка» с падежными формами — это не имена. Сам перечень fioStopWords
+// вынесен в detect_fio_words.go вместе с остальными словарями, поэтому
+// дополнение живёт здесь, рядом с проверками, и подмешивается к нему в
+// fioStopWord.
+var fioStopWordsExtra = fioWordSet(
+	// Падежные формы месяцев: «в августе», «к марту» — это не имена.
+	"январе", "январю", "феврале", "февралю", "марте", "марту", "апреле",
+	"апрелю", "мае", "маю", "июне", "июню", "июле", "июлю", "августе",
+	"августу", "сентябре", "сентябрю", "октябре", "октябрю", "ноябре",
+	"ноябрю", "декабре", "декабрю",
+	// «Марка» и её падежные формы: марка автомобиля, почтовая марка.
+	"марк", "марка", "марки", "марку", "марке", "маркой",
+)
+
+// fioStopWord сообщает, что слово стоит в списке исключений: обычное слово,
+// название города или падежная форма, совпадающая с именем. Проверяются оба
+// перечня — основной и дополнение.
+func fioStopWord(norm string) bool {
+	return fioStopWords[norm] || fioStopWordsExtra[norm]
 }
 
 // fioMarkerBefore ищет слово-маркер слева от фрагмента. Между маркером и

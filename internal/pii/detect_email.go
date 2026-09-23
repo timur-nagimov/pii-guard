@@ -87,7 +87,13 @@ func scanDomain(text string, from int) (int, bool) {
 	if lastDot < 0 {
 		return 0, false
 	}
-	if !isDomainZone(text[from+lastDot+1 : end]) {
+	lastDot += from
+	// Зона за последней точкой обязана быть непустой: иначе срез ниже получил
+	// бы перевёрнутые границы и детектор падал бы на адресе в конце предложения.
+	if lastDot+1 >= end {
+		return 0, false
+	}
+	if !validDomainZone(text[lastDot+1 : end]) {
 		return 0, false
 	}
 	return end, true
@@ -115,10 +121,10 @@ func domainEnd(text string, from int) (end, dots int) {
 	return end, dots
 }
 
-// isDomainZone проверяет хвост домена после последней точки. Зоны короче двух
-// букв не бывает, и цифр в зоне не бывает тоже: без этой проверки адресом
-// считался бы любой набор чисел через точку вроде «user@1.23».
-func isDomainZone(zone string) bool {
+// validDomainZone проверяет хвост домена после последней точки: зона не короче
+// двух букв и только из букв. Цифр в зоне не бывает тоже: без этой проверки
+// адресом считался бы любой набор чисел через точку вроде «user@1.23».
+func validDomainZone(zone string) bool {
 	if len([]rune(zone)) < 2 {
 		return false
 	}

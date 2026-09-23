@@ -653,3 +653,34 @@ func negIP(g *Generator) []frag {
 	}
 	return frags(lit(fmt.Sprintf(g.pick(tmpl), g.pick(ips))))
 }
+
+// latinProducts — названия компаний и продуктов латиницей. Они похожи на пару
+// «имя фамилия», но персональными данными не являются: маскировать их нельзя.
+var latinProducts = []string{
+	"Apple Pay", "Google Pay", "Google Chrome", "Google Maps", "Yandex Maps",
+	"Visa Classic", "Visa Gold", "Mastercard Standard", "Mastercard Platinum",
+	"Sberbank Online", "Tinkoff Bank", "Alfa Bank", "Yandex Browser",
+	"Microsoft Office", "Adobe Reader", "WhatsApp Messenger", "Telegram Messenger",
+	"Instagram", "Facebook", "YouTube", "Netflix", "Spotify", "Airbnb",
+	"Uber", "Booking", "Amazon", "Google", "Apple", "Microsoft", "Samsung",
+	"Xiaomi", "Huawei", "Lenovo", "Dell", "HP", "Intel", "AMD", "Nvidia",
+	"Content-Type", "User-Agent", "ERR Timeout", "HTTP Error", "JSON Format",
+	"John Deere", "Caterpillar", "Bosch", "Siemens", "Philips", "Panasonic",
+}
+
+// negLatinProduct порождает упоминание компании или продукта латиницей.
+// Название бренда не является персональными данными клиента, даже если
+// состоит из двух слов с заглавной буквы.
+func negLatinProduct(g *Generator) []frag {
+	tmpl := []string{
+		"Оплата прошла через %s.",
+		"Браузер %s установлен на устройстве.",
+		"Карта %s выпущена в прошлом году.",
+		"Приложение %s обновлено до последней версии.",
+		"Заголовок %s задан в настройках.",
+		"Ошибка %s зафиксирована в журнале.",
+		"Техника %s обслуживается по договору.",
+		"Сервис %s недоступен в вашем регионе.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), g.pick(latinProducts))))
+}

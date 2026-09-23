@@ -65,7 +65,7 @@ func (extraDetector) Types() []Type {
 // Detect разбирает документ на расширенные типы. Числовые типы идут по
 // числовым кандидатам, буквенно-цифровые — по токенам.
 func (e extraDetector) Detect(d *Doc) []Span {
-	var out []Span
+	out := make([]Span, 0, 8)
 	out = append(out, e.detectNumeric(d)...)
 	out = append(out, e.detectAlnum(d)...)
 	out = append(out, e.detectIP(d)...)
@@ -506,8 +506,8 @@ func isServiceIPv4(s string) bool {
 	if len(parts) != 4 {
 		return false
 	}
-	a, _ := atoi(parts[0])
-	b, _ := atoi(parts[1])
+	a := atoi(parts[0])
+	b := atoi(parts[1])
 	switch {
 	case a == 127:
 		return true
@@ -521,18 +521,18 @@ func isServiceIPv4(s string) bool {
 }
 
 // atoi разбирает десятичное число из строки.
-func atoi(s string) (int, bool) {
+func atoi(s string) int {
 	if s == "" {
-		return 0, false
+		return 0
 	}
 	n := 0
 	for i := 0; i < len(s); i++ {
 		if s[i] < '0' || s[i] > '9' {
-			return 0, false
+			return 0
 		}
 		n = n*10 + int(s[i]-'0')
 	}
-	return n, true
+	return n
 }
 
 // extraAnchorNear ищет якорь в окне вокруг значения. Окно задаётся в рунах и

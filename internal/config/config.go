@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -682,6 +683,9 @@ func (c *Config) validateSystems() error {
 		if disabled {
 			continue
 		}
+		if err := validateUpstream(name, s.Upstream.URL); err != nil {
+			return err
+		}
 		if err := c.validateSystemModes(name, &s); err != nil {
 			return err
 		}
@@ -752,6 +756,30 @@ func (c *Config) validateSystemKey(name string, s *System) (bool, error) {
 		return false, fmt.Errorf("система %q: хеш ключа должен быть 64 символа", name)
 	}
 	return false, nil
+}
+
+// validateUpstream проверяет адрес языковой модели: он обязан разбираться как
+// URL, иметь схему http или https и непустой хост. Проверка здесь, а не в
+// момент обращения, потому что адрес задаёт оператор в файле настроек, и
+// неверный адрес должен быть отвергнут при загрузке, а не в бою.
+//
+// Система на проверку не передаётся целиком намеренно: берём одну строку и не
+// копируем описание системы ради неё.
+func validateUpstream(name, raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("система %q: адрес языковой модели не разобран: %w", name, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("система %q: адрес языковой модели допускает только http и https", name)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("система %q: адрес языковой модели без хоста", name)
+	}
+	return nil
 }
 
 // validateSystemModes проверяет режимы поведения системы: что делать при

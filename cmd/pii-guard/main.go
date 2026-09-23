@@ -18,6 +18,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -45,7 +46,7 @@ func main() {
 	flag.Parse()
 
 	if *healthcheck {
-		if err := runHealthcheck(); err != nil {
+		if err := runHealthcheck(*configPath); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -132,8 +133,8 @@ func logConfig(cfg *config.Config, out io.Writer) logging.Config {
 	env := logging.FromEnv()
 
 	c := def
-	applyFileLogging(&c, &cfg.Logging)
-	applyEnvLogging(&c, &env, &def)
+	applyFileLogging(&c, cfg.Logging)
+	applyEnvLogging(&c, env, def)
 
 	// Приёмник журнала буферизован. Без буфера каждая запись — отдельный
 	// системный вызов, и на штатной нагрузке он стоит дороже самого разбора
@@ -143,12 +144,12 @@ func logConfig(cfg *config.Config, out io.Writer) logging.Config {
 	return c
 }
 
-// applyFileLogging кладёт поверх умолчаний то, что задано в файле настроек.
-// Незаданные поля файла уже заполнены значениями по умолчанию при разборе
-// настроек, поэтому проверять их здесь не надо. Исключение — поля, у которых
-// «не задано» отличимо от нуля: указатели и размеры, выставленные в ноль,
-// означают «оставить как было», а не «выключить».
-func applyFileLogging(c *logging.Config, file *config.Logging) {
+// applyFileLogging накладывает поверх умолчаний то, что задано в файле
+// настроек. Незаданные поля файла уже заполнены значениями по умолчанию при
+// разборе настроек, поэтому проверять их здесь не надо. Исключение — поля, у
+// которых «не задано» отличимо от нуля: указатели и размеры, выставленные в
+// ноль, означают «оставить как было», а не «выключить».
+func applyFileLogging(c *logging.Config, file config.Logging) {
 	c.Level = file.Level
 	c.Format = file.Format
 	c.RepeatWindow = file.RepeatWindow
@@ -173,14 +174,14 @@ func applyFileLogging(c *logging.Config, file *config.Logging) {
 	}
 }
 
-// applyEnvLogging кладёт поверх настроек файла то, что задано в окружении.
+// applyEnvLogging накладывает настройки журнала из окружения поверх файла.
 //
 // Что именно задано в окружении, определяется сравнением со значением по
 // умолчанию: FromEnv возвращает готовый набор поверх умолчаний, поэтому
 // отличие поля означает, что переменная задана. Разбирать переменные здесь
 // во второй раз нельзя: их имена перечислены в internal/logging, и второй
 // список — это второе место, где о новой переменной забудут.
-func applyEnvLogging(c, env, def *logging.Config) {
+func applyEnvLogging(c *logging.Config, env, def logging.Config) {
 	if env.Level != def.Level {
 		c.Level = env.Level
 	}
@@ -215,7 +216,7 @@ func applyEnvLogging(c, env, def *logging.Config) {
 // applyEnvAudit кладёт поверх настроек файла то, что задано в окружении для
 // журнала аудита. Вынесен отдельно, потому что аудит настраивается независимо
 // от обычного журнала: у него свой файл, своя ротация и своё разрешение.
-func applyEnvAudit(c, env, def *logging.Config) {
+func applyEnvAudit(c *logging.Config, env, def logging.Config) {
 	if env.Audit.Enabled != def.Audit.Enabled {
 		c.Audit.Enabled = env.Audit.Enabled
 	}
@@ -295,7 +296,7 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 	}
 	defer st.Close()
 
-	reg, err := newRegistry(cfg)
+	reg, dateDet, err := newRegistry(cfg)
 	if err != nil {
 		return err
 	}
@@ -331,14 +332,20 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
-	applyConfig := newConfigApplier(configPath, srv, eng, reg, log)
+	applyConfig := newConfigApplier(configPath, srv, eng, reg, dateDet, log)
 	// Ручка управления правилами применяет свою правку тем же кодом, что и
 	// наблюдение за файлом, только сразу, а не к ближайшему обходу.
 	srv.SetReloader(func() error { return applyConfig("rules_api") })
-	go watchConfig(configPath, applyConfig, log, reload)
+	// Наблюдение за файлом живёт, пока живёт сервис: контекст завершает его
+	// вместе с остановкой, иначе горутина держала бы файл открытым после
+	// выхода из run.
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	defer watchCancel()
+	go watchConfig(watchCtx, configPath, applyConfig, log, reload)
 
 	select {
 	case err := <-errCh:
+		watchCancel()
 		return err
 	case <-stop:
 		log.Info("получен сигнал остановки, снимаю готовность",
@@ -346,7 +353,7 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 			slog.String("drain", cfg.Server.DrainTimeout.String()))
 	}
 
-	return shutdown(cfg, srv, httpSrv, httpsSrv, stop, log)
+	return shutdown(cfg, srv, httpSrv, httpsSrv, stop, watchCancel, log)
 }
 
 // openStore читает ключ шифрования и поднимает хранилище масок. Закрывает
@@ -367,13 +374,20 @@ func openStore(cfg *config.Config, log *slog.Logger) (*store.Store, error) {
 // newRegistry собирает набор детекторов: встроенные и типы из настроек. Сбой
 // правила из настроек не даёт сервису подняться — иначе он работал бы,
 // молча не находя заявленный тип.
-func newRegistry(cfg *config.Config) (*pii.Registry, error) {
+//
+// Вторым значением отдаётся детектор дат: его режим по умолчанию меняется на
+// лету при применении новых настроек, поэтому ссылка на него нужна снаружи —
+// достать его из собранного набора обратно нечем.
+func newRegistry(cfg *config.Config) (*pii.Registry, pii.DateDetector, error) {
 	reg := pii.NewRegistry()
+	// Детектор дат держится отдельной ссылкой: его режим по умолчанию меняется
+	// на лету при применении новых настроек, как и сменный слот своих типов.
+	dateDet := pii.NewDateDetector(cfg.Defaults.DateWithoutAnchor)
 	reg.Register(
 		pii.NewNumericDetector(),
 		pii.NewEmailDetector(),
 		pii.NewFIODetector(),
-		pii.NewDateDetector(cfg.Defaults.DateWithoutAnchor),
+		dateDet,
 		pii.NewAddressDetector(),
 		pii.NewBirthPlaceDetector(),
 		pii.NewIssuerDetector(),
@@ -384,9 +398,9 @@ func newRegistry(cfg *config.Config) (*pii.Registry, error) {
 		pii.NewExtraDetector(),
 	)
 	if err := applyCustomTypes(reg, cfg); err != nil {
-		return nil, fmt.Errorf("правила custom_types: %w", err)
+		return nil, nil, fmt.Errorf("правила custom_types: %w", err)
 	}
-	return reg, nil
+	return reg, dateDet, nil
 }
 
 // newMetrics заводит общий реестр показателей.
@@ -520,9 +534,14 @@ func startHTTPS(cfg *config.Config, handler http.Handler, errCh chan<- error, lo
 // обязателен: сначала снимается готовность и выдерживается окно вывода, и
 // только потом закрывается приём, иначе запросы, посланные балансировщиком до
 // того, как он заметил снятие готовности, попадут в закрытый слушатель.
-func shutdown(cfg *config.Config, srv *api.Server, httpSrv, httpsSrv *http.Server, stop <-chan os.Signal, log *slog.Logger) error {
+//
+// Наблюдение за файлом настроек гасится не раньше конца окна вывода: копия всё
+// это время ещё отвечает на запросы, и правка настроек, сделанная в последние
+// секунды, обязана примениться так же, как в любое другое время.
+func shutdown(cfg *config.Config, srv *api.Server, httpSrv, httpsSrv *http.Server, stop <-chan os.Signal, watchCancel context.CancelFunc, log *slog.Logger) error {
 	srv.SetReady(false)
 	drain(cfg.Server.DrainTimeout, stop, log)
+	watchCancel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
@@ -638,7 +657,10 @@ func startPprof(addr string, log *slog.Logger) {
 // watchConfig применяет новые настройки по сигналу SIGHUP и при изменении
 // файла на диске. Настройки, не прошедшие проверку, отбрасываются: сервис
 // продолжает работать со старыми.
-func watchConfig(path string, apply func(reason string) error, log *slog.Logger, sig <-chan os.Signal) {
+//
+// Контекст завершает наблюдение вместе с сервисом: без него горутина жила бы
+// после остановки и держала бы файл настроек открытым.
+func watchConfig(ctx context.Context, path string, apply func(reason string) error, log *slog.Logger, sig <-chan os.Signal) {
 	var lastMod time.Time
 	if st, err := os.Stat(path); err == nil {
 		lastMod = st.ModTime()
@@ -661,16 +683,19 @@ func watchConfig(path string, apply func(reason string) error, log *slog.Logger,
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-sig:
 			_ = applied("signal")
 		case <-ticker.C:
-			lastMod = reloadChanged(path, lastMod, applied)
+			lastMod = checkFileChange(path, lastMod, applied)
 		}
 	}
 }
 
-// reloadChanged перечитывает настройки, если файл изменился с прошлой
-// проверки, и возвращает отметку времени, от которой считать дальше.
+// checkFileChange перечитывает настройки, если файл изменился с последнего
+// удачного применения, и возвращает отметку времени, от которой считать
+// дальше.
 //
 // Отметка времени двигается ТОЛЬКО при удачном применении. Прежний порядок
 // двигал её и при отказе, поэтому исправление, внесённое в ту же секунду, не
@@ -681,7 +706,7 @@ func watchConfig(path string, apply func(reason string) error, log *slog.Logger,
 // Побочное следствие: сломанный файл перечитывается каждые пять секунд, пока
 // его не починят. Журнал от этого не пухнет, потому что одинаковые записи
 // глушатся повторами.
-func reloadChanged(path string, lastMod time.Time, applied func(reason string) bool) time.Time {
+func checkFileChange(path string, lastMod time.Time, applied func(reason string) bool) time.Time {
 	st, err := os.Stat(path)
 	if err != nil {
 		return lastMod
@@ -703,7 +728,7 @@ func reloadChanged(path string, lastMod time.Time, applied func(reason string) b
 //
 // Настройки применяются целиком или никак. Полупримененные настройки — это
 // системы, которым роздан список типов, искать которые нечем.
-func newConfigApplier(path string, srv *api.Server, eng *engine.Engine, reg *pii.Registry, log *slog.Logger) func(reason string) error {
+func newConfigApplier(path string, srv *api.Server, eng *engine.Engine, reg *pii.Registry, dateDet pii.DateDetector, log *slog.Logger) func(reason string) error {
 	return func(reason string) error {
 		cfg, err := config.Load(path)
 		if err != nil {
@@ -714,6 +739,18 @@ func newConfigApplier(path string, srv *api.Server, eng *engine.Engine, reg *pii
 		if err := applyCustomTypes(reg, cfg); err != nil {
 			return err
 		}
+		// Режим дат по умолчанию следует за файлом настроек: ослабление режима
+		// обязано начать находить даты без якоря без перезапуска.
+		dateDet.SetMode(cfg.Defaults.DateWithoutAnchor)
+		// Честный журнал: поля, которые требуют перезапуска, не применяются
+		// на лету, и молчать о них нельзя. Сравниваем с действующими
+		// настройками и предупреждаем о каждом изменённом поле отдельно.
+		old := srv.Config()
+		for _, field := range restartRequiredChanges(old, cfg) {
+			log.Warn("поле изменено, требует перезапуска",
+				logging.Event(logging.EventConfigApplied), logging.Component("config"),
+				slog.String("field", field), slog.String("reason", reason))
+		}
 		srv.SetConfig(cfg)
 		eng.ResetFilters()
 		log.Info("настройки применены",
@@ -722,6 +759,116 @@ func newConfigApplier(path string, srv *api.Server, eng *engine.Engine, reg *pii
 			slog.Int("custom_types", len(cfg.CustomTypes)))
 		return nil
 	}
+}
+
+// restartRequiredChanges возвращает имена полей, которые изменились между
+// старыми и новыми настройками и требуют перезапуска сервиса. Эти поля
+// применяются только при старте: сетевые слушатели, ограничители, хранилище и
+// журнал собираются один раз, и менять их на лету небезопасно для идущих
+// запросов.
+func restartRequiredChanges(old, new *config.Config) []string {
+	var out []string
+	// Сетевые слушатели и их сроки.
+	if old.Server.HTTP != new.Server.HTTP {
+		out = append(out, "server.http")
+	}
+	if old.Server.HTTPS != new.Server.HTTPS {
+		out = append(out, "server.https")
+	}
+	if old.Server.MaxBodyBytes != new.Server.MaxBodyBytes {
+		out = append(out, "server.max_body_bytes")
+	}
+	if old.Server.ReadHeaderTimeout != new.Server.ReadHeaderTimeout {
+		out = append(out, "server.read_header_timeout")
+	}
+	if old.Server.ReadTimeout != new.Server.ReadTimeout {
+		out = append(out, "server.read_timeout")
+	}
+	if old.Server.WriteTimeout != new.Server.WriteTimeout {
+		out = append(out, "server.write_timeout")
+	}
+	if old.Server.IdleTimeout != new.Server.IdleTimeout {
+		out = append(out, "server.idle_timeout")
+	}
+	if old.Server.ShutdownTimeout != new.Server.ShutdownTimeout {
+		out = append(out, "server.shutdown_timeout")
+	}
+	if old.Server.DrainTimeout != new.Server.DrainTimeout {
+		out = append(out, "server.drain_timeout")
+	}
+	// Ограничители одновременной обработки.
+	if old.Limits.Inflight != new.Limits.Inflight {
+		out = append(out, "limits.inflight")
+	}
+	if old.Limits.HeavyInflight != new.Limits.HeavyInflight {
+		out = append(out, "limits.heavy_inflight")
+	}
+	if old.Limits.HeavyThresholdBytes != new.Limits.HeavyThresholdBytes {
+		out = append(out, "limits.heavy_threshold_bytes")
+	}
+	if old.Limits.MaxWait != new.Limits.MaxWait {
+		out = append(out, "limits.max_wait")
+	}
+	// Хранилище соответствий.
+	if old.Store.TTL != new.Store.TTL {
+		out = append(out, "store.ttl")
+	}
+	if old.Store.MaxRecords != new.Store.MaxRecords {
+		out = append(out, "store.max_records")
+	}
+	if old.Store.KeyEnv != new.Store.KeyEnv {
+		out = append(out, "store.key_env")
+	}
+	if old.Store.Redis != new.Store.Redis {
+		out = append(out, "store.redis")
+	}
+	if old.Store.UnreadyOnDegraded != new.Store.UnreadyOnDegraded {
+		out = append(out, "store.unready_on_degraded")
+	}
+	// Журнал.
+	if old.Logging.Level != new.Logging.Level {
+		out = append(out, "logging.level")
+	}
+	if old.Logging.Format != new.Logging.Format {
+		out = append(out, "logging.format")
+	}
+	if !boolPtrEqual(old.Logging.Source, new.Logging.Source) {
+		out = append(out, "logging.source")
+	}
+	if !boolPtrEqual(old.Logging.Redact, new.Logging.Redact) {
+		out = append(out, "logging.redact")
+	}
+	if old.Logging.RepeatWindow != new.Logging.RepeatWindow {
+		out = append(out, "logging.repeat_window")
+	}
+	if old.Logging.RepeatLevel != new.Logging.RepeatLevel {
+		out = append(out, "logging.repeat_level")
+	}
+	if old.Logging.SampleN != new.Logging.SampleN {
+		out = append(out, "logging.sample_n")
+	}
+	if old.Logging.Slow != new.Logging.Slow {
+		out = append(out, "logging.slow")
+	}
+	if !auditEqual(old.Logging.Audit, new.Logging.Audit) {
+		out = append(out, "logging.audit")
+	}
+	return out
+}
+
+// boolPtrEqual сравнивает два указателя на логическое значение, считая
+// отсутствие значения равным значению по умолчанию.
+func boolPtrEqual(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// auditEqual сравнивает настройки журнала аудита.
+func auditEqual(a, b config.LoggingAudit) bool {
+	return boolPtrEqual(a.Enabled, b.Enabled) && a.Path == b.Path &&
+		a.MaxBytes == b.MaxBytes && a.Keep == b.Keep
 }
 
 // applyCustomTypes пересобирает детектор типов из настроек.
@@ -818,14 +965,24 @@ func selfSignedCert() (tls.Certificate, error) {
 }
 
 // runHealthcheck обращается к собственной ручке живости. Нужен для образа без
-// оболочки: в нём нет ни curl, ни wget.
-func runHealthcheck() error {
-	addr := os.Getenv("PII_HEALTHCHECK_URL")
-	if addr == "" {
-		addr = "http://127.0.0.1:8080/healthz"
+// оболочки: в нём нет ни curl, ни wget. Адрес берётся из настроек сервера и
+// всегда указывает на loopback, поэтому проверка не может стать мостом к
+// произвольному адресу.
+func runHealthcheck(configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("настройки для проверки живости не прочитаны: %w", err)
+	}
+	addr, err := healthcheckURL(cfg.Server.HTTP)
+	if err != nil {
+		return err
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(addr) //nolint:noctx // короткая проверка живости
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, addr, nil)
+	if err != nil {
+		return fmt.Errorf("не удалось собрать запрос проверки живости: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -834,4 +991,19 @@ func runHealthcheck() error {
 		return fmt.Errorf("сервис ответил кодом %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// healthcheckURL собирает адрес проверки живости из адреса слушателя сервера.
+// Адрес слушателя вида «:8080» превращается в «http://127.0.0.1:8080/healthz»,
+// то есть проверка всегда идёт на loopback и не может стать мостом к
+// произвольному адресу.
+func healthcheckURL(listen string) (string, error) {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "", fmt.Errorf("адрес слушателя сервера не разобран: %w", err)
+	}
+	if host != "" && host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		return "", fmt.Errorf("адрес слушателя сервера обязан указывать на loopback")
+	}
+	return "http://127.0.0.1:" + port + "/healthz", nil
 }

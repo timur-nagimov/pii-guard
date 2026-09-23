@@ -7,6 +7,10 @@ import (
 	"strings"
 )
 
+// typeCVV — имя типа персональных данных для кода проверки карты. Повторяется
+// в разметке, в списке ярлыков и в перечнях типов, поэтому вынесено в константу.
+const typeCVV = "CVV"
+
 // kind описывает один вид вставляемого значения: тип разметки, вес в выборке,
 // естественные ярлыки перед значением и способ порождения самого значения.
 type kind struct {
@@ -36,7 +40,7 @@ var injectKinds = []kind{
 	{"ISSUER", 3, []string{"выдан", "кем выдан"}, (*maker).issuer},
 	{"ISSUE_DATE", 3, []string{"дата выдачи", "выдан"}, func(m *maker) string { return m.date(2005, 2024) }},
 	{"DEPT_CODE", 2, []string{"код подразделения"}, func(m *maker) string { return m.numNZ(3) + "-" + m.num(3) }},
-	{"CVV", 2, []string{"CVV", "CVC", "код с оборота"}, func(m *maker) string { return m.num(3) }},
+	{typeCVV, 2, []string{typeCVV, "CVC", "код с оборота"}, func(m *maker) string { return m.num(3) }},
 	{"PIN", 2, []string{"пин-код", "ПИН"}, func(m *maker) string { return m.num(4) }},
 	{"CITIZENSHIP", 2, []string{"гражданство"}, func(m *maker) string { return m.pick(citizenships) }},
 	{"FOREIGN_PASSPORT", 2, []string{"загранпаспорт", "заграничный паспорт"}, func(m *maker) string {
@@ -93,7 +97,7 @@ func pickKind(m *maker) kind {
 var anchorOnlyTypes = map[string]bool{
 	"PIN":              true,
 	"DOB":              true,
-	"CVV":              true,
+	typeCVV:            true,
 	"CITIZENSHIP":      true,
 	"DEPT_CODE":        true,
 	"FOREIGN_PASSPORT": true,

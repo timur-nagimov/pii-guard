@@ -8,12 +8,56 @@ import (
 	"pii-guard/internal/pii/dict"
 )
 
+// addrPartAnchors — якоря отдельных частей адреса. Общий список addrAnchors
+// лежит в address_words.go и отвечает за адрес целиком; по этим словам
+// маскируется одна часть записи: «Город проживания: Казань», «страна:
+// Россия», «населённый пункт: Тула», «Клиент из города Казань», «на улице
+// Ленина».
+var addrPartAnchors = []string{
+	// Формы слова «проживание»: «город проживания», «страна проживания».
+	"проживания", "проживание", "проживанию", "проживании", "проживанием",
+	// Якоря отдельных частей адреса: страна, населённый пункт, город.
+	"страна", "страны", "стране", "страну", "страной",
+	"населённый пункт", "населенный пункт",
+	"из города",
+	"на улице", "на улицу",
+}
+
+// addrAllAnchors — полный набор якорей адреса: общие слова из address_words.go
+// вместе с якорями отдельных частей. Списки склеиваются один раз при старте, а
+// не на каждом документе.
+var addrAllAnchors = addrAnchorList()
+
+// addrAnchorList склеивает общий список якорей адреса с якорями отдельных
+// частей.
+func addrAnchorList() []string {
+	all := make([]string, 0, len(addrAnchors)+len(addrPartAnchors))
+	all = append(all, addrAnchors...)
+	all = append(all, addrPartAnchors...)
+	return all
+}
+
 // addrAnchorWindow — окно поиска якоря слева от фрагмента, в рунах.
 const addrAnchorWindow = 48
 
 // addrMaxRunes — наибольшая длина адресного фрагмента в рунах. Компоненты
 // дальше этого расстояния относятся уже к другому адресу.
 const addrMaxRunes = 120
+
+// Виды адресных компонентов, попадающие в поле Reason. Вынесены в константы,
+// чтобы не повторять строковые литералы в разборе. Словари типов лежат в
+// address_words.go и держат те же самые значения.
+const (
+	addrKindCity     = "city"
+	addrKindRegion   = "region"
+	addrKindStreet   = "street"
+	addrKindHouse    = "house"
+	addrKindCorp     = "corp"
+	addrKindBuilding = "building"
+	addrKindFlat     = "flat"
+	addrKindOffice   = "office"
+	addrKindPremise  = "premise"
+)
 
 // addrWord — значимое слово документа: буквенный или цифровой токен.
 // Знаки препинания и пробелы в список не попадают, они разбираются как
@@ -66,7 +110,7 @@ func addrWithLatinCity(d *Doc, ws []addrWord, comps []addrComp) []addrComp {
 			continue
 		}
 		comps[i].start = ws[p].start
-		comps[i].kinds = append([]string{"city"}, comps[i].kinds...)
+		comps[i].kinds = append([]string{addrKindCity}, comps[i].kinds...)
 	}
 	return comps
 }
@@ -75,7 +119,7 @@ func addrWithLatinCity(d *Doc, ws []addrWord, comps []addrComp) []addrComp {
 // Слово должно стоять само по себе: в записи «John Smith, Druzhby str.»
 // фамилия отделена от имени пробелом, и населённым пунктом не считается.
 func addrLatinCityBefore(d *Doc, ws []addrWord, c addrComp) (int, bool) {
-	if !addrHasKind(c, "street") || addrHasKind(c, "city") {
+	if !addrHasKind(c, addrKindStreet) || addrHasKind(c, addrKindCity) {
 		return 0, false
 	}
 	p := -1
@@ -84,19 +128,28 @@ func addrLatinCityBefore(d *Doc, ws []addrWord, c addrComp) (int, bool) {
 			p = i
 		}
 	}
-	if p < 0 || ws[p].kind != KindLat || !ws[p].title {
+	if p < 0 || ws[p].kind != KindLat {
 		return 0, false
 	}
-	if len([]rune(ws[p].lower)) < 3 || addrIsTypeWord(ws[p].lower) {
+	// Название может быть дефисным: «Komsomolsk-na-amure» разбито токенизатором
+	// на части. Идём влево по дефисам до первого заглавного слова.
+	start := p
+	for start > 0 && addrGap(d, ws, start-1) == "-" && ws[start-1].kind == KindLat {
+		start--
+	}
+	if !ws[start].title {
+		return 0, false
+	}
+	if len([]rune(ws[start].lower)) < 3 || addrIsTypeWord(ws[start].lower) {
 		return 0, false
 	}
 	if d.Text[ws[p].end:c.start] != ", " {
 		return 0, false
 	}
-	if p > 0 && addrGap(d, ws, p-1) != "" && strings.TrimSpace(addrGap(d, ws, p-1)) == "" {
+	if start > 0 && addrGap(d, ws, start-1) != "" && strings.TrimSpace(addrGap(d, ws, start-1)) == "" {
 		return 0, false
 	}
-	return p, true
+	return start, true
 }
 
 // addrWithPostcodes добавляет к компонентам почтовый индекс, стоящий сразу за
@@ -107,7 +160,7 @@ func addrWithPostcodes(d *Doc, comps []addrComp) []addrComp {
 		if run.GroupsPattern() != "6" || addrForeignNumber(d, &run) {
 			continue
 		}
-		if _, ok := d.AnchorBefore(run.Start, addrAnchors, addrAnchorWindow); !ok {
+		if _, ok := d.AnchorBefore(run.Start, addrAllAnchors, addrAnchorWindow); !ok {
 			continue
 		}
 		if addrOverlaps(comps, run.Start, run.End) {
@@ -166,12 +219,13 @@ func addrGap(d *Doc, ws []addrWord, i int) string {
 
 // addrShortGap проверяет, что промежуток внутри компонента короткий и состоит
 // только из пробелов и служебных знаков. Перевод строки компонент разрывает.
+// Неразрывный пробел приходит из выгрузок и на вид неотличим от обычного.
 func addrShortGap(gap string) bool {
 	if len([]rune(gap)) > 3 {
 		return false
 	}
 	for _, r := range gap {
-		if !strings.ContainsRune(" .№#-", r) {
+		if !strings.ContainsRune(" .№#-\u00a0", r) {
 			return false
 		}
 	}
@@ -201,7 +255,7 @@ func addrAttachHouseNumber(d *Doc, ws []addrWord, c addrComp, next int) (addrCom
 	if next >= len(ws) || ws[next].kind != KindDigit || len(ws[next].lower) > 4 {
 		return c, next
 	}
-	if !addrHasKind(c, "street") || addrHasKind(c, "house") {
+	if !addrHasKind(c, addrKindStreet) || addrHasKind(c, addrKindHouse) {
 		return c, next
 	}
 	gap := d.Text[c.end:ws[next].start]
@@ -215,7 +269,7 @@ func addrAttachHouseNumber(d *Doc, ws []addrWord, c addrComp, next int) (addrCom
 	}
 	end, last := addrNumberEnd(d, ws, next)
 	c.end = end
-	c.kinds = append(c.kinds, "house")
+	c.kinds = append(c.kinds, addrKindHouse)
 	return c, last + 1
 }
 
@@ -225,7 +279,7 @@ func addrAttachHouseNumber(d *Doc, ws []addrWord, c addrComp, next int) (addrCom
 // допускается ровно одно сокращённое слово с заглавной буквы: развёрнутый
 // комментарий вроде «(заявка принята)» к адресу не относится.
 func addrRegionTail(d *Doc, ws []addrWord, c addrComp, next int) (addrComp, int) {
-	if !addrHasKind(c, "city") || next >= len(ws) {
+	if !addrHasKind(c, addrKindCity) || next >= len(ws) {
 		return c, next
 	}
 	if strings.TrimLeft(d.Text[c.end:ws[next].start], " ") != "(" {
@@ -296,10 +350,28 @@ func addrLookupType(d *Doc, ws []addrWord, i int, types map[string]string) (stri
 	if !ok {
 		return "", 0, false
 	}
+	// Односимвольный тип требует точки, иначе предлог «с» из «с 5 утра»
+	// превращается в название села. Исключение — следующее слово с заглавной
+	// буквы: «г Пенза» и «с Ивановка» без точки это адрес, а не предлог.
+	// Аббревиатура вроде «IMEI» названием не считается: «с IMEI» это предлог
+	// с обозначением устройства, а не село.
 	if len([]rune(ws[i].lower)) == 1 && !strings.HasPrefix(addrGap(d, ws, i), ".") {
-		return "", 0, false
+		if i+1 >= len(ws) || !ws[i+1].title || addrAllCaps(d.Text[ws[i+1].start:ws[i+1].end]) {
+			return "", 0, false
+		}
 	}
 	return kind, i + 1, true
+}
+
+// addrAllCaps сообщает, что слово состоит только из заглавных букв: это
+// аббревиатура вроде «IMEI», а не название населённого пункта.
+func addrAllCaps(s string) bool {
+	for _, r := range s {
+		if unicode.IsLower(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // addrIsTypeWord сообщает, что слово является каким-либо адресным типом.
@@ -417,7 +489,7 @@ func addrNameTail(d *Doc, ws []addrWord, i int) (int, int) {
 // Число без следующего слова названием не считается, иначе «с. 5 по 10»
 // превращается в населённый пункт.
 func addrNumericName(d *Doc, ws []addrWord, i int) (int, int, bool) {
-	if i+1 >= len(ws) || addrGap(d, ws, i) != " " {
+	if i+1 >= len(ws) || !addrSpace(addrGap(d, ws, i)) {
 		return 0, 0, false
 	}
 	if !addrNameWord(ws, i+1) && !addrNameConnectors[ws[i+1].lower] {
@@ -437,7 +509,7 @@ func addrNameContinues(d *Doc, ws []addrWord, j int) bool {
 	if gap == "." && addrInitial(ws[j-1]) && ws[j].title {
 		return true
 	}
-	if gap != " " && gap != "-" {
+	if gap != " " && gap != "\u00a0" && gap != "-" {
 		return false
 	}
 	if gap == "-" {
@@ -495,14 +567,25 @@ func addrMatchTyped(d *Doc, ws []addrWord, i int, types map[string]string) (addr
 	return addrMatchNameFirst(d, ws, i, types)
 }
 
+// addrSpace сообщает, что промежуток между словами это пробел: обычный или
+// неразрывный. Неразрывный пробел приходит из выгрузок и на вид неотличим от
+// обычного, поэтому там, где ожидается пробел, он тоже допустим.
+func addrSpace(gap string) bool { return gap == " " || gap == "\u00a0" }
+
 // addrMatchNameFirst разбирает обратный порядок «название плюс тип». Название
 // из словаря сюда не пускается: в записи «Москва ул. Ленина» город не является
 // названием улицы.
 func addrMatchNameFirst(d *Doc, ws []addrWord, i int, types map[string]string) (addrComp, int, bool) {
-	if !addrNameHead(d, ws, i) || addrGap(d, ws, i) != " " {
+	if !addrNameHead(d, ws, i) || !addrSpace(addrGap(d, ws, i)) {
 		return addrComp{}, 0, false
 	}
 	kind, next, ok := addrLookupType(d, ws, i+1, types)
+	// Тип может стоять через слово «автономный»: «Ямало-Ненецкий автономный
+	// округ» — тип «округ» на третьем слове. Без этого составное название
+	// региона распадалось и «автономный округ» оставалось без маски.
+	if !ok && i+2 < len(ws) && ws[i+1].lower == "автономный" {
+		kind, next, ok = addrLookupType(d, ws, i+2, types)
+	}
 	if !ok {
 		return addrComp{}, 0, false
 	}
@@ -510,7 +593,7 @@ func addrMatchNameFirst(d *Doc, ws []addrWord, i int, types map[string]string) (
 	// «Москва ул. Ленина» город относится к себе. Для региона оговорка не
 	// действует, иначе опечатка «Свердловска область» теряла бы слово
 	// «область» и разрывала адрес.
-	if _, known := dict.Place(ws[i].lower); known && kind != "region" {
+	if _, known := dict.Place(ws[i].lower); known && kind != addrKindRegion {
 		return addrComp{}, 0, false
 	}
 	// За типом стоит собственное название — значит тип относится к нему, а не
@@ -528,7 +611,7 @@ func addrMatchNameFirst(d *Doc, ws []addrWord, i int, types map[string]string) (
 // за ним стоит имя собственное. Число после сокращения имя не образует, этим
 // «д. 5» отличается от «д. Касимов».
 func addrSoloComp(d *Doc, ws []addrWord, i, name int, kind string) bool {
-	if kind != "city" && kind != "street" {
+	if kind != addrKindCity && kind != addrKindStreet {
 		return false
 	}
 	if !addrSoloTypes[d.Lower[ws[i].start:ws[name-1].end]] {
@@ -556,8 +639,27 @@ func addrMatchHouse(d *Doc, ws []addrWord, i int) (addrComp, int, bool) {
 	// не засчитывается, оно слишком многозначно, а корпус, квартира и офис в
 	// одиночку значат номер помещения, а не место жительства.
 	c := addrComp{start: ws[i].start, end: end, kinds: []string{kind}}
-	c.solo = kind == "house" && addrHouseWords[ws[i].lower]
+	c.solo = kind == addrKindHouse && addrHouseWords[ws[i].lower]
+	// Квартира полным словом отдельно это адрес, если после номера нет
+	// продолжения: «квартира 12» маскируется, а «квартира 12 в доме напротив»
+	// это разговорное описание, а не адресная запись.
+	if kind == addrKindFlat && ws[i].lower == "квартира" && addrFlatSolo(ws, last) {
+		c.solo = true
+	}
 	return c, last + 1, true
+}
+
+// addrFlatSolo сообщает, что после номера квартиры нет продолжения адреса
+// словом: «квартира 12» в конце строки это адрес, а «квартира 12 в доме
+// напротив» — описание местоположения.
+func addrFlatSolo(ws []addrWord, last int) bool {
+	if last+1 >= len(ws) {
+		return true
+	}
+	if ws[last+1].kind == KindCyr || ws[last+1].kind == KindLat {
+		return false
+	}
+	return true
 }
 
 // addrNumberEnd расширяет номер дома на приклеенную литеру, на приклеенный
@@ -608,7 +710,7 @@ func addrMatchBareStreet(d *Doc, ws []addrWord, i int) (addrComp, int, bool) {
 		return addrComp{}, 0, false
 	}
 	end, last := addrNumberEnd(d, ws, j)
-	return addrComp{start: w.start, end: end, kinds: []string{"street", "house"}}, last + 1, true
+	return addrComp{start: w.start, end: end, kinds: []string{addrKindStreet, addrKindHouse}}, last + 1, true
 }
 
 // addrHasStreetSuffix проверяет улично-прилагательное окончание названия.
@@ -628,7 +730,7 @@ func addrMatchNumberStreet(d *Doc, ws []addrWord, i int) (addrComp, int, bool) {
 		return addrComp{}, 0, false
 	}
 	_, last := addrNumberEnd(d, ws, i)
-	if addrGap(d, ws, last) != " " {
+	if !addrSpace(addrGap(d, ws, last)) {
 		return addrComp{}, 0, false
 	}
 	c, next, ok := addrMatchTyped(d, ws, last+1, addrStreetTypes)
@@ -636,7 +738,7 @@ func addrMatchNumberStreet(d *Doc, ws []addrWord, i int) (addrComp, int, bool) {
 		return addrComp{}, 0, false
 	}
 	c.start = ws[i].start
-	c.kinds = append([]string{"house"}, c.kinds...)
+	c.kinds = append([]string{addrKindHouse}, c.kinds...)
 	return c, next, true
 }
 
@@ -664,7 +766,7 @@ func addrMatchGeo(d *Doc, ws []addrWord, i int) (addrComp, int, bool) {
 // или дефисом и могут образовать одно название.
 func addrWordsJoinable(d *Doc, ws []addrWord, i, j int) bool {
 	for k := i; k < j; k++ {
-		if gap := addrGap(d, ws, k); gap != " " && gap != "-" {
+		if gap := addrGap(d, ws, k); gap != " " && gap != "\u00a0" && gap != "-" {
 			return false
 		}
 	}
@@ -803,8 +905,11 @@ func addrSoloGroup(group []addrComp) bool {
 }
 
 // addrAnchored сообщает, что слева от фрагмента стоит якорное слово адреса.
+// Окно захватывает и несколько рун после начала фрагмента: якорь «из города»
+// заканчивается на типе «города», который сам входит во фрагмент, и без этого
+// запаса «Клиент из города Казань» не находилось бы.
 func addrAnchored(d *Doc, start int) bool {
-	_, ok := d.HasAnchorBefore(start, addrAnchors, addrAnchorWindow)
+	_, ok := d.FindAnchor(start, start, addrAllAnchors, addrAnchorWindow, 12)
 	return ok
 }
 
@@ -875,13 +980,14 @@ func addrForeignNumber(d *Doc, run *NumRun) bool {
 }
 
 // addrPunctGap проверяет, что между индексом и адресом стоят только пробелы и
-// запятые.
+// запятые. Неразрывный пробел приходит из выгрузок и на вид неотличим от
+// обычного.
 func addrPunctGap(gap string) bool {
 	if len([]rune(gap)) > 4 {
 		return false
 	}
 	for _, r := range gap {
-		if !strings.ContainsRune(" ,.\t", r) {
+		if !strings.ContainsRune(" ,.\t\u00a0", r) {
 			return false
 		}
 	}

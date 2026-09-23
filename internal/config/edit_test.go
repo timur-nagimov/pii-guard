@@ -34,10 +34,10 @@ custom_types:
     validator: snils
 `
 
-func writeConfig(t *testing.T, body string) string {
+func writeConfig(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(editableConfig), 0o600); err != nil {
 		t.Fatalf("настройки не записаны: %v", err)
 	}
 	return path
@@ -56,7 +56,7 @@ func readConfig(t *testing.T, path string) string {
 // Комментарии в этом файле объясняют выбор чисел, и правка через интерфейс не
 // имеет права их стирать.
 func TestEditKeepsEverythingExceptTheChange(t *testing.T) {
-	path := writeConfig(t, editableConfig)
+	path := writeConfig(t)
 
 	if _, err := SetSystemTypes(path, "kilo", []string{"FIO", "PHONE"}); err != nil {
 		t.Fatalf("типы не заданы: %v", err)
@@ -105,7 +105,7 @@ func TestEditKeepsEverythingExceptTheChange(t *testing.T) {
 // Если не возвращают — правка тащит за собой невидимый мусор, и после
 // нескольких правок через интерфейс файл перестаёт быть читаемым.
 func TestAddRemoveCustomTypeIsIdentity(t *testing.T) {
-	path := writeConfig(t, editableConfig)
+	path := writeConfig(t)
 
 	if _, err := AddCustomType(path, CustomType{
 		Name: "BADGE", Pattern: `(\d{6})`, Group: 1,
@@ -213,7 +213,7 @@ func TestRejectedEditsLeaveFileUntouched(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			path := writeConfig(t, editableConfig)
+			path := writeConfig(t)
 			err := tc.do(path)
 			if err == nil {
 				t.Fatal("правка принята, хотя должна быть отвергнута")
@@ -233,7 +233,7 @@ func TestRejectedEditsLeaveFileUntouched(t *testing.T) {
 // плохой ввод раньше. Поэтому проверяется сам механизм: правка, после которой
 // настройки перестают разбираться, не должна попасть на диск.
 func TestEditFileRejectsConfigThatFailsValidation(t *testing.T) {
-	path := writeConfig(t, editableConfig)
+	path := writeConfig(t)
 
 	_, err := editFile(path, func(root *yaml.Node) (string, error) {
 		logging := &yaml.Node{Kind: yaml.MappingNode}
@@ -255,7 +255,7 @@ func TestEditFileRejectsConfigThatFailsValidation(t *testing.T) {
 // Имя типа с опечаткой не должно доходить до файла: набор типов такое имя
 // молча примет и никогда ни с чем не совпадёт.
 func TestSetSystemTypesRejectsUnknownNames(t *testing.T) {
-	path := writeConfig(t, editableConfig)
+	path := writeConfig(t)
 
 	_, err := SetSystemTypes(path, "kilo", []string{"FIO", "ФИО", "PNONE"})
 	if err == nil {
@@ -285,7 +285,7 @@ func TestSetSystemTypesRejectsUnknownNames(t *testing.T) {
 // Временные файлы после правки оставаться не должны: каталог настроек
 // подхватывается перечитыванием, и обрывки там ни к чему.
 func TestEditLeavesNoTempFiles(t *testing.T) {
-	path := writeConfig(t, editableConfig)
+	path := writeConfig(t)
 	dir := filepath.Dir(path)
 
 	if _, err := SetSystemEnabled(path, "kilo", false); err != nil {
@@ -310,7 +310,7 @@ func TestEditLeavesNoTempFiles(t *testing.T) {
 // Выключение системы должно доходить до разобранных настроек, а не только до
 // текста файла.
 func TestSetSystemEnabled(t *testing.T) {
-	path := writeConfig(t, editableConfig)
+	path := writeConfig(t)
 
 	if _, err := SetSystemEnabled(path, "kilo", false); err != nil {
 		t.Fatalf("система не выключена: %v", err)

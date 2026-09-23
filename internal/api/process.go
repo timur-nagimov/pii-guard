@@ -12,6 +12,7 @@ import (
 	"pii-guard/internal/capture"
 	"pii-guard/internal/config"
 	"pii-guard/internal/logging"
+	"pii-guard/internal/mask"
 	"pii-guard/internal/store"
 )
 
@@ -67,15 +68,15 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "тело запроса превышает допустимый размер")
 			return
 		}
-		s.writeValidation(w, r, "json_invalid", []string{"body"}, "не удалось разобрать JSON")
+		s.writeValidation(w, r, "json_invalid", []string{fieldBody}, "не удалось разобрать JSON")
 		return
 	}
 	if req.Payload == nil {
-		s.writeValidation(w, r, "missing", []string{"body", "payload"}, "поле payload обязательно")
+		s.writeValidation(w, r, "missing", []string{fieldBody, "payload"}, "поле payload обязательно")
 		return
 	}
 	if req.PayloadID == nil {
-		s.writeValidation(w, r, "missing", []string{"body", "payload_id"}, "поле payload_id обязательно")
+		s.writeValidation(w, r, "missing", []string{fieldBody, "payload_id"}, "поле payload_id обязательно")
 		return
 	}
 
@@ -91,47 +92,75 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	started := time.Now()
-	result, dir, code, err := s.processOne(id, payload, sys, cfg)
+	pr, err := s.processOne(id, payload, sys, cfg)
 	if err != nil {
-		// Профиль проверяющей системы никогда не отвечает пятисотой ошибкой:
-		// пять подряд невалидных ответов останавливают весь прогон.
-		if sys.ErrorMode(cfg.Defaults) == config.OnErrorOpen {
-			took := time.Since(started)
-			s.metrics.ObserveDegraded(sys.Name)
-			w.Header().Set("X-PII-Degraded", "1")
-			s.writeJSON(w, http.StatusOK, processResponse{Result: payload})
-			// Счётчиков нет: разбор не дошёл до конца, и найденное считать не по
-			// чему.
-			ev := processEvent{payloadID: id, dir: dirMask, size: len(payload), took: took}
-			s.logProcess(r, sys.Name, ev, true)
-			// Текст ушёл назад неизменённым, то есть персональные данные в нём
-			// остались. Для отчётности это событие важнее удачного
-			// маскирования, поэтому в аудит оно идёт обязательно.
-			s.auditProcess(r, sys, ev, "degraded")
-			return
-		}
+		// Сбой обработки, при котором частичного результата нет: хранилище
+		// недоступно или обработчик упал вне детекторов. Открытый текст не
+		// возвращается ни в каком режиме: персональные данные не выходят наружу.
+		//
+		// Профиль проверяющей системы не терпит пятисотых ответов: пять подряд
+		// невалидных ответов останавливают весь прогон. Ради этого отказ части
+		// детекторов сюда и не доходит — он приходит признаком degraded ниже и в
+		// щадящем режиме отвечает частичной маской. Пятьсот третий остаётся
+		// только на полный сбой, когда вернуть нечего, кроме открытого текста, а
+		// его отдавать нельзя.
+		took := time.Since(started)
 		w.Header().Set("Retry-After", "1")
 		s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "временная ошибка обработки")
+		// Счётчиков нет: разбор не дошёл до конца, и найденное считать не по
+		// чему. В журнал и аудит событие уходит всё равно: несостоявшаяся
+		// обработка для отчётности важнее удачной.
+		ev := processEvent{payloadID: id, dir: dirMask, size: len(payload), took: took}
+		s.logProcess(r, sys.Name, ev, true, nil)
+		s.auditProcess(r, sys, ev, "error")
 		return
 	}
-	if code != http.StatusOK {
-		s.writeError(w, r, code, "demask_forbidden", "демаскирование недоступно для этой системы")
+	if pr.code != http.StatusOK {
+		s.writeError(w, r, pr.code, pr.errCode, pr.errMsg)
 		// Отказанная попытка развернуть маску это тоже обращение к
 		// персональным данным, и для службы контроля оно интереснее
-		// удавшегося: видно, кто просил чужое.
+		// удавшегося: видно, кто просил чужое или уже несуществующее.
 		s.auditProcess(r, sys, processEvent{
-			payloadID: id, dir: dirDemask, size: len(payload), took: time.Since(started),
-		}, "forbidden")
+			payloadID: id, dir: pr.dir, size: len(payload), took: time.Since(started),
+		}, pr.auditResult)
 		return
 	}
 
 	took := time.Since(started)
-	s.writeJSON(w, http.StatusOK, processResponse{Result: result.text})
-	s.metrics.ObserveProcess(sys.Name, string(dir), took, len(payload), result.counts)
-	ev := processEvent{payloadID: id, dir: dir, size: len(payload), counts: result.counts, took: took}
-	s.logProcess(r, sys.Name, ev, false)
+	// Деградация: часть детекторов или кусков отказала, текст обработан
+	// остальными. В щадящем режиме отдаём частичную маску с признаком
+	// деградации, в строгом — просим повторить. Открытый текст не отдаётся
+	// ни в одном из режимов.
+	if pr.out.degraded {
+		if sys.ErrorMode(cfg.Defaults) == config.OnErrorClosed {
+			w.Header().Set("Retry-After", "1")
+			s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "временная ошибка обработки")
+			return
+		}
+		s.metrics.ObserveDegraded(sys.Name)
+		w.Header().Set("X-PII-Degraded", "1")
+		s.writeJSON(w, http.StatusOK, processResponse{Result: pr.out.text})
+		ev := processEvent{payloadID: id, dir: pr.dir, size: len(payload), counts: pr.out.counts, took: took}
+		s.logProcess(r, sys.Name, ev, true, pr.out.failedTypes)
+		// Часть текста ушла назад необработанной, то есть персональные данные в
+		// ней могли остаться. Для отчётности это событие важнее удачного
+		// маскирования, поэтому в аудит оно идёт обязательно.
+		s.auditProcess(r, sys, ev, "degraded")
+		return
+	}
+
+	if pr.unknownID {
+		w.Header().Set("X-PII-Unknown-Id", "1")
+	}
+	if pr.ambiguous {
+		w.Header().Set("X-PII-Ambiguous", "1")
+	}
+	s.writeJSON(w, http.StatusOK, processResponse{Result: pr.out.text})
+	s.metrics.ObserveProcess(sys.Name, string(pr.dir), took, len(payload), pr.out.counts)
+	ev := processEvent{payloadID: id, dir: pr.dir, size: len(payload), counts: pr.out.counts, took: took}
+	s.logProcess(r, sys.Name, ev, false, nil)
 	s.auditProcess(r, sys, ev, "ok")
-	s.captureProcess(sys.Name, id, dir, payload, result.text, result.counts, took)
+	s.captureProcess(sys.Name, id, pr.dir, payload, pr.out.text, pr.out.counts, took)
 }
 
 // captureProcess сохраняет обработку в отдельный файл для последующей
@@ -167,6 +196,10 @@ func (s *Server) captureProcess(system, payloadID string, dir direction, payload
 // соседними параметрами одного типа, которые легко переставить местами и
 // ничего при этом не заметить. Собранные вместе, они ещё и считаются один раз
 // на месте вызова и уходят обоим получателям.
+//
+// Признак деградации и имена отказавших типов в событие не входят: они
+// описывают не сам текст, а то, как прошла обработка, нужны только журналу и
+// передаются ему отдельно.
 type processEvent struct {
 	payloadID string
 	dir       direction
@@ -200,77 +233,145 @@ func (s *Server) auditProcess(r *http.Request, sys config.System, ev processEven
 type outcome struct {
 	text   string
 	counts map[string]int
+	// degraded — признак того, что часть детекторов или кусков отказала и
+	// текст обработан не полностью.
+	degraded bool
+	// failedTypes — имена типов, чьи детекторы отказали. Только имена, без
+	// значений: список безопасно писать в журнал.
+	failedTypes []string
 }
 
-// flightResult — решение по одному запросу, которое объединение одинаковых
-// запросов отдаёт сразу всем, кто его ждал. Тип лежит на уровне пакета, потому
-// что часть решений принимает demaskEntry, а разбирает их processOne.
-type flightResult struct {
-	out  outcome
-	dir  direction
+// processResult — итог обработки одного запроса: либо успешный результат с
+// направлением, либо отказ с кодом и описанием.
+type processResult struct {
+	out outcome
+	dir direction
+	// code — код ответа. Для успеха это 200, для отказа — 403, 404 или 409.
 	code int
+	// errCode и errMsg — код и описание ошибки для отказа.
+	errCode string
+	errMsg  string
+	// auditResult — чем закончилось обращение для журнала аудита.
+	auditResult string
+	// unknownID — признак того, что текст вернулся как есть, потому что
+	// запись не найдена, а режим on_unknown_id требует пропустить текст.
+	unknownID bool
+	// ambiguous — признак неоднозначного повтора: тот же идентификатор с
+	// третьим текстом.
+	ambiguous bool
 }
 
 // processOne определяет направление и выполняет маскирование либо обратное
 // преобразование. Одновременные одинаковые запросы объединяются, чтобы повтор
 // от проверяющей системы не считал маску дважды.
-func (s *Server) processOne(id, payload string, sys config.System, cfg *config.Config) (outcome, direction, int, error) {
+func (s *Server) processOne(id, payload string, sys config.System, cfg *config.Config) (processResult, error) {
 	hash := sha256.Sum256([]byte(payload))
 	key := id + "\x00" + hex.EncodeToString(hash[:8])
 
 	v, err, _ := s.flight.Do(key, func() (any, error) {
-		entry, found := s.store.Get(id)
-		switch {
-		case !found:
-			res, e := s.maskAndStore(id, payload, sys, cfg)
-			if e != nil {
-				return nil, e
-			}
-			return flightResult{out: res, dir: dirMask, code: http.StatusOK}, nil
-
-		case entry.OrigHash == hash:
-			// Повтор запроса на маскирование: отдаём ту же маску и ничего
-			// не перезаписываем.
-			return flightResult{out: outcome{text: entry.Mask, counts: countsOf(entry)}, dir: dirMaskRetry, code: http.StatusOK}, nil
-
-		case entry.MaskHash == hash:
-			return s.demaskEntry(entry, sys.Demask, sys.Name)
-
-		default:
-			// Тот же идентификатор, но текст не совпадает ни с исходным, ни с
-			// маской: маскируем присланное и запись не портим.
-			res := s.maskOnly(payload, sys, cfg)
-			s.metrics.ObserveAmbiguous(sys.Name)
-			return flightResult{out: res, dir: dirAmbiguous, code: http.StatusOK}, nil
-		}
+		entry, gerr := s.store.Get(id)
+		return s.resolveFlight(id, payload, hash, entry, gerr, sys, cfg)
 	})
 	if err != nil {
-		return outcome{}, dirMask, http.StatusOK, err
+		return processResult{}, err
 	}
-	fr, ok := v.(flightResult)
+	pr, ok := v.(processResult)
 	if !ok {
-		return outcome{}, dirMask, http.StatusOK, errors.New("внутренняя ошибка объединения запросов")
+		return processResult{}, errors.New("внутренняя ошибка объединения запросов")
 	}
-	return fr.out, fr.dir, fr.code, nil
+	return pr, nil
+}
+
+// resolveFlight решает, что делать с запросом: маскировать, повторить маску,
+// восстановить исходный текст, ответить отказом на истёкший срок или испорченную
+// запись, либо обработать неоднозначный повтор. Вынесено из processOne, чтобы
+// объединение запросов оставалось коротким.
+func (s *Server) resolveFlight(id, payload string, hash [32]byte, entry *store.Entry, gerr error, sys config.System, cfg *config.Config) (processResult, error) {
+	switch {
+	case errors.Is(gerr, store.ErrCorrupted):
+		// Запись есть, но не расшифровывается: чужой ключ шифрования или
+		// испорченное значение. Маскировать повторно нельзя — текст мог
+		// быть уже замаскирован, и звёздочки стали бы «исходником».
+		return processResult{dir: dirDemask, code: http.StatusConflict,
+			errCode: "payload_corrupted", errMsg: "запись повреждена или зашифрована другим ключом",
+			auditResult: "corrupted"}, nil
+
+	case errors.Is(gerr, store.ErrNotFound):
+		// Записи нет: либо идентификатор новый, либо срок хранения истёк.
+		// Если присланный текст уже похож на маску, маскировать его
+		// повторно нельзя: звёздочки стали бы «исходником», и оригинал
+		// был бы потерян. Поведение задаёт режим on_unknown_id.
+		if mask.LooksMasked(payload, sys.MaskOptions(cfg.Defaults).Default) {
+			switch sys.UnknownIDMode(cfg.Defaults) {
+			case config.OnUnknownPassthrough:
+				return processResult{out: outcome{text: payload}, dir: dirUnknownMask,
+					code: http.StatusOK, unknownID: true, auditResult: "unknown_id"}, nil
+			default:
+				return processResult{dir: dirDemask, code: http.StatusNotFound,
+					errCode: "payload_not_found", errMsg: "срок хранения истёк или идентификатор неизвестен",
+					auditResult: "not_found"}, nil
+			}
+		}
+		res, e := s.maskAndStore(id, payload, sys, cfg)
+		if e != nil {
+			return processResult{}, e
+		}
+		return processResult{out: res, dir: dirMask, code: http.StatusOK, auditResult: "ok"}, nil
+
+	case gerr != nil:
+		// Временная ошибка хранилища: частичного результата нет.
+		return processResult{}, gerr
+
+	case entry == nil:
+		// Запись не найдена без ошибки: считаем её отсутствующей.
+		res, e := s.maskAndStore(id, payload, sys, cfg)
+		if e != nil {
+			return processResult{}, e
+		}
+		return processResult{out: res, dir: dirMask, code: http.StatusOK, auditResult: "ok"}, nil
+
+	case entry.OrigHash == hash:
+		// Повтор запроса на маскирование: отдаём ту же маску и ничего
+		// не перезаписываем.
+		return processResult{out: outcome{text: entry.Mask, counts: countsOf(entry)}, dir: dirMaskRetry,
+			code: http.StatusOK, auditResult: "ok"}, nil
+
+	case entry.MaskHash == hash:
+		return s.demaskEntry(entry, sys.Demask, sys.Name)
+
+	default:
+		// Тот же идентификатор, но текст не совпадает ни с исходным, ни с
+		// маской: маскируем присланное и запись не портим. Ответ несёт
+		// заголовок X-PII-Ambiguous, чтобы клиент видел неоднозначность.
+		res := s.maskOnly(payload, sys, cfg)
+		s.metrics.ObserveAmbiguous(sys.Name)
+		return processResult{out: res, dir: dirAmbiguous, code: http.StatusOK,
+			ambiguous: true, auditResult: "ok"}, nil
+	}
 }
 
 // demaskEntry разворачивает маску обратно в исходный текст. Вынесено из
-// processOne, потому что это единственное направление с проверкой прав:
+// разбора запроса, потому что это единственное направление с проверкой прав:
 // развернуть маску можно только системе, которой она выдана, и только если
 // демаскирование ей разрешено настройкой. Система передана двумя полями, а не
 // целиком: больше для решения ничего не нужно.
-func (s *Server) demaskEntry(entry *store.Entry, demaskAllowed bool, system string) (flightResult, error) {
-	if !demaskAllowed {
-		return flightResult{code: http.StatusForbidden}, nil
-	}
-	if entry.System != "" && entry.System != system {
-		return flightResult{code: http.StatusForbidden}, nil
+//
+// Отказ и успех описаны теми же полями, что и остальные решения: код ответа,
+// код и текст ошибки, итог для журнала аудита. Обе причины отказа отвечают
+// одинаково — по ответу не видно, чужая это запись или демаскирование
+// запрещено системе вовсе.
+func (s *Server) demaskEntry(entry *store.Entry, demaskAllowed bool, system string) (processResult, error) {
+	if !demaskAllowed || (entry.System != "" && entry.System != system) {
+		return processResult{dir: dirDemask, code: http.StatusForbidden,
+			errCode: "demask_forbidden", errMsg: "демаскирование недоступно для этой системы",
+			auditResult: "forbidden"}, nil
 	}
 	original, err := s.store.Original(entry)
 	if err != nil {
-		return flightResult{}, err
+		return processResult{}, err
 	}
-	return flightResult{out: outcome{text: original, counts: countsOf(entry)}, dir: dirDemask, code: http.StatusOK}, nil
+	return processResult{out: outcome{text: original, counts: countsOf(entry)}, dir: dirDemask,
+		code: http.StatusOK, auditResult: "ok"}, nil
 }
 
 // maskAndStore маскирует текст и сохраняет соответствие.
@@ -279,13 +380,13 @@ func (s *Server) maskAndStore(id, payload string, sys config.System, cfg *config
 	if _, err := s.store.Put(id, payload, res.Text, sys.Name, res.Meta()); err != nil {
 		return outcome{}, err
 	}
-	return outcome{text: res.Text, counts: countsToStrings(res)}, nil
+	return outcome{text: res.Text, counts: countsToStrings(res), degraded: res.Degraded, failedTypes: res.FailedTypes}, nil
 }
 
 // maskOnly маскирует текст, не трогая хранилище.
 func (s *Server) maskOnly(payload string, sys config.System, cfg *config.Config) outcome {
 	res := s.engine.Mask(payload, sys, cfg.Defaults)
-	return outcome{text: res.Text, counts: countsToStrings(res)}
+	return outcome{text: res.Text, counts: countsToStrings(res), degraded: res.Degraded, failedTypes: res.FailedTypes}
 }
 
 // countsOf восстанавливает число фрагментов по метаданным записи.

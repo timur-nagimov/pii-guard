@@ -55,8 +55,9 @@ func itoa(v int) string {
 
 // numSeparators — символы, которые могут стоять между группами цифр внутри
 // одной сущности. Запятая и точка с запятой сюда не входят: они разделяют
-// разные сущности в перечислении.
-const numSeparators = " \t  -–—./()\\№#"
+// разные сущности в перечислении. Неразрывный дефис «‑» (U+2011) входит
+// наравне с обычным: в выгрузках код подразделения пишут «985‑724».
+const numSeparators = " \t  -–—‑./()\\№#"
 
 func isNumSeparator(s string) bool {
 	for _, r := range s {
@@ -446,13 +447,13 @@ func (d *Doc) AnchorBefore(start int, anchors []string, maxRunes int) (string, b
 // опечатка с лишним пробелом внутри слова не теряет якорь: «поч товый» и
 // «почтовый» считаются одним словом.
 func anchorBeforeCompact(norm string, anchors []string) (string, bool) {
-	compact := dropInlineSpaces(norm)
+	compact := compactSpaces(norm)
 	best := ""
 	for _, a := range anchors {
 		if a == "" || len(a) <= len(best) {
 			continue
 		}
-		if !strings.Contains(compact, dropInlineSpaces(FoldHomoglyphs(a))) {
+		if !strings.Contains(compact, compactSpaces(FoldHomoglyphs(a))) {
 			continue
 		}
 		best = a
@@ -461,7 +462,7 @@ func anchorBeforeCompact(norm string, anchors []string) (string, bool) {
 		return "", false
 	}
 	// Между якорем и значением не должно быть других цифр.
-	naCompact := dropInlineSpaces(FoldHomoglyphs(best))
+	naCompact := compactSpaces(FoldHomoglyphs(best))
 	pos := strings.LastIndex(compact, naCompact)
 	if containsDigit(compact[pos+len(naCompact):]) {
 		return "", false
@@ -469,10 +470,10 @@ func anchorBeforeCompact(norm string, anchors []string) (string, bool) {
 	return best, true
 }
 
-// dropInlineSpaces убирает из строки пробелы, табуляции и неразрывные
-// пробелы. Нужно для сравнения якорей: лишний пробел внутри слова — «поч
-// товый» вместо «почтовый» — не должен мешать совпадению.
-func dropInlineSpaces(s string) string {
+// compactSpaces убирает из строки пробелы, табуляции и неразрывные пробелы.
+// Нужно для сравнения якорей: лишний пробел внутри слова — «поч товый»
+// вместо «почтовый» — не должен мешать совпадению.
+func compactSpaces(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r == ' ' || r == '\t' || r == '\u00a0' {
 			return -1

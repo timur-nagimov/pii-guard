@@ -190,12 +190,11 @@ func citizenshipValue(d *Doc, from int) (int, int, bool) {
 	if !ok {
 		return 0, 0, false
 	}
-	_, lineEnd := d.LineBounds(start)
-	start = citizenshipSkipFillers(d.Lower, start, lineEnd)
-	if _, hi := d.WindowRunes(start, start, 0, citizenshipMaxRunes); hi < lineEnd {
-		lineEnd = hi
-	}
-	end, ok := citizenshipWordsEnd(d.Lower, start, lineEnd)
+	// Значение переносится по строкам («Гражданство:\nРеспублика\nБеларусь»),
+	// поэтому предел берётся по окну в рунах, а не по концу строки.
+	_, limit := d.WindowRunes(start, start, 0, citizenshipMaxRunes)
+	start = citizenshipSkipFillers(d.Lower, start, limit)
+	end, ok := citizenshipWordsEnd(d.Lower, start, limit)
 	if !ok {
 		return 0, 0, false
 	}
@@ -209,10 +208,10 @@ func citizenshipValue(d *Doc, from int) (int, int, bool) {
 // citizenshipSkipFillers пропускает служебные слова между якорем и значением.
 // Без этого запись «гражданство по паспорту: Россия» терялась целиком: сразу
 // за якорем стоит предлог, а не название страны.
-func citizenshipSkipFillers(low string, start, lineEnd int) int {
+func citizenshipSkipFillers(low string, start, limit int) int {
 	pos := start
 	for n := 0; n < citizenshipMaxFillers; n++ {
-		ws, we, ok := dwNextWord(low, pos, lineEnd)
+		ws, we, ok := dwNextWordValue(low, pos, limit)
 		if !ok || ws != pos || !dwInList(low[ws:we], citizenshipFillerWords) {
 			return pos
 		}
@@ -226,18 +225,29 @@ func citizenshipSkipFillers(low string, start, lineEnd int) int {
 }
 
 // citizenshipWordsEnd набирает слова значения, пока они остаются частью
-// названия страны. Хотя бы одно слово обязано быть названием: из одного
+// названия страны. Слова разделяет и перевод строки: в анкетах значение
+// переносится целиком («Республика\nБеларусь») либо рвётся внутри слова
+// («Арм\nения»). Хотя бы одно слово обязано быть названием: из одного
 // уточняющего слова «Республика» гражданство не следует.
 func citizenshipWordsEnd(low string, start, limit int) (int, bool) {
 	pos, end, matched := start, 0, false
 	for n := 0; n < citizenshipMaxWords; n++ {
-		ws, we, ok := dwNextWord(low, pos, limit)
+		ws, we, ok := dwNextWordValue(low, pos, limit)
 		if !ok {
 			break
 		}
 		word := low[ws:we]
 		isStem := dwHasStem(word, citizenshipStems)
 		if !isStem && !dwInList(word, citizenshipQualifiers) {
+			// Слово бывает разорвано переводом строки: «Арм\nения».
+			// Склеиваем его со следующим и проверяем основу по склейке,
+			// а границы фрагмента считаем по исходному тексту.
+			ws2, we2, ok2 := dwNextWordValue(low, we, limit)
+			if ok2 && dwHasStem(word+low[ws2:we2], citizenshipStems) {
+				matched = true
+				end, pos = we2, we2
+				continue
+			}
 			break
 		}
 		matched = matched || isStem

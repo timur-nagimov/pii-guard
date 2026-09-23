@@ -5,29 +5,60 @@ import (
 	"unicode/utf8"
 )
 
-// anchorPhoneWord — слово «телефон» целиком. Нужно сразу трём перечням:
-// якорям телефона, сильным персональным якорям и словам, которые ищутся с
-// опечаткой. Значит везде одно и то же, поэтому написано один раз.
-const anchorPhoneWord = "телефон"
-
 // Якорные слова для форматных типов. Все задаются в нижнем регистре:
 // поиск идёт по копии текста в нижнем регистре, поэтому регистр исходной
 // записи значения не имеет.
+
+// Общие якорные слова, повторяющиеся в списках разных детекторов. Вынесены
+// в константы, чтобы не дублировать строковые литералы по файлам.
+const (
+	anchorWordInn        = "инн"
+	anchorWordCard       = "карт"
+	anchorWordDriver     = "водительск"
+	anchorWordCVV        = "cvc"
+	anchorWordDept       = "к/п"
+	anchorWordAddress    = "адрес"
+	anchorWordMkr        = "мкр"
+	anchorWordContract   = "договор"
+	anchorWordPassport   = "паспорт" // #nosec G101 — якорное слово, а не секрет
+	anchorWordIssued     = "выдан"
+	anchorWordRegistered = "зарегистрирован"
+	anchorWordHolder     = "держател"
+	anchorWordCitizen    = "гражданин"
+	anchorWordDeptCode   = "код подразделения"
+	anchorWordNumber     = "номер"
+	anchorWordApplicant  = "заявител"
+	anchorWordRegion     = "обл"
+	anchorWordGor        = "гор"
+	anchorWordPos        = "пос"
+	anchorWordResp       = "респ"
+	anchorWordProsp      = "просп"
+	anchorWordSeries     = "серии"
+	anchorWordSNILS      = "снилс"
+	anchorWordCVV2       = "cvv"
+	anchorWordClient     = "клиент"
+	anchorWordLives      = "проживает"
+	anchorWordTel        = "тел"
+	anchorWordSeriesFull = "серия"
+	anchorWordPhone      = "телефон"
+	anchorWordPayer      = "плательщик"
+)
+
 var (
 	// anchorsPassportCore — слова, которые в любом перечне значат одно и то
 	// же: рядом написано про паспорт. Они нужны и широкому набору якорей, и
 	// строгому, и списку сильных персональных признаков, поэтому заданы один
 	// раз: иначе перечни разъезжаются, стоит поправить любой из них.
-	anchorsPassportCore = []string{"паспорт", "серия", "серии", "passport"}
+	anchorsPassportCore = []string{anchorWordPassport, anchorWordSeriesFull, anchorWordSeries, "passport"}
 
-	anchorsPassport = append([]string{"пасп", "сери", "номер", "№", "выдан", "удостоверение личности", "паспортные данные", "данные документа", "документ"}, anchorsPassportCore...)
-	anchorsINN      = []string{"инн", "налогоплательщик", "идентификационный номер"}
-	anchorsCard     = []string{"карт", "card", "pan", "visa", "mastercard", "мир", "maestro", "счёт карты", "номер карты"}
-	anchorsPhone    = []string{"тел", anchorPhoneWord, "моб", "сот", "звонить", "whatsapp", "вайбер", "номер телефона", "связь", "phone"}
+	anchorsPassport = append([]string{"пасп", "сери", anchorWordNumber, "№", anchorWordIssued, "удостоверение личности", "паспортные данные", "данные документа", "документ"}, anchorsPassportCore...)
+	anchorsINN      = []string{anchorWordInn, "налогоплательщик", "идентификационный номер"}
+	anchorsCard     = []string{anchorWordCard, "card", "pan", "visa", "mastercard", "мир", "maestro", "счёт карты", "номер карты"}
+	anchorsPhone    = []string{anchorWordTel, anchorWordPhone, "моб", "сот", "звонить", "whatsapp", "вайбер", "номер телефона", "связь", "phone"}
 	anchorsPostcode = []string{"индекс", "почтовый индекс", "почтовый код", "индекс получателя", "индекс адреса", "индекс отправления", "индекс по прописке", "zip", "postcode"}
-	anchorsSNILS    = []string{"снилс", "страховой номер", "лицевого счета", "лицевого счёта"}
-	anchorsDriver   = []string{"водительск", "в/у", "ву ", "права", "driver"}
-	anchorsCVV      = []string{"cvv", "cvc", "cvv2", "cvc2", "код безопасности", "защитный код", "три цифры", "с обратной стороны", "с оборота", "оборотн",
+	anchorsSNILS    = []string{anchorWordSNILS, "страховой номер", "лицевого счета", "лицевого счёта"}
+	anchorsDriver   = []string{anchorWordDriver, "в/у", "ву ", "права", "driver"}
+	anchorsCVV      = []string{anchorWordCVV2, anchorWordCVV, "cvv2", "cvc2", "код безопасности", "защитный код", "три цифры", "с обратной стороны", "с оборота", "оборотн",
 		// «Проверочный код карты» — обычная формулировка в анкетах. Слово
 		// «карты» в якоре оставлено намеренно: голый «проверочный код» это
 		// ещё и код подтверждения из сообщения, а он персональными данными
@@ -41,7 +72,7 @@ var (
 	// Основа «подразделени» закрывает все падежи. Короткие сокращения «кп» и
 	// «к/п» сюда не входят: они слишком общие, чтобы доверять им на
 	// расстоянии.
-	anchorsDeptWide = []string{"код подразделения", "код органа выдачи", "номер подразделения выдачи", "подразделение", "подразделени"}
+	anchorsDeptWide = []string{anchorWordDeptCode, "код органа выдачи", "номер подразделения выдачи", "подразделение", "подразделени"}
 
 	// anchorsDept — код подразделения пишут и полным словом, и сокращением.
 	// Сильные якоря берутся из anchorsDeptWide целиком: разойдись эти два
@@ -50,18 +81,20 @@ var (
 	// двоеточия закрывает записи «кП — 695 995» и «КП (714-563)»; от «кпп»
 	// (КПП организации) его защищает правило «между якорем и значением не
 	// должно быть других цифр» — у «кпп» всегда есть лишняя буква «п» перед
-	// цифрами.
-	anchorsDept = append([]string{"код подр", "к/п", "к\\п", "кп:", "кп", "код п/п"}, anchorsDeptWide...)
+	// цифрами. «Орган выдачи» и «наименование органа выдачи» — формулировки
+	// из выгрузок, где код стоит сразу за названием органа; в широкое окно
+	// они не идут, чтобы не дотянуться до чужого шестизначного числа.
+	anchorsDept = append([]string{"код подр", anchorWordDept, "к\\п", "кп:", "кп", "код п/п", "наименование органа выдачи", "орган выдачи"}, anchorsDeptWide...)
 
 	// anchorsAddressLead — адресные слова, после которых шесть цифр почти
 	// всегда почтовый индекс, даже если слово «индекс» не написано:
 	// «Адрес регистрации: 150861, Свердловская область».
-	anchorsAddressLead = []string{"адрес", "адресу", "проживает", "прописк", "доставки"}
+	anchorsAddressLead = []string{anchorWordAddress, "адресу", anchorWordLives, "прописк", "доставки"}
 
 	// anchorsAddressWord — признаки того, что число стоит внутри адреса.
 	// Нужны для индекса в конце адреса, где слева от него уже идут номера
 	// дома и строения и обычное окно якоря до слова «адрес» не достаёт.
-	anchorsAddressWord = []string{"адрес", "проживает", "прописк", "улица", "ул.", "бульвар", "проспект", "переул", "шоссе", "набережн", "наб.", "микрорайон", "мкр", "квартал", "корп", "стр.", "кв.", "д. "}
+	anchorsAddressWord = []string{anchorWordAddress, anchorWordLives, "прописк", "улица", "ул.", "бульвар", "проспект", "переул", "шоссе", "набережн", "наб.", "микрорайон", anchorWordMkr, "квартал", "корп", "стр.", "кв.", "д. "}
 
 	// anchorsPassportStrict — якоря, которые говорят о паспорте однозначно.
 	// Слова «номер» и «№» сюда не входят: они стоят рядом с любым служебным
@@ -75,7 +108,7 @@ var (
 	// anchorsStrongPersonal — сильные персональные якоря. Если такое слово
 	// стоит между служебным признаком и числом, признак к числу не относится:
 	// в записи «по договору 12, паспорт 4509 123456» речь всё-таки о паспорте.
-	anchorsStrongPersonal = append([]string{"пасп", "снилс", "инн", "карт", "подразделени", "к/п", "индекс", anchorPhoneWord, "удостоверен", "водительск"}, anchorsPassportCore...)
+	anchorsStrongPersonal = append([]string{"пасп", anchorWordSNILS, anchorWordInn, anchorWordCard, "подразделени", anchorWordDept, "индекс", anchorWordPhone, "удостоверен", anchorWordDriver}, anchorsPassportCore...)
 
 	// negAnchorsMoney — рядом с денежными словами число почти наверняка сумма.
 	negAnchorsMoney = []string{"сумма", "руб", "₽", "оплат", "стоимость", "баланс", "остаток", "счёт на", "счет на"}
@@ -84,7 +117,7 @@ var (
 	// накладная, обращение. Рядом с ними число не является персональными
 	// данными.
 	negAnchorsOrder = []string{
-		"заказ", "договор", "накладн", "счёт-фактур", "счет-фактур", "артикул",
+		"заказ", anchorWordContract, "накладн", "счёт-фактур", "счет-фактур", "артикул",
 		"заявк", "обращени", "тикет", "операци", "чеке", "транзакци",
 	}
 
@@ -103,8 +136,8 @@ var (
 	// fuzzyMinRunes сюда не попадают: у них одна замена буквы даёт другое
 	// слово и якорь начинает срабатывать где попало.
 	fuzzyAnchorsDept     = []string{"подразделения", "подразделение", "подразделением", "подразделений"}
-	fuzzyAnchorsPassport = []string{"паспорт", "паспорта", "паспорте", "паспортные", "паспортный"}
-	fuzzyAnchorsPhone    = []string{anchorPhoneWord, "телефона", "телефону"}
+	fuzzyAnchorsPassport = []string{anchorWordPassport, "паспорта", "паспорте", "паспортные", "паспортный"}
+	fuzzyAnchorsPhone    = []string{anchorWordPhone, "телефона", "телефону"}
 )
 
 // anchorWindow — стандартное окно поиска якоря в рунах. Окно задаётся именно
@@ -212,8 +245,7 @@ func (n numericDetector) appendRunSpans(out []Span, d *Doc, runs []NumRun, i int
 	// содержать все четыре цифры: «27-12 564508».
 	if len(run.Digits) >= 2 && len(run.Digits) <= 4 {
 		if j, ok := joinPassportParts(d, runs, i); ok {
-			start, end := NormalizeSpan(d.Text, run.Start, runs[j].End)
-			return append(out, Span{Start: start, End: end, Type: TypePassport, Conf: ConfHigh, Reason: "passport:series_number_words"}), j, true
+			return append(out, passportSeriesNumberSpan(d, run, &runs[j])), j, true
 		}
 	}
 
@@ -233,17 +265,30 @@ func (n numericDetector) appendRunSpans(out []Span, d *Doc, runs []NumRun, i int
 	// обе половины пина были замаскированы.
 	if s.Type == TypePIN && len(run.Digits) == 2 {
 		if j, ok := joinSplitPIN(d, runs, i); ok {
-			start, end := NormalizeSpan(d.Text, runs[j].Start, runs[j].End)
-			return append(out, Span{Start: start, End: end, Type: TypePIN, Conf: ConfHigh, Reason: "pin:split_pair"}), j, true
+			return append(out, splitPINSpan(d, &runs[j])), j, true
 		}
 	}
 	return out, i, true
 }
 
+// passportSeriesNumberSpan собирает фрагмент паспорта из серии и номера,
+// записанных разделяющими словами.
+func passportSeriesNumberSpan(d *Doc, series, number *NumRun) Span {
+	start, end := NormalizeSpan(d.Text, series.Start, number.End)
+	return Span{Start: start, End: end, Type: TypePassport, Conf: ConfHigh, Reason: "passport:series_number_words"}
+}
+
+// splitPINSpan собирает фрагмент второй пары цифр разбитого пин-кода.
+func splitPINSpan(d *Doc, run *NumRun) Span {
+	start, end := NormalizeSpan(d.Text, run.Start, run.End)
+	return Span{Start: start, End: end, Type: TypePIN, Conf: ConfHigh, Reason: "pin:split_pair"}
+}
+
 // datePrefixGroups — длины групп цифр, с которых начинается дата. Вариант из
 // одной группы — это год, оставшийся от записи с названием месяца:
-// «14 октября 1986 8045 063266».
-var datePrefixGroups = [][]int{{4, 2, 2}, {2, 2, 4}, {2, 2, 2}, {4}}
+// «14 октября 1986 8045 063266». Однозначные день и месяц дают группы из
+// одной цифры: «25.3.1991» — это 2-1-4.
+var datePrefixGroups = [][]int{{4, 2, 2}, {2, 2, 4}, {2, 2, 2}, {4}, {2, 1, 4}, {1, 2, 4}, {1, 1, 4}}
 
 // passportTailGroups — длины групп цифр серии и номера паспорта.
 var passportTailGroups = [][]int{{4, 6}, {2, 2, 6}, {10}}
@@ -360,6 +405,12 @@ type numMatch struct {
 	typ    Type
 	conf   float64
 	reason string
+	// start и end — байтовые границы фрагмента, если они отличаются от границ
+	// кандидата. Нужны для кода подразделения, слипшегося с соседним числом:
+	// «635.159. 938.772» — один кандидат, а код подразделения только первый
+	// «3-3». Ноль в end означает конец кандидата.
+	start int
+	end   int
 }
 
 // numRule — одно правило распознавания.
@@ -384,7 +435,14 @@ func (numericDetector) classify(d *Doc, run *NumRun) (Span, bool) {
 		if !ok {
 			continue
 		}
-		start, end := NormalizeSpan(d.Text, run.Start, run.End)
+		start, end := run.Start, run.End
+		if m.start > 0 {
+			start = m.start
+		}
+		if m.end > 0 {
+			end = m.end
+		}
+		start, end = NormalizeSpan(d.Text, start, end)
 		return Span{Start: start, End: end, Type: m.typ, Conf: m.conf, Reason: m.reason}, true
 	}
 	return Span{}, false
@@ -533,14 +591,29 @@ const innKPPWindow = 24
 // serviceNumberContext ищет служебный признак в текущем предложении перед
 // значением. Если между признаком и значением успело встретиться сильное
 // персональное якорное слово, признак к значению не относится.
+//
+// Паспортный якорь действует и тогда, когда стоит до служебного признака:
+// в записи «Паспорт Романова приложен к обращению: 5112 724571» слово
+// «паспорт» предшествует служебному «обращению», но число — номер паспорта.
+// Ограничение именно паспортными якорями, а не всеми сильными, не даёт
+// служебному номеру в предложении с чужим ИНН или картой стать паспортом.
+//
+// Паспортный якорь ищется в более широком окне, чем предложение: в записи
+// «Паспорт Копыловой М.Г. приложен к обращению: 2882 № 772957» инициалы
+// «М.Г.» выглядят как конец предложения, и слово «паспорт» не попадает в
+// head. Окно в 60 рун достаёт до него, не задевая соседнее предложение.
 func serviceNumberContext(d *Doc, start int) bool {
 	head := sentenceHead(d, start)
 	pos := lastAnchorEnd(head, negAnchorsService)
 	if pos < 0 {
 		return false
 	}
-	_, strong := ContainsAnyLower(head[pos:], anchorsStrongPersonal)
-	return !strong
+	if _, strong := ContainsAnyLower(head[pos:], anchorsStrongPersonal); strong {
+		return false
+	}
+	win := d.LowerWindow(start, start, serviceWindow, 0)
+	_, passport := ContainsAnyLower(win, anchorsPassportStrict)
+	return !passport
 }
 
 // sentenceHead возвращает текст в нижнем регистре от начала предложения до
@@ -582,13 +655,13 @@ func matchPhone(c numContext) (numMatch, bool) {
 		return numMatch{}, false
 	}
 	if c.anchorAt(anchorsPhone) {
-		return numMatch{TypePhone, ConfHigh, "phone:anchor"}, true
+		return numMatch{TypePhone, ConfHigh, "phone:anchor", 0, 0}, true
 	}
 	if c.run.HasPlus || strings.HasPrefix(c.digits, "7") || strings.HasPrefix(c.digits, "8") {
-		return numMatch{TypePhone, ConfHigh, "phone:shape"}, true
+		return numMatch{TypePhone, ConfHigh, "phone:shape", 0, 0}, true
 	}
 	if c.anchorFuzzy(fuzzyAnchorsPhone) {
-		return numMatch{TypePhone, ConfHigh, "phone:anchor_typo"}, true
+		return numMatch{TypePhone, ConfHigh, "phone:anchor_typo", 0, 0}, true
 	}
 	return numMatch{}, false
 }
@@ -607,12 +680,12 @@ func matchCard(c numContext) (numMatch, bool) {
 		conf, reason = ConfHigh, "card:luhn"
 	}
 	if anchored {
-		return numMatch{TypeCard, ConfHigh, reason + "+anchor"}, true
+		return numMatch{TypeCard, ConfHigh, reason + "+anchor", 0, 0}, true
 	}
 	if !Luhn(c.digits) && c.pattern != "4-4-4-4" {
 		return numMatch{}, false
 	}
-	return numMatch{TypeCard, conf, reason}, true
+	return numMatch{TypeCard, conf, reason, 0, 0}, true
 }
 
 // matchSNILS: одиннадцать цифр, обычно в записи три-три-три-два.
@@ -621,18 +694,18 @@ func matchSNILS(c numContext) (numMatch, bool) {
 		// Опечатка в самом номере: цифра потерялась или задвоилась. Форма уже
 		// не сходится, поэтому якорь обязателен.
 		if (len(c.digits) == 10 || len(c.digits) == 12) && c.anchorAt(anchorsSNILS) {
-			return numMatch{TypeSNILS, ConfAnchored, "snils:anchor_typo_digits"}, true
+			return numMatch{TypeSNILS, ConfAnchored, "snils:anchor_typo_digits", 0, 0}, true
 		}
 		return numMatch{}, false
 	}
 	if c.anchorAt(anchorsSNILS) {
-		return numMatch{TypeSNILS, ConfHigh, "snils:anchor"}, true
+		return numMatch{TypeSNILS, ConfHigh, "snils:anchor", 0, 0}, true
 	}
 	if c.pattern != patternSNILS && c.pattern != "11" {
 		return numMatch{}, false
 	}
 	if SNILSValid(c.digits) && c.pattern == patternSNILS {
-		return numMatch{TypeSNILS, ConfAnchored, "snils:checksum"}, true
+		return numMatch{TypeSNILS, ConfAnchored, "snils:checksum", 0, 0}, true
 	}
 	return numMatch{}, false
 }
@@ -643,7 +716,7 @@ func matchINN(c numContext) (numMatch, bool) {
 		// Опечатка в самом номере: цифра потерялась или задвоилась. Форма уже
 		// не сходится, поэтому якорь обязателен.
 		if (len(c.digits) == 11 || len(c.digits) == 13) && c.anchorAt(anchorsINN) {
-			return numMatch{TypeINN, ConfAnchored, "inn:anchor_typo_digits"}, true
+			return numMatch{TypeINN, ConfAnchored, "inn:anchor_typo_digits", 0, 0}, true
 		}
 		return numMatch{}, false
 	}
@@ -654,7 +727,7 @@ func matchINN(c numContext) (numMatch, bool) {
 		if len(c.digits) == 10 && innFollowedByKPP(c.d, c.run.End) {
 			return numMatch{}, false
 		}
-		return numMatch{TypeINN, ConfAnchored, "inn:anchor"}, true
+		return numMatch{TypeINN, ConfAnchored, "inn:anchor", 0, 0}, true
 	}
 	// Номер, разбитый на группы по форме паспорта, ИНН не бывает: ИНН пишут
 	// десятью цифрами подряд. Контрольная сумма сходится и у постороннего
@@ -665,7 +738,7 @@ func matchINN(c numContext) (numMatch, bool) {
 		return numMatch{}, false
 	}
 	if INNValid(c.digits) && !c.money() && !c.service() {
-		return numMatch{TypeINN, ConfMedium, "inn:checksum"}, true
+		return numMatch{TypeINN, ConfMedium, "inn:checksum", 0, 0}, true
 	}
 	return numMatch{}, false
 }
@@ -685,7 +758,7 @@ func matchPassport(c numContext) (numMatch, bool) {
 	// Опечатка в самом номере: цифра потерялась или задвоилась. Форма уже не
 	// сходится, поэтому слово «паспорт» обязано стоять прямо перед номером.
 	if len(c.digits) >= 9 && len(c.digits) <= 11 && c.anchorNear(anchorsPassportStrict) {
-		return numMatch{TypePassport, ConfAnchored, "passport:anchor_typo_digits"}, true
+		return numMatch{TypePassport, ConfAnchored, "passport:anchor_typo_digits", 0, 0}, true
 	}
 	return numMatch{}, false
 }
@@ -700,10 +773,10 @@ func matchPassportShape(c numContext) (numMatch, bool) {
 		if passportOtherDocContext(c.d, c.run.Start) {
 			return numMatch{}, false
 		}
-		return numMatch{TypePassport, ConfHigh, "passport:anchor"}, true
+		return numMatch{TypePassport, ConfHigh, "passport:anchor", 0, 0}, true
 	}
 	if c.anchorFuzzy(fuzzyAnchorsPassport) {
-		return numMatch{TypePassport, ConfHigh, "passport:anchor_typo"}, true
+		return numMatch{TypePassport, ConfHigh, "passport:anchor_typo", 0, 0}, true
 	}
 	// Форма без якоря — слабое основание, и рядом с признаком другого
 	// документа она не годится вовсе. Десять цифр рядом со словом «ИНН» это
@@ -713,13 +786,13 @@ func matchPassportShape(c numContext) (numMatch, bool) {
 		return numMatch{}, false
 	}
 	if c.pattern == patternPassport || c.pattern == patternSplitSeries {
-		return numMatch{TypePassport, ConfAnchored, "passport:shape"}, true
+		return numMatch{TypePassport, ConfAnchored, "passport:shape", 0, 0}, true
 	}
 	// Десять цифр подряд — форма слабее: так пишут и паспорт, и служебный
 	// номер. Нужен хотя бы намёк на текст вокруг: голое число без единого
 	// слова рядом персональными данными не считаем.
 	if c.pattern == patternSolidTen && !c.money() && c.hasWordAround() {
-		return numMatch{TypePassport, ConfAnchored, "passport:shape_solid"}, true
+		return numMatch{TypePassport, ConfAnchored, "passport:shape_solid", 0, 0}, true
 	}
 	return numMatch{}, false
 }
@@ -730,7 +803,7 @@ func matchDriver(c numContext) (numMatch, bool) {
 		return numMatch{}, false
 	}
 	if c.anchorAt(anchorsDriver) {
-		return numMatch{TypeDriverLicense, ConfHigh, "driver:anchor"}, true
+		return numMatch{TypeDriverLicense, ConfHigh, "driver:anchor", 0, 0}, true
 	}
 	return numMatch{}, false
 }
@@ -742,30 +815,144 @@ func matchDriver(c numContext) (numMatch, bool) {
 // неотличимы от почтового индекса, и якорь из другой части строки таблицы
 // пометил бы индекс кодом подразделения.
 func matchDept(c numContext) (numMatch, bool) {
-	if !isDeptShape(c.pattern) && !c.hasDigits(6) && !c.hasDigits(5) {
+	prefixStart, prefixEnd, isPrefix := deptPrefixBounds(c)
+	suffixStart, suffixEnd, isSuffix := deptSuffixBounds(c)
+	if !isDeptShape(c.pattern) && !c.hasDigits(6) && !c.hasDigits(5) && !isPrefix && !isSuffix {
 		return numMatch{}, false
 	}
 	if c.anchorNear(anchorsDept) {
-		return numMatch{TypeDeptCode, ConfHigh, "dept:anchor"}, true
+		return deptMatch(prefixStart, prefixEnd, isPrefix, ConfHigh, "dept:anchor"), true
 	}
 	// Широкое окно для сильных якорей: «код подразделения по паспорту: 993
 	// 542» — между якорем и значением стоит уточнение «по паспорту», и узкое
 	// окно до якоря не достаёт. Правило «между якорем и значением нет других
 	// цифр» не даёт широкому окну пометить почтовый индекс кодом подразделения.
 	if _, ok := c.d.AnchorBefore(c.run.Start, anchorsDeptWide, anchorWindow); ok {
-		return numMatch{TypeDeptCode, ConfHigh, "dept:anchor_wide"}, true
+		return deptMatch(prefixStart, prefixEnd, isPrefix, ConfHigh, "dept:anchor_wide"), true
 	}
-	// Якорь после значения: «989774 — код подразделения ОВД».
+	// Якорь после значения: «989774 — код подразделения ОВД». Если код слипся
+	// с предыдущим числом, берётся последний «3-3» или «6»: «579122. 916/580 —
+	// номер подразделения выдачи».
 	if c.anchorAfter(anchorsDept) {
-		return numMatch{TypeDeptCode, ConfHigh, "dept:anchor_after"}, true
+		return deptMatch(suffixStart, suffixEnd, isSuffix, ConfHigh, "dept:anchor_after"), true
 	}
 	if hasFuzzyWord(c.d.LowerWindow(c.run.Start, c.run.Start, nearAnchorWindow, 0), fuzzyAnchorsDept) {
-		return numMatch{TypeDeptCode, ConfHigh, "dept:anchor_typo"}, true
+		return deptMatch(prefixStart, prefixEnd, isPrefix, ConfHigh, "dept:anchor_typo"), true
 	}
-	if c.pattern == "3-3" && strings.Contains(c.run.Seps, "-") && c.anchorAt(anchorsPassport) {
-		return numMatch{TypeDeptCode, ConfAnchored, "dept:passport_context"}, true
+	if c.pattern == "3-3" && deptPassportNear(c) {
+		return deptMatch(prefixStart, prefixEnd, isPrefix, ConfAnchored, "dept:passport_context"), true
 	}
 	return numMatch{}, false
+}
+
+// deptMatch собирает результат распознавания кода подразделения. Если код
+// слипся с соседним числом, границы фрагмента ограничиваются найденным
+// «3-3» или «6».
+func deptMatch(start, end int, isSplit bool, conf float64, reason string) numMatch {
+	m := numMatch{TypeDeptCode, conf, reason, 0, 0}
+	if isSplit {
+		m.start, m.end = start, end
+	}
+	return m
+}
+
+// deptPrefixBounds сообщает, что кандидат начинается с «3-3» и за ним идут
+// другие цифры: «635.159. 938.772» — один кандидат, а код подразделения
+// только первый «3-3». Возвращает байтовые границы этого «3-3».
+func deptPrefixBounds(c numContext) (int, int, bool) {
+	if len(c.run.Groups) < 2 || c.run.Groups[0] != 3 || c.run.Groups[1] != 3 {
+		return 0, 0, false
+	}
+	bounds := digitGroups(c.d, c.run)
+	if len(bounds) < 2 {
+		return 0, 0, false
+	}
+	return bounds[0][0], bounds[1][1], true
+}
+
+// deptSuffixBounds сообщает, что кандидат заканчивается кодом подразделения,
+// слипшимся с предыдущим числом: «579122. 916/580» — один кандидат, а код
+// подразделения последний «3-3» или «6». Возвращает байтовые границы кода.
+func deptSuffixBounds(c numContext) (int, int, bool) {
+	bounds := digitGroups(c.d, c.run)
+	if len(bounds) < 2 {
+		return 0, 0, false
+	}
+	// Последняя пара «3-3».
+	for i := len(bounds) - 1; i >= 1; i-- {
+		if bounds[i-1][1]-bounds[i-1][0] == 3 && bounds[i][1]-bounds[i][0] == 3 {
+			return bounds[i-1][0], bounds[i][1], true
+		}
+	}
+	// Последняя группа «6».
+	for i := len(bounds) - 1; i >= 0; i-- {
+		if bounds[i][1]-bounds[i][0] == 6 {
+			return bounds[i][0], bounds[i][1], true
+		}
+	}
+	return 0, 0, false
+}
+
+// deptPassportNear сообщает, что рядом с кодом подразделения стоит паспорт:
+// якорное слово либо сокращённая запись «с. XXXX н. YYYYYY» или
+// «XXXX № YYYYYY». Такие записи встречаются в строках выгрузок, где код
+// подразделения идёт сразу за паспортом.
+func deptPassportNear(c numContext) bool {
+	if c.anchorAt(anchorsPassport) {
+		return true
+	}
+	win := c.d.LowerWindow(c.run.Start, c.run.End, anchorWindow, anchorWindow)
+	return passportAbbrevIn(win)
+}
+
+// passportAbbrevIn сообщает, что в окне есть сокращённая запись паспорта
+// «с. XXXX н. YYYYYY» или «XXXX № YYYYYY».
+func passportAbbrevIn(win string) bool {
+	return passportAbbrevSeries(win) || passportAbbrevNumber(win)
+}
+
+// passportAbbrevSeries проверяет сокращённую запись «с. XXXX н. YYYYYY».
+// Кириллические «с» и «н» занимают по два байта, поэтому после «с.» и «н.»
+// смещение сдвигается на три.
+func passportAbbrevSeries(win string) bool {
+	i := strings.Index(win, "с.")
+	if i < 0 {
+		return false
+	}
+	rest := strings.TrimLeft(win[i+3:], " \t")
+	if len(rest) < 4 || !allDigits(rest[:4]) {
+		return false
+	}
+	rest = strings.TrimLeft(rest[4:], " \t")
+	if !strings.HasPrefix(rest, "н.") {
+		return false
+	}
+	rest = strings.TrimLeft(rest[3:], " \t")
+	return len(rest) >= 6 && allDigits(rest[:6])
+}
+
+// passportAbbrevNumber проверяет сокращённую запись «XXXX № YYYYYY».
+func passportAbbrevNumber(win string) bool {
+	i := strings.Index(win, "№")
+	if i < 0 {
+		return false
+	}
+	before := strings.TrimRight(win[:i], " \t")
+	if len(before) < 4 || !allDigits(before[len(before)-4:]) {
+		return false
+	}
+	rest := strings.TrimLeft(win[i+1:], " \t")
+	return len(rest) >= 6 && allDigits(rest[:6])
+}
+
+// allDigits сообщает, что строка состоит только из цифр.
+func allDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // matchPostcode: шесть цифр в почтовом или адресном окружении.
@@ -774,18 +961,18 @@ func matchPostcode(c numContext) (numMatch, bool) {
 		return numMatch{}, false
 	}
 	if c.anchorNear(anchorsPostcode) || c.anchorAfter(anchorsPostcode) {
-		return numMatch{TypePostcode, ConfHigh, "postcode:anchor"}, true
+		return numMatch{TypePostcode, ConfHigh, "postcode:anchor", 0, 0}, true
 	}
 	if c.anchorNear(anchorsAddressLead) {
-		return numMatch{TypePostcode, ConfAnchored, "postcode:address_lead"}, true
+		return numMatch{TypePostcode, ConfAnchored, "postcode:address_lead", 0, 0}, true
 	}
 	if inAddressTail(c) {
-		return numMatch{TypePostcode, ConfAnchored, "postcode:address_tail"}, true
+		return numMatch{TypePostcode, ConfAnchored, "postcode:address_tail", 0, 0}, true
 	}
 	// Опечатка в якоре: «инедкс» вместо «индекс». Короткие якоря допускают
 	// одну опечатку только рядом со значением.
 	if hasFuzzyWordMin(c.d.LowerWindow(c.run.Start, c.run.Start, nearAnchorWindow, 0), anchorsPostcode, 6) {
-		return numMatch{TypePostcode, ConfAnchored, "postcode:anchor_typo"}, true
+		return numMatch{TypePostcode, ConfAnchored, "postcode:anchor_typo", 0, 0}, true
 	}
 	return numMatch{}, false
 }
@@ -800,22 +987,22 @@ func matchSecretCode(c numContext) (numMatch, bool) {
 	// две пары, и каждая пара — отдельный числовой кандидат. Код безопасности
 	// всегда трёхзначный, поэтому для него порог остаётся прежним.
 	if c.anchorNear(anchorsPIN) || c.anchorAfter(anchorsPIN) {
-		return numMatch{TypePIN, ConfHigh, "pin:anchor"}, true
+		return numMatch{TypePIN, ConfHigh, "pin:anchor", 0, 0}, true
 	}
 	if len(c.digits) < 3 {
 		return numMatch{}, false
 	}
 	if c.anchorNear(anchorsCVV) || c.anchorAfter(anchorsCVV) {
-		return numMatch{TypeCVV, ConfHigh, "cvv:anchor"}, true
+		return numMatch{TypeCVV, ConfHigh, "cvv:anchor", 0, 0}, true
 	}
 	// Опечатка в якоре: «пни» вместо «пин», «оборотнои» вместо «оборота».
 	// Короткие якоря допускают одну опечатку только рядом со значением.
 	win := c.d.LowerWindow(c.run.Start, c.run.Start, nearAnchorWindow, 0)
 	if hasFuzzyWordMin(win, anchorsCVV, 5) {
-		return numMatch{TypeCVV, ConfAnchored, "cvv:anchor_typo"}, true
+		return numMatch{TypeCVV, ConfAnchored, "cvv:anchor_typo", 0, 0}, true
 	}
 	if hasFuzzyWordMin(win, anchorsPIN, 3) {
-		return numMatch{TypePIN, ConfAnchored, "pin:anchor_typo"}, true
+		return numMatch{TypePIN, ConfAnchored, "pin:anchor_typo", 0, 0}, true
 	}
 	return numMatch{}, false
 }
@@ -882,7 +1069,7 @@ func isPassportShape(pattern, digits string) bool {
 
 // passportConnectors — слова, которые допустимо встретить между серией и
 // номером паспорта.
-var passportConnectors = []string{"номер", "ном", "no", "n", "серия", "серии", "сер", "№", "#", ":", ",", "-", "/", ".", "с", "н", " "}
+var passportConnectors = []string{anchorWordNumber, "ном", "no", "n", anchorWordSeriesFull, anchorWordSeries, "сер", "№", "#", ":", ",", "-", "/", ".", "с", "н", " "}
 
 // collectDigits собирает группу ровно из want цифр, начиная с кандидата i.
 // Группу разрешено набирать из нескольких соседних кандидатов, разделённых
@@ -928,9 +1115,12 @@ func joinPassportParts(d *Doc, runs []NumRun, i int) (int, bool) {
 		return 0, false
 	}
 	// Серия без паспортного контекста — не паспорт: четыре цифры встречаются
-	// в любом тексте.
+	// в любом тексте. Контекст даёт якорь либо сокращение «с.» перед серией:
+	// «с. 8603 н. 352641» в анкете без слова «паспорт».
 	if _, ok := d.FindAnchor(runs[i].Start, runs[seriesEnd].End, anchorsPassport, anchorWindow, anchorWindow); !ok {
-		return 0, false
+		if !seriesAbbrevBefore(d, runs[i].Start) {
+			return 0, false
+		}
 	}
 	for j := seriesEnd + 1; j < len(runs) && j <= seriesEnd+2; j++ {
 		gap := d.Lower[runs[seriesEnd].End:runs[j].Start]
@@ -949,6 +1139,19 @@ func joinPassportParts(d *Doc, runs []NumRun, i int) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// seriesAbbrevBefore сообщает, что перед серией стоит сокращение «с.» —
+// «серия» в анкетах и строках таблиц: «с. 8603 н. 352641». Сокращение
+// должно быть отдельным словом, иначе «с.» найдётся внутри «свидетельство»
+// или «счёт».
+func seriesAbbrevBefore(d *Doc, start int) bool {
+	before := strings.TrimRight(d.Lower[:start], " \t")
+	if !strings.HasSuffix(before, "с.") {
+		return false
+	}
+	prev := dwRuneBefore(d.Lower, len(before)-2)
+	return !dwIsLetter(prev)
 }
 
 // joinSplitPIN находит вторую пару цифр разбитого пин-кода: «PIN-code: 07 26».
@@ -1012,6 +1215,12 @@ func hasFuzzyWordMin(window string, anchors []string, minRunes int) bool {
 	}
 	// Пробел, вставленный внутрь якоря, разрывает слово: «поч товый» вместо
 	// «почтовый». Проверяем окно без пробелов целиком.
+	return fuzzyCompactContains(norm, folded)
+}
+
+// fuzzyCompactContains ищет якорь в окне без пробелов. Пробел, вставленный
+// внутрь якоря, разрывает слово: «поч товый» вместо «почтовый».
+func fuzzyCompactContains(norm string, folded []string) bool {
 	compact := dropSpaces(norm)
 	for _, a := range folded {
 		if strings.Contains(compact, a) {
@@ -1111,7 +1320,7 @@ func oneSwapApart(ra, rb []rune) bool {
 		}
 		// Перестановка соседних рун: «ab» против «ba». Обе буквы объясняются
 		// одной опечаткой, поэтому вторую пропускаем, а не считаем заново.
-		if i+1 < len(ra) && ra[i] == rb[i+1] && ra[i+1] == rb[i] {
+		if swappedRunes(ra, rb, i, i) {
 			i++
 		}
 	}
@@ -1138,4 +1347,11 @@ func oneInsertApart(short, long []rune) bool {
 		j++
 	}
 	return true
+}
+
+// swappedRunes сообщает, что в позициях i и j руны переставлены местами:
+// «ab» против «ba».
+func swappedRunes(ra, rb []rune, i, j int) bool {
+	return i+1 < len(ra) && j+1 < len(rb) &&
+		ra[i] == rb[j+1] && ra[i+1] == rb[j]
 }
