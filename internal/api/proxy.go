@@ -204,13 +204,40 @@ func (s *Server) extendWriteDeadline(w http.ResponseWriter, r *http.Request, sys
 	}
 }
 
+// upstreamChatURL приводит адрес модели к полному адресу ручки чата.
+//
+// В настройках адрес задают по-разному, и все формы встречаются в живых
+// инструкциях: базовый адрес площадки, он же с версией, и сразу полный путь
+// ручки. Прежний код просто дописывал суффикс, поэтому полный путь удваивался
+// и превращался в «.../chat/completions/chat/completions». Модель отвечала на
+// это кодом 401 с пустым телом, и понять причину по такому ответу нельзя.
+//
+// Разбираем все три формы:
+//
+//	https://host/continue-dev            → https://host/continue-dev/v1/chat/completions
+//	https://host/continue-dev/v1         → https://host/continue-dev/v1/chat/completions
+//	https://host/continue-dev/v1/chat/completions → без изменений
+func upstreamChatURL(raw string) string {
+	base := strings.TrimRight(raw, "/")
+	if base == "" {
+		return ""
+	}
+	if strings.HasSuffix(base, "/chat/completions") {
+		return base
+	}
+	if !strings.HasSuffix(base, "/v1") {
+		base += "/v1"
+	}
+	return base + "/chat/completions"
+}
+
 // callUpstream отправляет подготовленный запрос языковой модели.
 func (s *Server) callUpstream(r *http.Request, sys config.System, body []byte) (*http.Response, error) {
 	timeout := sys.Upstream.Timeout
 	if timeout <= 0 {
 		timeout = defaultUpstreamTimeout
 	}
-	url := strings.TrimRight(sys.Upstream.URL, "/") + "/chat/completions"
+	url := upstreamChatURL(sys.Upstream.URL)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err

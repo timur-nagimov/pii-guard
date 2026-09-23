@@ -208,3 +208,31 @@ systems:
 		t.Fatalf("значения не восстановлены: %q", content)
 	}
 }
+
+// TestUpstreamChatURL закрепляет разбор всех форм адреса модели, которые
+// встречаются в живых инструкциях. Дефект был настоящим: полный путь
+// удваивался, модель отвечала кодом 401 с пустым телом, и причину по такому
+// ответу понять нельзя.
+func TestUpstreamChatURL(t *testing.T) {
+	const want = "https://alfagen.alfabank.ru/continue-dev/v1/chat/completions"
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"базовый адрес площадки", "https://alfagen.alfabank.ru/continue-dev", want},
+		{"базовый с косой чертой", "https://alfagen.alfabank.ru/continue-dev/", want},
+		{"адрес с версией", "https://alfagen.alfabank.ru/continue-dev/v1", want},
+		{"адрес с версией и чертой", "https://alfagen.alfabank.ru/continue-dev/v1/", want},
+		{"сразу полный путь ручки", want, want},
+		{"полный путь с чертой", want + "/", want},
+		{"пустой адрес", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := upstreamChatURL(c.in); got != c.want {
+				t.Errorf("из %q получено %q, ожидалось %q", c.in, got, c.want)
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -533,6 +534,23 @@ func (c *Config) Validate() error {
 		return errors.New("не задана ни одна система-потребитель")
 	}
 	anonymous := 0
+	// Один и тот же хеш ключа у двух систем делает выбор системы случайным:
+	// порядок обхода карты в Go не определён, и запрос опознаётся то как одна,
+	// то как другая. Снаружи это выглядит как плавающее поведение сервиса без
+	// видимой причины, а по журналу видно разную систему на одинаковых
+	// запросах. Ловим это на проверке настроек, а не в бою.
+	byHash := make(map[string]string, len(c.Systems))
+	for _, name := range sortedSystemNames(c.Systems) {
+		h := c.Systems[name].Auth.KeySHA256
+		if h == "" {
+			continue
+		}
+		if other, busy := byHash[h]; busy {
+			return fmt.Errorf("системы %q и %q делят один хеш ключа доступа: какая из них опознает запрос, будет решать случай", other, name)
+		}
+		byHash[h] = name
+	}
+
 	for name, s := range c.Systems {
 		if !s.Enabled {
 			continue
@@ -654,4 +672,15 @@ func (c *Config) validateLogging() error {
 		return errors.New("журнал: порог медленного запроса не может быть отрицательным")
 	}
 	return nil
+}
+
+// sortedSystemNames возвращает имена систем в устойчивом порядке. Нужен там,
+// где сообщение об ошибке не должно меняться от запуска к запуску.
+func sortedSystemNames(m map[string]System) []string {
+	out := make([]string, 0, len(m))
+	for name := range m {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
