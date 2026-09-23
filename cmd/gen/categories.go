@@ -300,7 +300,7 @@ func (g *Generator) Each(n int, fn func(Record) error) error {
 	// существующие типы получат другие, более трудные записи и просядут.
 	// Каждому типу отводится фиксированное число записей, чтобы их хватило на
 	// честный замер качества.
-	return g.eachExtra(n, fn)
+	return g.eachExtra(fn)
 }
 
 // extraPerType — сколько записей каждого расширенного типа порождается в
@@ -308,7 +308,7 @@ func (g *Generator) Each(n int, fn func(Record) error) error {
 const extraPerType = 200
 
 // eachExtra порождает записи расширенных типов отдельным проходом.
-func (g *Generator) eachExtra(n int, fn func(Record) error) error {
+func (g *Generator) eachExtra(fn func(Record) error) error {
 	extras := extraCategories()
 	// Число записей каждого типа не зависит от размера набора: расширенные
 	// типы добавляются сверх основного выпуска.
@@ -330,7 +330,7 @@ func (g *Generator) eachExtra(n int, fn func(Record) error) error {
 // extraCategories возвращает категории расширенных типов: по одной простой на
 // каждый тип и по одной отрицательной на каждый тип.
 func extraCategories() []categorySpec {
-	var out []categorySpec
+	out := make([]categorySpec, 0, len(extraSpecs())+2)
 	for _, s := range extraSpecs() {
 		out = append(out, categorySpec{name: s.name, weight: 0, gen: simpleCategoryGen(s)})
 	}

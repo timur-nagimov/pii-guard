@@ -152,33 +152,39 @@ func AddCustomType(path string, ct CustomType) (EditResult, error) {
 			}
 		}
 
-		item := &yaml.Node{Kind: yaml.MappingNode}
-		setMapValue(item, "name", &yaml.Node{Kind: yaml.ScalarNode, Value: string(ct.Name)})
-		setMapValue(item, "pattern", &yaml.Node{Kind: yaml.ScalarNode, Value: ct.Pattern, Style: yaml.SingleQuotedStyle})
-		if ct.Group != 0 {
-			setMapValue(item, "group", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: fmt.Sprintf("%d", ct.Group)})
-		}
-		if ct.Validator != "" {
-			setMapValue(item, "validator", &yaml.Node{Kind: yaml.ScalarNode, Value: ct.Validator})
-		}
-		if len(ct.Anchors) > 0 {
-			seq := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
-			for _, a := range ct.Anchors {
-				seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: a, Style: yaml.DoubleQuotedStyle})
-			}
-			setMapValue(item, "anchors", seq)
-		}
-		setMapValue(item, "require_anchor", &yaml.Node{
-			Kind: yaml.ScalarNode, Tag: "!!bool", Value: fmt.Sprintf("%t", ct.RequireAnchor),
-		})
-		if ct.AnchorWindow != 0 {
-			setMapValue(item, "anchor_window", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: fmt.Sprintf("%d", ct.AnchorWindow)})
-		}
-		item.HeadComment = "добавлено через интерфейс"
-
-		list.Content = append(list.Content, item)
+		list.Content = append(list.Content, customTypeNode(ct))
 		return fmt.Sprintf("добавлен тип %q", ct.Name), nil
 	})
+}
+
+// customTypeNode собирает узел YAML для нового типа персональных данных.
+// Необязательные поля добавляются только когда заданы, чтобы правка не
+// раздувала файл пустыми записями.
+func customTypeNode(ct CustomType) *yaml.Node {
+	item := &yaml.Node{Kind: yaml.MappingNode}
+	setMapValue(item, "name", &yaml.Node{Kind: yaml.ScalarNode, Value: string(ct.Name)})
+	setMapValue(item, "pattern", &yaml.Node{Kind: yaml.ScalarNode, Value: ct.Pattern, Style: yaml.SingleQuotedStyle})
+	if ct.Group != 0 {
+		setMapValue(item, "group", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: fmt.Sprintf("%d", ct.Group)})
+	}
+	if ct.Validator != "" {
+		setMapValue(item, "validator", &yaml.Node{Kind: yaml.ScalarNode, Value: ct.Validator})
+	}
+	if len(ct.Anchors) > 0 {
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
+		for _, a := range ct.Anchors {
+			seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: a, Style: yaml.DoubleQuotedStyle})
+		}
+		setMapValue(item, "anchors", seq)
+	}
+	setMapValue(item, "require_anchor", &yaml.Node{
+		Kind: yaml.ScalarNode, Tag: "!!bool", Value: fmt.Sprintf("%t", ct.RequireAnchor),
+	})
+	if ct.AnchorWindow != 0 {
+		setMapValue(item, "anchor_window", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: fmt.Sprintf("%d", ct.AnchorWindow)})
+	}
+	item.HeadComment = "добавлено через интерфейс"
+	return item
 }
 
 // RemoveCustomType убирает свой тип персональных данных.

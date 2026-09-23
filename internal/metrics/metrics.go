@@ -42,6 +42,10 @@ type Metrics struct {
 	coresUsable float64
 }
 
+// labelSystem — имя метки системы-потребителя в показателях. Повторяется во
+// всех векторах, поэтому вынесено в константу.
+const labelSystem = "system"
+
 // New создаёт набор показателей со своим реестром.
 func New() *Metrics {
 	reg := prometheus.NewRegistry()
@@ -58,15 +62,15 @@ func New() *Metrics {
 			Name:    "pii_request_duration_seconds",
 			Help:    "Длительность обработки запроса.",
 			Buckets: []float64{0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
-		}, []string{"op", "system"}),
+		}, []string{"op", labelSystem}),
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pii_requests_total",
 			Help: "Число обработанных запросов.",
-		}, []string{"op", "code", "system"}),
+		}, []string{"op", "code", labelSystem}),
 		detections: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pii_detections_total",
 			Help: "Число найденных фрагментов персональных данных по типам.",
-		}, []string{"type", "system"}),
+		}, []string{"type", labelSystem}),
 		skipped: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pii_skipped_total",
 			Help: "Число фрагментов, снятых с маскирования, по причинам.",
@@ -96,11 +100,11 @@ func New() *Metrics {
 		degraded: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pii_degraded_total",
 			Help: "Число ответов, отданных в режиме деградации.",
-		}, []string{"system"}),
+		}, []string{labelSystem}),
 		ambiguous: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pii_direction_ambiguous_total",
 			Help: "Число запросов, где направление обработки не определилось однозначно.",
-		}, []string{"system"}),
+		}, []string{labelSystem}),
 		panics: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "pii_detector_panics_total",
 			Help: "Число сбоев внутри детекторов.",
@@ -109,7 +113,7 @@ func New() *Metrics {
 			Name:    "pii_upstream_duration_seconds",
 			Help:    "Длительность обращения к языковой модели в режиме прокси.",
 			Buckets: []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
-		}, []string{"system", "code"}),
+		}, []string{labelSystem, "code"}),
 	}
 
 	// pii_capacity_used_ratio — доля модельной ёмкости копии, занятая за

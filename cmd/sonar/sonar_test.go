@@ -412,7 +412,7 @@ func TestLoadDatasetRejectsBrokenMarkup(t *testing.T) {
 // TestRunnerPairFlow прогоняет имитатор против простого сервиса и проверяет,
 // что пара «маска и восстановление» считается целиком.
 func TestRunnerPairFlow(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(maskingStub()))
+	srv := httptest.NewServer(maskingStub())
 	defer srv.Close()
 
 	samples := []Sample{{
@@ -594,7 +594,7 @@ func maskingStub() http.HandlerFunc {
 	var store atomic.Pointer[map[string]entry]
 	initial := map[string]entry{}
 	store.Store(&initial)
-	var mu chanMutex = make(chanMutex, 1)
+	mu := make(chanMutex, 1)
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req processRequest

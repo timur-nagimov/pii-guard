@@ -66,15 +66,15 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "тело запроса превышает допустимый размер")
 			return
 		}
-		s.writeValidation(w, r, "json_invalid", []string{"body"}, "не удалось разобрать JSON")
+		s.writeValidation(w, r, "json_invalid", []string{fieldBody}, "не удалось разобрать JSON")
 		return
 	}
 	if req.Payload == nil {
-		s.writeValidation(w, r, "missing", []string{"body", "payload"}, "поле payload обязательно")
+		s.writeValidation(w, r, "missing", []string{fieldBody, "payload"}, "поле payload обязательно")
 		return
 	}
 	if req.PayloadID == nil {
-		s.writeValidation(w, r, "missing", []string{"body", "payload_id"}, "поле payload_id обязательно")
+		s.writeValidation(w, r, "missing", []string{fieldBody, "payload_id"}, "поле payload_id обязательно")
 		return
 	}
 
@@ -166,6 +166,14 @@ type outcome struct {
 	failedTypes []string
 }
 
+// flightResult — результат объединённого запроса: направление, код ответа и
+// готовый результат обработки.
+type flightResult struct {
+	out  outcome
+	dir  direction
+	code int
+}
+
 // processOne определяет направление и выполняет маскирование либо обратное
 // преобразование. Одновременные одинаковые запросы объединяются, чтобы повтор
 // от проверяющей системы не считал маску дважды.
@@ -173,47 +181,9 @@ func (s *Server) processOne(id, payload string, sys config.System, cfg *config.C
 	hash := sha256.Sum256([]byte(payload))
 	key := id + "\x00" + hex.EncodeToString(hash[:8])
 
-	type flightResult struct {
-		out  outcome
-		dir  direction
-		code int
-	}
-
 	v, err, _ := s.flight.Do(key, func() (any, error) {
 		entry, found := s.store.Get(id)
-		switch {
-		case !found:
-			res, e := s.maskAndStore(id, payload, sys, cfg)
-			if e != nil {
-				return nil, e
-			}
-			return flightResult{out: res, dir: dirMask, code: http.StatusOK}, nil
-
-		case entry.OrigHash == hash:
-			// Повтор запроса на маскирование: отдаём ту же маску и ничего
-			// не перезаписываем.
-			return flightResult{out: outcome{text: entry.Mask, counts: countsOf(entry)}, dir: dirMaskRetry, code: http.StatusOK}, nil
-
-		case entry.MaskHash == hash:
-			if !sys.Demask {
-				return flightResult{code: http.StatusForbidden}, nil
-			}
-			if entry.System != "" && entry.System != sys.Name {
-				return flightResult{code: http.StatusForbidden}, nil
-			}
-			original, e := s.store.Original(entry)
-			if e != nil {
-				return nil, e
-			}
-			return flightResult{out: outcome{text: original, counts: countsOf(entry)}, dir: dirDemask, code: http.StatusOK}, nil
-
-		default:
-			// Тот же идентификатор, но текст не совпадает ни с исходным, ни с
-			// маской: маскируем присланное и запись не портим.
-			res := s.maskOnly(payload, sys, cfg)
-			s.metrics.ObserveAmbiguous(sys.Name)
-			return flightResult{out: res, dir: dirAmbiguous, code: http.StatusOK}, nil
-		}
+		return s.resolveFlight(id, payload, hash, entry, found, sys, cfg)
 	})
 	if err != nil {
 		return outcome{}, dirMask, http.StatusOK, err
@@ -223,6 +193,45 @@ func (s *Server) processOne(id, payload string, sys config.System, cfg *config.C
 		return outcome{}, dirMask, http.StatusOK, errors.New("внутренняя ошибка объединения запросов")
 	}
 	return fr.out, fr.dir, fr.code, nil
+}
+
+// resolveFlight решает, что делать с запросом: маскировать, повторить маску,
+// восстановить исходный текст или обработать неоднозначный повтор. Вынесено
+// из processOne, чтобы объединение запросов оставалось коротким.
+func (s *Server) resolveFlight(id, payload string, hash [32]byte, entry *store.Entry, found bool, sys config.System, cfg *config.Config) (flightResult, error) {
+	switch {
+	case !found:
+		res, e := s.maskAndStore(id, payload, sys, cfg)
+		if e != nil {
+			return flightResult{}, e
+		}
+		return flightResult{out: res, dir: dirMask, code: http.StatusOK}, nil
+
+	case entry.OrigHash == hash:
+		// Повтор запроса на маскирование: отдаём ту же маску и ничего
+		// не перезаписываем.
+		return flightResult{out: outcome{text: entry.Mask, counts: countsOf(entry)}, dir: dirMaskRetry, code: http.StatusOK}, nil
+
+	case entry.MaskHash == hash:
+		if !sys.Demask {
+			return flightResult{code: http.StatusForbidden}, nil
+		}
+		if entry.System != "" && entry.System != sys.Name {
+			return flightResult{code: http.StatusForbidden}, nil
+		}
+		original, e := s.store.Original(entry)
+		if e != nil {
+			return flightResult{}, e
+		}
+		return flightResult{out: outcome{text: original, counts: countsOf(entry)}, dir: dirDemask, code: http.StatusOK}, nil
+
+	default:
+		// Тот же идентификатор, но текст не совпадает ни с исходным, ни с
+		// маской: маскируем присланное и запись не портим.
+		res := s.maskOnly(payload, sys, cfg)
+		s.metrics.ObserveAmbiguous(sys.Name)
+		return flightResult{out: res, dir: dirAmbiguous, code: http.StatusOK}, nil
+	}
 }
 
 // maskAndStore маскирует текст и сохраняет соответствие.

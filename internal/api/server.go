@@ -371,6 +371,10 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, code int, er
 	}})
 }
 
+// fieldBody — имя поля тела запроса в сообщениях о неверном вводе. Повторяется
+// во всех ручках, поэтому вынесено в константу.
+const fieldBody = "body"
+
 func (s *Server) writeValidation(w http.ResponseWriter, r *http.Request, kind string, loc []string, msg string) {
 	s.metrics.ObserveStatus(systemLabel(r), "error", "422")
 	s.writeJSON(w, http.StatusUnprocessableEntity, validationBody{
