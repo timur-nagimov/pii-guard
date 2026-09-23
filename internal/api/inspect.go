@@ -9,6 +9,7 @@ import (
 	"pii-guard/internal/engine"
 	"pii-guard/internal/logging"
 	"pii-guard/internal/mask"
+	"pii-guard/internal/pii"
 )
 
 // inspectRequest — тело запроса на разбор текста.
@@ -164,69 +165,19 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	res := s.engine.Mask(req.Text, sys, cfg.Defaults)
 	took := time.Since(started)
 
-	runeAt := runeOffsets(req.Text)
 	out := inspectResponse{
-		System:    sys.Name,
-		Preset:    string(sys.MaskOptions(cfg.Defaults).Default),
-		Masked:    res.Text,
-		Counts:    countsToStrings(res),
-		TookMs:    float64(took.Microseconds()) / 1000,
-		TextBytes: len(req.Text),
-		TextRunes: len([]rune(req.Text)),
-		Spans:     make([]inspectSpan, 0, len(res.Spans)),
-		Skipped:   make([]inspectSkipped, 0, len(res.Skipped)),
-		Edges:     make([]inspectEdge, 0, len(res.Edges)),
-		Subjects:  make([]inspectSubject, 0, len(res.Subjects)),
-	}
-
-	maskedRunes := []rune(res.Text)
-	origRunes := []rune(req.Text)
-	for _, sp := range res.Spans {
-		item := inspectSpan{
-			Type:       string(sp.Type),
-			Start:      sp.Start,
-			End:        sp.End,
-			StartRune:  runeAt[sp.Start],
-			EndRune:    runeAt[sp.End],
-			Value:      req.Text[sp.Start:sp.End],
-			Confidence: sp.Conf,
-			Reason:     sp.Reason,
-		}
-		// Вид маскирования сохраняет число рун, поэтому фрагмент маски лежит
-		// по тем же рунным границам. Для видов, меняющих длину, показываем
-		// весь результат целиком и поле оставляем пустым.
-		if len(maskedRunes) == len(origRunes) && item.EndRune <= len(maskedRunes) {
-			item.Masked = string(maskedRunes[item.StartRune:item.EndRune])
-		}
-		out.Spans = append(out.Spans, item)
-	}
-	for _, sp := range res.Skipped {
-		if sp.Start < 0 || sp.End > len(req.Text) || sp.Start >= sp.End {
-			continue
-		}
-		out.Skipped = append(out.Skipped, inspectSkipped{
-			Type:       string(sp.Type),
-			Start:      sp.Start,
-			End:        sp.End,
-			Value:      req.Text[sp.Start:sp.End],
-			Confidence: sp.Conf,
-			Reason:     sp.Reason,
-		})
-	}
-	for _, e := range res.Edges {
-		out.Edges = append(out.Edges, inspectEdge{
-			A:          e.A,
-			B:          e.B,
-			Basis:      string(e.Basis),
-			Confidence: e.Conf,
-		})
-	}
-	out.Subjects = inspectSubjects(res.Subjects)
-	if len(res.Placeholders) > 0 {
-		out.Placeholders = make(map[string]string, len(res.Placeholders))
-		for _, ph := range res.Placeholders {
-			out.Placeholders[ph.Token] = ph.Value
-		}
+		System:       sys.Name,
+		Preset:       string(sys.MaskOptions(cfg.Defaults).Default),
+		Masked:       res.Text,
+		Counts:       countsToStrings(res),
+		TookMs:       float64(took.Microseconds()) / 1000,
+		TextBytes:    len(req.Text),
+		TextRunes:    len([]rune(req.Text)),
+		Spans:        inspectSpans(req.Text, res.Text, res.Spans),
+		Skipped:      inspectSkippedSpans(req.Text, res.Skipped),
+		Edges:        inspectEdges(res.Edges),
+		Subjects:     inspectSubjects(res.Subjects),
+		Placeholders: inspectPlaceholders(res.Placeholders),
 	}
 
 	s.writeJSON(w, http.StatusOK, out)
@@ -258,6 +209,85 @@ func inspectSubjects(subjects []engine.Subject) []inspectSubject {
 			Fragments: sub.Fragments,
 			Types:     types,
 		})
+	}
+	return out
+}
+
+// inspectSpans переводит найденные фрагменты в форму ответа разбора: к каждому
+// добавляются рунные границы и кусок маски, вставший на его место.
+func inspectSpans(text, masked string, spans []pii.Span) []inspectSpan {
+	out := make([]inspectSpan, 0, len(spans))
+	runeAt := runeOffsets(text)
+	maskedRunes := []rune(masked)
+	origRunes := []rune(text)
+	for _, sp := range spans {
+		item := inspectSpan{
+			Type:       string(sp.Type),
+			Start:      sp.Start,
+			End:        sp.End,
+			StartRune:  runeAt[sp.Start],
+			EndRune:    runeAt[sp.End],
+			Value:      text[sp.Start:sp.End],
+			Confidence: sp.Conf,
+			Reason:     sp.Reason,
+		}
+		// Вид маскирования сохраняет число рун, поэтому фрагмент маски лежит
+		// по тем же рунным границам. Для видов, меняющих длину, показываем
+		// весь результат целиком и поле оставляем пустым.
+		if len(maskedRunes) == len(origRunes) && item.EndRune <= len(maskedRunes) {
+			item.Masked = string(maskedRunes[item.StartRune:item.EndRune])
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// inspectSkippedSpans переводит снятые фрагменты в форму ответа разбора.
+// Границы проверяются ещё раз: снятый фрагмент приходит от правила, которое
+// его отвергло, и вырезать по ним кусок текста можно только убедившись, что
+// они лежат внутри присланного текста.
+func inspectSkippedSpans(text string, skipped []pii.Span) []inspectSkipped {
+	out := make([]inspectSkipped, 0, len(skipped))
+	for _, sp := range skipped {
+		if sp.Start < 0 || sp.End > len(text) || sp.Start >= sp.End {
+			continue
+		}
+		out = append(out, inspectSkipped{
+			Type:       string(sp.Type),
+			Start:      sp.Start,
+			End:        sp.End,
+			Value:      text[sp.Start:sp.End],
+			Confidence: sp.Conf,
+			Reason:     sp.Reason,
+		})
+	}
+	return out
+}
+
+// inspectEdges переводит связи между фрагментами в форму ответа разбора.
+func inspectEdges(edges []engine.Edge) []inspectEdge {
+	out := make([]inspectEdge, 0, len(edges))
+	for _, e := range edges {
+		out = append(out, inspectEdge{
+			A:          e.A,
+			B:          e.B,
+			Basis:      string(e.Basis),
+			Confidence: e.Conf,
+		})
+	}
+	return out
+}
+
+// inspectPlaceholders переводит подстановки в соответствие плейсхолдер →
+// значение. Подстановок нет — карта не заводится вовсе, и поле из ответа
+// пропадает: для видов маскирования без плейсхолдеров показывать нечего.
+func inspectPlaceholders(placeholders []mask.Placeholder) map[string]string {
+	if len(placeholders) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(placeholders))
+	for _, ph := range placeholders {
+		out[ph.Token] = ph.Value
 	}
 	return out
 }

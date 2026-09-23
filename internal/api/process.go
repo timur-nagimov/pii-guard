@@ -182,18 +182,21 @@ type outcome struct {
 	counts map[string]int
 }
 
+// flightResult — решение по одному запросу, которое объединение одинаковых
+// запросов отдаёт сразу всем, кто его ждал. Тип лежит на уровне пакета, потому
+// что часть решений принимает demaskEntry, а разбирает их processOne.
+type flightResult struct {
+	out  outcome
+	dir  direction
+	code int
+}
+
 // processOne определяет направление и выполняет маскирование либо обратное
 // преобразование. Одновременные одинаковые запросы объединяются, чтобы повтор
 // от проверяющей системы не считал маску дважды.
 func (s *Server) processOne(id, payload string, sys config.System, cfg *config.Config) (outcome, direction, int, error) {
 	hash := sha256.Sum256([]byte(payload))
 	key := id + "\x00" + hex.EncodeToString(hash[:8])
-
-	type flightResult struct {
-		out  outcome
-		dir  direction
-		code int
-	}
 
 	v, err, _ := s.flight.Do(key, func() (any, error) {
 		entry, found := s.store.Get(id)
@@ -211,17 +214,7 @@ func (s *Server) processOne(id, payload string, sys config.System, cfg *config.C
 			return flightResult{out: outcome{text: entry.Mask, counts: countsOf(entry)}, dir: dirMaskRetry, code: http.StatusOK}, nil
 
 		case entry.MaskHash == hash:
-			if !sys.Demask {
-				return flightResult{code: http.StatusForbidden}, nil
-			}
-			if entry.System != "" && entry.System != sys.Name {
-				return flightResult{code: http.StatusForbidden}, nil
-			}
-			original, e := s.store.Original(entry)
-			if e != nil {
-				return nil, e
-			}
-			return flightResult{out: outcome{text: original, counts: countsOf(entry)}, dir: dirDemask, code: http.StatusOK}, nil
+			return s.demaskEntry(entry, sys.Demask, sys.Name)
 
 		default:
 			// Тот же идентификатор, но текст не совпадает ни с исходным, ни с
@@ -239,6 +232,25 @@ func (s *Server) processOne(id, payload string, sys config.System, cfg *config.C
 		return outcome{}, dirMask, http.StatusOK, errors.New("внутренняя ошибка объединения запросов")
 	}
 	return fr.out, fr.dir, fr.code, nil
+}
+
+// demaskEntry разворачивает маску обратно в исходный текст. Вынесено из
+// processOne, потому что это единственное направление с проверкой прав:
+// развернуть маску можно только системе, которой она выдана, и только если
+// демаскирование ей разрешено настройкой. Система передана двумя полями, а не
+// целиком: больше для решения ничего не нужно.
+func (s *Server) demaskEntry(entry *store.Entry, demaskAllowed bool, system string) (flightResult, error) {
+	if !demaskAllowed {
+		return flightResult{code: http.StatusForbidden}, nil
+	}
+	if entry.System != "" && entry.System != system {
+		return flightResult{code: http.StatusForbidden}, nil
+	}
+	original, err := s.store.Original(entry)
+	if err != nil {
+		return flightResult{}, err
+	}
+	return flightResult{out: outcome{text: original, counts: countsOf(entry)}, dir: dirDemask, code: http.StatusOK}, nil
 }
 
 // maskAndStore маскирует текст и сохраняет соответствие.
