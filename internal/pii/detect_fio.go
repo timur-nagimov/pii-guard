@@ -138,15 +138,8 @@ func fioCollectWords(d *Doc) (words, lower []fioWord) {
 		}
 		end, last := fioWordEnd(d, i)
 		w := fioNewWord(d, toks[i].Start, end)
-		// Двойная фамилия со строчной буквы склеивается здесь, а не в
-		// fioWordEnd: там часть после дефиса обязана начинаться с заглавной
-		// буквы, иначе к любому имени приклеится обычное слово.
 		if w.roles == 0 && fioLowerSurnameCandidate(w) {
-			if hEnd, hLast, ok := fioLowerHyphenEnd(d, last, end); ok {
-				if hw := fioNewWord(d, toks[i].Start, hEnd); hw.roles != 0 || fioLowerSurnameCandidate(hw) {
-					w, last = hw, hLast
-				}
-			}
+			w, last = fioGlueLowerSurname(d, w, last, end)
 		}
 		switch {
 		case w.roles != 0:
@@ -157,6 +150,24 @@ func fioCollectWords(d *Doc) (words, lower []fioWord) {
 		i = last
 	}
 	return words, lower
+}
+
+// fioGlueLowerSurname приклеивает к кандидату в фамилию вторую часть через
+// дефис, написанную со строчной буквы. Двойная фамилия со строчной буквы
+// склеивается здесь, а не в fioWordEnd: там часть после дефиса обязана
+// начинаться с заглавной буквы, иначе к любому имени приклеится обычное
+// слово. Склейка принимается, только если целиком она сама остаётся
+// кандидатом: иначе к фамилии прилипнет соседнее слово через дефис.
+func fioGlueLowerSurname(d *Doc, w fioWord, last, end int) (word fioWord, wordLast int) {
+	hEnd, hLast, ok := fioLowerHyphenEnd(d, last, end)
+	if !ok {
+		return w, last
+	}
+	hw := fioNewWord(d, w.start, hEnd)
+	if hw.roles == 0 && !fioLowerSurnameCandidate(hw) {
+		return w, last
+	}
+	return hw, hLast
 }
 
 // fioWordEnd находит конец слова, приклеивая части через дефис: двойные
