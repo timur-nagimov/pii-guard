@@ -140,45 +140,70 @@ func AddCustomType(path string, ct CustomType) (EditResult, error) {
 	}
 
 	return editFile(path, func(root *yaml.Node) (string, error) {
-		doc := documentRoot(root)
-		list := findMapValue(doc, "custom_types")
-		if list == nil {
-			list = &yaml.Node{Kind: yaml.SequenceNode}
-			setMapValue(doc, "custom_types", list)
+		list := customTypesList(documentRoot(root))
+		if customTypeIndex(list, string(ct.Name)) >= 0 {
+			return "", fmt.Errorf("тип %q уже есть", ct.Name)
 		}
-		for _, item := range list.Content {
-			if n := findMapValue(item, "name"); n != nil && n.Value == string(ct.Name) {
-				return "", fmt.Errorf("тип %q уже есть", ct.Name)
-			}
-		}
-
-		item := &yaml.Node{Kind: yaml.MappingNode}
-		setMapValue(item, "name", &yaml.Node{Kind: yaml.ScalarNode, Value: string(ct.Name)})
-		setMapValue(item, "pattern", &yaml.Node{Kind: yaml.ScalarNode, Value: ct.Pattern, Style: yaml.SingleQuotedStyle})
-		if ct.Group != 0 {
-			setMapValue(item, "group", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: fmt.Sprintf("%d", ct.Group)})
-		}
-		if ct.Validator != "" {
-			setMapValue(item, "validator", &yaml.Node{Kind: yaml.ScalarNode, Value: ct.Validator})
-		}
-		if len(ct.Anchors) > 0 {
-			seq := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
-			for _, a := range ct.Anchors {
-				seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: a, Style: yaml.DoubleQuotedStyle})
-			}
-			setMapValue(item, "anchors", seq)
-		}
-		setMapValue(item, "require_anchor", &yaml.Node{
-			Kind: yaml.ScalarNode, Tag: "!!bool", Value: fmt.Sprintf("%t", ct.RequireAnchor),
-		})
-		if ct.AnchorWindow != 0 {
-			setMapValue(item, "anchor_window", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: fmt.Sprintf("%d", ct.AnchorWindow)})
-		}
-		item.HeadComment = "добавлено через интерфейс"
-
-		list.Content = append(list.Content, item)
+		list.Content = append(list.Content, customTypeNode(&ct))
 		return fmt.Sprintf("добавлен тип %q", ct.Name), nil
 	})
+}
+
+// customTypesList возвращает список своих типов, заводя раздел, если его в
+// файле ещё нет: добавление первого типа не должно требовать правки файла
+// руками.
+func customTypesList(doc *yaml.Node) *yaml.Node {
+	if list := findMapValue(doc, "custom_types"); list != nil {
+		return list
+	}
+	list := &yaml.Node{Kind: yaml.SequenceNode}
+	setMapValue(doc, "custom_types", list)
+	return list
+}
+
+// customTypeIndex ищет свой тип в списке по имени и возвращает его место или
+// -1. Именно место, а не узел: по нему тип и добавляют, и убирают.
+func customTypeIndex(list *yaml.Node, name string) int {
+	for i, item := range list.Content {
+		if n := findMapValue(item, "name"); n != nil && n.Value == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// customTypeNode собирает узел описания своего типа.
+//
+// Необязательные поля не пишутся вовсе, когда равны нулю: файл настроек
+// читают глазами, и строка вроде «group: 0» в нём выглядит настройкой, хотя
+// означает её отсутствие. Признак require_anchor пишется всегда — от него
+// зависит, ищется тип по всему тексту или только рядом с якорем, и
+// умалчивать о таком нельзя.
+func customTypeNode(ct *CustomType) *yaml.Node {
+	item := &yaml.Node{Kind: yaml.MappingNode}
+	setMapValue(item, "name", &yaml.Node{Kind: yaml.ScalarNode, Value: string(ct.Name)})
+	setMapValue(item, "pattern", &yaml.Node{Kind: yaml.ScalarNode, Value: ct.Pattern, Style: yaml.SingleQuotedStyle})
+	if ct.Group != 0 {
+		setMapValue(item, "group", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: fmt.Sprintf("%d", ct.Group)})
+	}
+	if ct.Validator != "" {
+		setMapValue(item, "validator", &yaml.Node{Kind: yaml.ScalarNode, Value: ct.Validator})
+	}
+	if len(ct.Anchors) > 0 {
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
+		for _, a := range ct.Anchors {
+			seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: a, Style: yaml.DoubleQuotedStyle})
+		}
+		setMapValue(item, "anchors", seq)
+	}
+	setMapValue(item, "require_anchor", &yaml.Node{
+		Kind: yaml.ScalarNode, Tag: "!!bool", Value: fmt.Sprintf("%t", ct.RequireAnchor),
+	})
+	if ct.AnchorWindow != 0 {
+		setMapValue(item, "anchor_window", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: fmt.Sprintf("%d", ct.AnchorWindow)})
+	}
+	item.HeadComment = "добавлено через интерфейс"
+	return item
 }
 
 // RemoveCustomType убирает свой тип персональных данных.
@@ -189,11 +214,9 @@ func RemoveCustomType(path, name string) (EditResult, error) {
 		if list == nil {
 			return "", fmt.Errorf("своих типов в настройках нет")
 		}
-		for i, item := range list.Content {
-			if n := findMapValue(item, "name"); n != nil && n.Value == name {
-				list.Content = append(list.Content[:i], list.Content[i+1:]...)
-				return fmt.Sprintf("убран тип %q", name), nil
-			}
+		if i := customTypeIndex(list, name); i >= 0 {
+			list.Content = append(list.Content[:i], list.Content[i+1:]...)
+			return fmt.Sprintf("убран тип %q", name), nil
 		}
 		return "", fmt.Errorf("тип %q не найден среди своих: встроенные типы убрать нельзя, их отключают списком types у системы", name)
 	})
@@ -206,6 +229,12 @@ func RemoveCustomType(path, name string) (EditResult, error) {
 // тем же кодом, что и при загрузке, и только потом пишем на диск. Записать
 // сперва и проверить потом означало бы оставить сервис со сломанным файлом.
 func editFile(path string, edit func(root *yaml.Node) (string, error)) (EditResult, error) {
+	// Путь сюда приходит от оператора: его задаёт флаг -config при запуске, и
+	// ручка правки правил берёт его из настроек сервера, а не из запроса.
+	// Подставить свой путь снаружи нельзя. Приводим его к каноническому виду
+	// один раз, чтобы проверка ниже сравнивала каталоги, а не их написания.
+	path = filepath.Clean(path)
+
 	raw, err := os.ReadFile(path) //nolint:gosec // путь задаёт оператор сервиса
 	if err != nil {
 		return EditResult{}, fmt.Errorf("файл настроек не прочитан: %w", err)
@@ -263,6 +292,14 @@ func editFile(path string, edit func(root *yaml.Node) (string, error)) (EditResu
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
 
+	// Временный файл обязан остаться в каталоге настроек: только тогда
+	// переименование атомарно, потому что происходит внутри одной файловой
+	// системы, и заведомо не задевает ничего за пределами каталога. Проверка
+	// дешёвая, а цена незамеченного выхода — затёртый чужой файл.
+	if filepath.Dir(tmpName) != dir {
+		return EditResult{}, fmt.Errorf("временный файл %s оказался вне каталога настроек %s", tmpName, dir)
+	}
+
 	if _, err := tmp.Write(out); err != nil {
 		_ = tmp.Close()
 		return EditResult{}, fmt.Errorf("временный файл не записан: %w", err)
@@ -270,10 +307,12 @@ func editFile(path string, edit func(root *yaml.Node) (string, error)) (EditResu
 	if err := tmp.Close(); err != nil {
 		return EditResult{}, fmt.Errorf("временный файл не закрыт: %w", err)
 	}
+	// Права нового файла — как у прежнего: файл настроек нередко лежит с
+	// урезанными правами, и правка через интерфейс не должна их расширять.
 	if st, err := os.Stat(path); err == nil {
-		_ = os.Chmod(tmpName, st.Mode())
+		_ = os.Chmod(tmpName, st.Mode()) //nolint:gosec // путь задаёт оператор сервиса, каталог проверен выше
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := os.Rename(tmpName, path); err != nil { //nolint:gosec // путь задаёт оператор сервиса, каталог проверен выше
 		return EditResult{}, fmt.Errorf("файл настроек не заменён: %w", err)
 	}
 
@@ -307,7 +346,7 @@ func blankLinesPreservable(raw []byte) bool {
 // blockScalar — строка вида «ключ: |» или «ключ: >-2», где указатель стоит
 // последним. Знак | внутри значения (а он есть в каждом регулярном выражении
 // этого файла) под это не подходит, поэтому проверка не срабатывает впустую.
-var blockScalar = regexp.MustCompile(`(?m)^[^#\n]*:[ \t]*[|>][-+]?[0-9]*[ \t]*$`)
+var blockScalar = regexp.MustCompile(`(?m)^[^#\n]*:[ \t]*[|>][-+]?\d*[ \t]*$`)
 
 // hideBlankLines заменяет пустые строки меткой-комментарием.
 //
