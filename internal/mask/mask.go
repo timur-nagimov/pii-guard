@@ -129,12 +129,8 @@ func Apply(text string, spans []pii.Span, opts Options) Result {
 
 		switch preset {
 		case PresetToken:
-			key := string(s.Type) + "\x00" + value
-			tok, seen := valueToken[key]
-			if !seen {
-				counters[s.Type]++
-				tok = "[" + string(s.Type) + "_" + itoa(counters[s.Type]) + "]"
-				valueToken[key] = tok
+			tok, fresh := tokenFor(s.Type, value, counters, valueToken)
+			if fresh {
 				res.Placeholders = append(res.Placeholders, Placeholder{Token: tok, Value: value, Type: s.Type})
 			}
 			b.WriteString(tok)
@@ -147,6 +143,21 @@ func Apply(text string, spans []pii.Span, opts Options) Result {
 
 	res.Text = b.String()
 	return res
+}
+
+// tokenFor выдаёт метку значению: одно и то же значение одного типа получает
+// одну и ту же метку, иначе связь между упоминаниями в тексте потерялась бы.
+// Второй результат сообщает, что метка выдана впервые и её надо занести в
+// список подстановок — повторную запись список не переживёт.
+func tokenFor(t pii.Type, value string, counters map[pii.Type]int, valueToken map[string]string) (string, bool) {
+	key := string(t) + "\x00" + value
+	if tok, seen := valueToken[key]; seen {
+		return tok, false
+	}
+	counters[t]++
+	tok := "[" + string(t) + "_" + itoa(counters[t]) + "]"
+	valueToken[key] = tok
+	return tok, true
 }
 
 // maskValue применяет к одному значению пресет, не сохраняющий состояния.

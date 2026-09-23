@@ -164,7 +164,10 @@ func fioLowerRightSupport(d *Doc, words []fioWord, found []Span, c fioWord) (int
 		if tail > end {
 			end = tail
 		}
-	} else if i+1 < len(words) && words[i+1].end <= end && words[i+1].has(fioRoleAnyPatronymic) {
+	}
+	if !patronymic && i+1 < len(words) && words[i+1].end <= end && words[i+1].has(fioRoleAnyPatronymic) {
+		// Отчество могло целиком войти в найденный ранее фрагмент: отдельной
+		// границы у него тогда нет, и признак берётся по списку слов.
 		patronymic = true
 	}
 	if !patronymic {

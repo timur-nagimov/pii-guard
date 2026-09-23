@@ -110,5 +110,7 @@ func TestCustomRulesCarriesEveryField(t *testing.T) {
 		t.Error("требование якоря потеряно")
 	case r.AnchorWindow != 24:
 		t.Errorf("окно якоря: %d", r.AnchorWindow)
+	default:
+		// Все поля описания доехали без потерь — сообщать не о чем.
 	}
 }

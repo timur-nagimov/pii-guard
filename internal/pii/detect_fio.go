@@ -145,6 +145,10 @@ func fioCollectWords(d *Doc) (words, lower []fioWord) {
 			words = append(words, w)
 		case fioLowerSurnameCandidate(w):
 			lower = append(lower, w)
+		default:
+			// Слово без признаков не запоминается ни одним списком, но
+			// цепочку соседей оно всё равно разрывает: промежуток с буквами
+			// соседством не считается.
 		}
 		i = last
 	}
@@ -515,6 +519,9 @@ func fioTripleShape(a, b, c fioWord) (float64, string, bool) {
 		return ConfHigh, "fio:surname+name+patronymic", true
 	case fioInitialsTriple(a, b, c):
 		return ConfHigh, "fio:initials", true
+	default:
+		// Прочие сочетания трёх слов на ФИО не похожи: решение о них
+		// принимается ниже, по паре и по одиночному слову.
 	}
 	return 0, "", false
 }
@@ -548,6 +555,9 @@ func fioPairShape(a, b fioWord) (float64, string, bool) {
 	case a.has(fioRoleName) && b.has(fioRoleAnySurname),
 		a.has(fioRoleAnySurname) && b.has(fioRoleName):
 		return ConfAnchored, "fio:surname+name", true
+	default:
+		// Прочие пары слов именем не считаются: пара без признаков имени
+		// разбирается дальше как одиночное слово.
 	}
 	return 0, "", false
 }
@@ -593,6 +603,9 @@ func fioSingleShape(d *Doc, w fioWord) (float64, string, bool) {
 		return ConfAnchored, "fio:name", true
 	case w.has(fioRoleSurnameStrong) && !fioAtSentenceStart(d, w.start):
 		return ConfMedium, "fio:surname_suffix", true
+	default:
+		// Одиночное слово без словарного признака и без сильного окончания
+		// именем не считается: одной заглавной буквы для решения мало.
 	}
 	return 0, "", false
 }

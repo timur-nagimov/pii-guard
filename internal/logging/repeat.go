@@ -161,21 +161,32 @@ func (h *repeatHandler) flush(now time.Time) {
 		for key, e := range sh.m {
 			switch {
 			case e.count > 0:
-				count := e.count
-				level, msg := e.level, e.msg
-				e.count = 0
-				e.reported = now
-				sh.mu.Unlock()
-				h.report(level, msg, count, now)
-				sh.mu.Lock()
+				h.reportEntry(sh, e, now)
 			case now.Sub(e.reported) > 2*h.window:
 				// Карта повторов не должна расти вечно: ключей столько же,
 				// сколько мест вызова, но сервис живёт долго.
 				delete(sh.m, key)
+			default:
+				// Ключ без накопленных повторов и ещё свежий: он пригодится
+				// следующему такому же сообщению, трогать его нечем.
 			}
 		}
 		sh.mu.Unlock()
 	}
+}
+
+// reportEntry выводит накопленные повторы одного ключа и обнуляет счётчик.
+// Блокировка шарда на время вывода снимается: запись уходит в нижний
+// обработчик и упирается в диск, а под захваченной блокировкой на это время
+// встали бы все места вызова, попавшие в тот же шард.
+func (h *repeatHandler) reportEntry(sh *repeatShard, e *repeatEntry, now time.Time) {
+	count := e.count
+	level, msg := e.level, e.msg
+	e.count = 0
+	e.reported = now
+	sh.mu.Unlock()
+	h.report(level, msg, count, now)
+	sh.mu.Lock()
 }
 
 func (h *repeatHandler) report(level slog.Level, msg string, count int, now time.Time) {

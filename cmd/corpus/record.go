@@ -87,6 +87,9 @@ func validate(r Record) string {
 		return reasonNoText
 	case !knownSources[r.Source]:
 		return reasonBadSource
+	default:
+		// Шапка записи в порядке, отбраковывать не за что: разбор
+		// продолжается проверкой фрагментов ниже.
 	}
 	for _, s := range r.Spans {
 		if reason := checkSpan(r.Text, s); reason != "" {

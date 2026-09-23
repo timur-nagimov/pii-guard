@@ -617,6 +617,9 @@ func maskingStub() http.HandlerFunc {
 			case e.masked:
 				writeResult(w, e.orig)
 				return
+			default:
+				// Текст под тем же идентификатором, но не совпавший ни с
+				// исходным, ни с маской, маскируется заново — как новый.
 			}
 		}
 		masked := maskDigits(req.Payload)
