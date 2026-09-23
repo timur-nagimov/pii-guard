@@ -103,101 +103,97 @@ func main() {
 		os.Exit(1)
 	}
 
-	eng, sys, defs := buildEngine(*minConf, preset)
-	byType := map[string]*stat{}
-	byCategory := map[string]*stat{}
-	bySource := map[string]*stat{}
-	shown := 0
-
+	sc := newScanner(*minConf, preset)
+	acc := newSliceStats()
+	ex := &examplePrinter{limit: *examples, onlyType: *onlyType}
 	for _, s := range samples {
-		text := s.Text
-		if *lower {
-			text = strings.ToLower(text)
-		}
-		res := eng.Mask(text, sys, defs)
-		cat := ensure(byCategory, s.Category)
-
-		origRunes := []rune(text)
-		maskRunes := []rune(res.Text)
-		idx := runeIndex(text)
-		inside := make([]bool, len(origRunes))
-
-		for _, g := range s.Spans {
-			if g.Start < 0 || g.End > len(text) || g.Start >= g.End {
-				continue
-			}
-			startRune, endRune := idx[g.Start], idx[g.End]
-			for i := startRune; i < endRune && i < len(inside); i++ {
-				inside[i] = true
-			}
-			st := ensure(byType, g.Type)
-			src := ensure(bySource, s.Source)
-			ratio := changedRatio(origRunes, maskRunes, startRune, endRune)
-			st.fragments++
-			cat.fragments++
-			src.fragments++
-			st.changed += ratio
-			cat.changed += ratio
-			src.changed += ratio
-			if ratio > 0 {
-				st.touched++
-				cat.touched++
-				src.touched++
-			}
-			switch {
-			case ratio == 0:
-				st.missed++
-				cat.missed++
-				src.missed++
-			case ratio < 1:
-				st.partial++
-				cat.partial++
-				src.partial++
-			default:
-				st.full++
-				cat.full++
-				src.full++
-			}
-			if ratio < 0.5 && *examples > 0 && shown < *examples &&
-				(*onlyType == "" || *onlyType == g.Type) {
-				shown++
-				fmt.Printf("ПРОПУСК %-16s [%s] %q\n   текст: %s\n   маска: %s\n",
-					g.Type, s.Category, text[g.Start:g.End], cut(text), cut(res.Text))
-			}
-		}
-
-		extra := 0
-		if !s.PartialLabels {
-			var outside int
-			extra, outside = outsideChanges(origRunes, maskRunes, inside)
-			cat.extra += extra
-			cat.outside += outside
-			src := ensure(bySource, s.Source)
-			src.extra += extra
-			src.outside += outside
-		}
-		if extra > 0 && *examples > 0 && shown < *examples && *onlyType == "" && len(s.Spans) == 0 {
-			shown++
-			fmt.Printf("ЛИШНЕЕ  [%s]\n   текст: %s\n   маска: %s\n", s.Category, cut(text), cut(res.Text))
-		}
+		scoreSample(sc, &s, *lower, acc, ex)
 	}
 
-	report("Типы", byType, *onlyType, *split)
-	report("Источники", bySource, "", false)
-	report("Категории", byCategory, "", false)
+	report("Типы", acc.byType, *onlyType, *split)
+	report("Источники", acc.bySource, "", false)
+	report("Категории", acc.byCategory, "", false)
+}
+
+// sliceStats — показатели одного прогона сразу в трёх срезах: по типу
+// персональных данных, по категории элемента и по источнику. Срезы заполняются
+// за один проход: один и тот же фрагмент учитывается в каждом из них, и
+// считать их по отдельности означало бы маскировать набор трижды.
+type sliceStats struct {
+	byType     map[string]*stat
+	byCategory map[string]*stat
+	bySource   map[string]*stat
+}
+
+func newSliceStats() *sliceStats {
+	return &sliceStats{
+		byType:     map[string]*stat{},
+		byCategory: map[string]*stat{},
+		bySource:   map[string]*stat{},
+	}
+}
+
+// scoreSample сверяет один элемент набора с эталонной разметкой и разносит
+// результат по срезам. Вынесен из main отдельно, чтобы разбор одного элемента
+// читался целиком и не перемешивался с разбором ключей и печатью отчёта.
+func scoreSample(sc *scanner, s *sample, lower bool, acc *sliceStats, ex *examplePrinter) {
+	// Категория заводится на каждом элементе, даже если размеченных фрагментов
+	// в нём нет: отрицательные категории тем и ценны, что находиться в них
+	// нечему, и в отчёте они обязаны быть видны.
+	cat := ensure(acc.byCategory, s.Category)
+
+	p := scanSample(sc, s, lower)
+	p.eachSpan(s.Spans, func(g goldSpan, ratio float64) {
+		addRatio(ensure(acc.byType, g.Type), ratio)
+		addRatio(cat, ratio)
+		addRatio(ensure(acc.bySource, s.Source), ratio)
+		if ratio < 0.5 {
+			ex.miss(g, s.Category, p.text, p.masked)
+		}
+	})
+
+	extra := 0
+	if !s.PartialLabels {
+		var outside int
+		extra, outside = p.falsePositives()
+		cat.extra += extra
+		cat.outside += outside
+		src := ensure(acc.bySource, s.Source)
+		src.extra += extra
+		src.outside += outside
+	}
+	// Элемент без единого размеченного фрагмента, в котором что-то изменилось,
+	// — самый наглядный пример ложного срабатывания: менять там было нечего.
+	if extra > 0 && len(s.Spans) == 0 {
+		ex.unexpected(s.Category, p.text, p.masked)
+	}
 }
 
 // runDatasets прогоняет замер по нескольким наборам и печатает общую таблицу
 // тип×набор: доля изменённого, доля затронутых, число фрагментов.
 func runDatasets(list string, minConf float64, preset mask.Preset, lower, split bool) {
-	paths := strings.Split(list, ",")
-	eng, sys, defs := buildEngine(minConf, preset)
+	acc := scoreDatasets(strings.Split(list, ","), newScanner(minConf, preset), lower)
+	printTypeSets(acc.byType, preset, lower, split)
+	printSetTotals(acc.bySet)
+}
 
-	// byType[тип][набор] = stat
-	byType := map[string]map[string]*stat{}
-	// bySet[набор] = stat (итог по набору)
-	bySet := map[string]*stat{}
+// setStats — показатели прогона по нескольким наборам: отдельно по паре тип и
+// набор, отдельно по набору целиком. Две карты, а не одна, потому что таблица
+// тип×набор отвечает на вопрос, где именно слабее, а итог по набору — какой
+// набор тяжелее.
+type setStats struct {
+	byType map[string]map[string]*stat
+	bySet  map[string]*stat
+}
 
+// scoreDatasets прогоняет замер по каждому набору из списка. Нечитаемый набор
+// прогон не останавливает: список путей задаётся руками, опечатка в одном из
+// них — дело обычное, а остальные наборы измерить всё равно надо.
+func scoreDatasets(paths []string, sc *scanner, lower bool) *setStats {
+	acc := &setStats{
+		byType: map[string]map[string]*stat{},
+		bySet:  map[string]*stat{},
+	}
 	for _, path := range paths {
 		path = strings.TrimSpace(path)
 		if path == "" {
@@ -210,98 +206,53 @@ func runDatasets(list string, minConf float64, preset mask.Preset, lower, split 
 			continue
 		}
 		for _, s := range samples {
-			text := s.Text
-			if lower {
-				text = strings.ToLower(text)
-			}
-			res := eng.Mask(text, sys, defs)
-			origRunes := []rune(text)
-			maskRunes := []rune(res.Text)
-			idx := runeIndex(text)
-			inside := make([]bool, len(origRunes))
-			set := ensure(bySet, setName)
-
-			for _, g := range s.Spans {
-				if g.Start < 0 || g.End > len(text) || g.Start >= g.End {
-					continue
-				}
-				startRune, endRune := idx[g.Start], idx[g.End]
-				for i := startRune; i < endRune && i < len(inside); i++ {
-					inside[i] = true
-				}
-				ratio := changedRatio(origRunes, maskRunes, startRune, endRune)
-				st := ensureType(byType, g.Type, setName)
-				st.fragments++
-				set.fragments++
-				st.changed += ratio
-				set.changed += ratio
-				if ratio > 0 {
-					st.touched++
-					set.touched++
-				}
-				switch {
-				case ratio == 0:
-					st.missed++
-					set.missed++
-				case ratio < 1:
-					st.partial++
-					set.partial++
-				default:
-					st.full++
-					set.full++
-				}
-			}
-
-			if !s.PartialLabels {
-				var outside int
-				extra, outside := outsideChanges(origRunes, maskRunes, inside)
-				set.extra += extra
-				set.outside += outside
-			}
+			scoreSetSample(sc, &s, lower, acc, setName)
 		}
 	}
+	return acc
+}
 
+// scoreSetSample сверяет один элемент с разметкой и учитывает его дважды: в
+// паре тип и набор и в итоге по набору.
+func scoreSetSample(sc *scanner, s *sample, lower bool, acc *setStats, setName string) {
+	set := ensure(acc.bySet, setName)
+	p := scanSample(sc, s, lower)
+	p.eachSpan(s.Spans, func(g goldSpan, ratio float64) {
+		addRatio(ensureType(acc.byType, g.Type, setName), ratio)
+		addRatio(set, ratio)
+	})
+	if !s.PartialLabels {
+		extra, outside := p.falsePositives()
+		set.extra += extra
+		set.outside += outside
+	}
+}
+
+// printTypeSets печатает таблицу тип×набор: по каждому типу видно, на каком
+// наборе он проседает.
+func printTypeSets(byType map[string]map[string]*stat, preset mask.Preset, lower, split bool) {
 	// Заголовок: тип, набор, изменено, затронуто, фрагментов.
 	fmt.Printf("\nКачество по типам и наборам (пресет %s%s)\n", preset, lowerLabel(lower))
 	fmt.Printf("%-16s %-22s %10s %10s %10s\n", "тип", "набор", "изменено", "затронуто", "фрагментов")
 
-	types := sortedTypeKeys(byType)
-	for _, t := range types {
+	for _, t := range sortedTypeKeys(byType) {
 		ts := byType[t]
-		sets := sortedKeys(ts)
-		for _, n := range sets {
+		for _, n := range sortedKeys(ts) {
 			s := ts[n]
-			touched := 0.0
-			if s.fragments > 0 {
-				touched = 100 * float64(s.touched) / float64(s.fragments)
-			}
-			mark := ""
-			if split {
-				mark = "  [задание]"
-				if !taskTypes[t] {
-					mark = "  [добавление]"
-				}
-			}
 			fmt.Printf("%-16s %-22s %10.4f %9.1f%% %10d%s\n",
-				t, n, avg(s), touched, s.fragments, mark)
+				t, n, avg(s), percent(s.touched, s.fragments), s.fragments, typeMark(t, split))
 		}
 	}
+}
 
-	// Итог по наборам.
+// printSetTotals печатает итог по каждому набору целиком: ради него наборы и
+// прогоняются вместе, поодиночке их не сравнить.
+func printSetTotals(bySet map[string]*stat) {
 	fmt.Printf("\nИтог по наборам\n%-22s %10s %10s %10s %10s\n", "набор", "изменено", "затронуто", "фрагментов", "ложных")
-	sets := sortedKeys(bySet)
-	for _, n := range sets {
+	for _, n := range sortedKeys(bySet) {
 		s := bySet[n]
-		touched := 0.0
-		if s.fragments > 0 {
-			touched = 100 * float64(s.touched) / float64(s.fragments)
-		}
-		fp := 0.0
-		if s.outside > 0 {
-			fp = 100 * float64(s.extra) / float64(s.outside)
-		}
 		fmt.Printf("%-22s %10.4f %9.1f%% %10d %9.2f%%\n",
-			n, avg(s), touched, s.fragments, fp)
+			n, avg(s), percent(s.touched, s.fragments), s.fragments, percent(s.extra, s.outside))
 	}
 }
 
@@ -322,9 +273,61 @@ func lowerLabel(lower bool) string {
 	return ""
 }
 
-// buildEngine собирает конвейер с теми же детекторами, что и сервис, и с
+// typeMark помечает, из задания тип или добавлен нами сверх него. Без ключа
+// -split пометки нет: она нужна ровно тогда, когда обязательную часть
+// сравнивают с добавленной, и в остальное время только мешает читать таблицу.
+func typeMark(typ string, split bool) string {
+	if !split {
+		return ""
+	}
+	if taskTypes[typ] {
+		return "  [задание]"
+	}
+	return "  [добавление]"
+}
+
+// percent переводит часть в проценты и отдаёт ноль при пустом целом. Пустое
+// целое здесь обычное дело: в отрицательных категориях размеченных фрагментов
+// нет вовсе, и деление на ноль поставило бы в таблицу NaN.
+func percent(part, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+	return 100 * float64(part) / float64(total)
+}
+
+// addRatio учитывает один эталонный фрагмент в срезе: долю изменённого и то,
+// как фрагмент закрыт — целиком, частично или вовсе пропущен. Один и тот же
+// фрагмент попадает сразу в несколько срезов (тип, категория, источник,
+// набор), и правило учёта у них общее.
+func addRatio(s *stat, ratio float64) {
+	s.fragments++
+	s.changed += ratio
+	if ratio > 0 {
+		s.touched++
+	}
+	switch {
+	case ratio == 0:
+		s.missed++
+	case ratio < 1:
+		s.partial++
+	default:
+		s.full++
+	}
+}
+
+// scanner — собранный конвейер маскирования вместе с профилем проверяющей
+// системы. Три части всегда ходят вместе и порознь смысла не имеют, поэтому
+// передаются одним значением.
+type scanner struct {
+	eng  *engine.Engine
+	sys  config.System
+	defs config.Defaults
+}
+
+// newScanner собирает конвейер с теми же детекторами, что и сервис, и с
 // профилем проверяющей системы.
-func buildEngine(minConf float64, preset mask.Preset) (*engine.Engine, config.System, config.Defaults) {
+func newScanner(minConf float64, preset mask.Preset) *scanner {
 	reg := pii.NewRegistry()
 	reg.Register(
 		pii.NewNumericDetector(),
@@ -356,7 +359,117 @@ func buildEngine(minConf float64, preset mask.Preset) (*engine.Engine, config.Sy
 			OrgAddresses:  true,
 		},
 	}
-	return engine.New(reg), sys, defs
+	return &scanner{eng: engine.New(reg), sys: sys, defs: defs}
+}
+
+// mask отдаёт только замаскированный текст: остальные поля ответа движка при
+// замере не нужны, качество считается сравнением текста с исходным.
+func (sc *scanner) mask(text string) string {
+	return sc.eng.Mask(text, sc.sys, sc.defs).Text
+}
+
+// sampleScan — подготовленный к сверке элемент: текст, его маска и оба в
+// рунах. Рунные представления считаются один раз на элемент, потому что
+// сверка идёт в координатах рун (смотри changedRatio), а перевод смещений
+// стоит прохода по всему тексту.
+type sampleScan struct {
+	text      string // текст после приведения регистра: на нём считались смещения
+	masked    string
+	origRunes []rune
+	maskRunes []rune
+	idx       []int
+	inside    []bool // руны, попавшие в эталонные фрагменты
+}
+
+// scanSample маскирует элемент и готовит его к сверке с разметкой. Общий шаг
+// обоих режимов замера — по одному набору и по нескольким сразу: правило
+// сверки должно быть одно на оба, иначе их таблицы начнут расходиться.
+func scanSample(sc *scanner, s *sample, lower bool) *sampleScan {
+	text := s.Text
+	if lower {
+		text = strings.ToLower(text)
+	}
+	masked := sc.mask(text)
+	origRunes := []rune(text)
+	return &sampleScan{
+		text:      text,
+		masked:    masked,
+		origRunes: origRunes,
+		maskRunes: []rune(masked),
+		idx:       runeIndex(text),
+		inside:    make([]bool, len(origRunes)),
+	}
+}
+
+// eachSpan перебирает пригодные эталонные фрагменты и отдаёт по каждому долю
+// изменённых рун. Негодный фрагмент (выход за границы текста, пустой или
+// вывернутый промежуток) пропускается: разметка приходит из внешних наборов, и
+// одна испорченная строка не должна ронять весь замер.
+//
+// Заодно перебор отмечает руны, попавшие в разметку: по этой отметке потом
+// считаются ложные срабатывания, поэтому перебирать надо все фрагменты, даже
+// если вызывающему интересна лишь часть.
+func (p *sampleScan) eachSpan(spans []goldSpan, fn func(g goldSpan, ratio float64)) {
+	for _, g := range spans {
+		if g.Start < 0 || g.End > len(p.text) || g.Start >= g.End {
+			continue
+		}
+		startRune, endRune := p.idx[g.Start], p.idx[g.End]
+		for i := startRune; i < endRune && i < len(p.inside); i++ {
+			p.inside[i] = true
+		}
+		fn(g, changedRatio(p.origRunes, p.maskRunes, startRune, endRune))
+	}
+}
+
+// falsePositives считает изменённые руны за пределами эталонных фрагментов.
+// Имеет смысл только после eachSpan: до перебора отметка разметки пуста и
+// ложным срабатыванием окажется весь замаскированный текст.
+func (p *sampleScan) falsePositives() (extra, outside int) {
+	return outsideChanges(p.origRunes, p.maskRunes, p.inside)
+}
+
+// examplePrinter печатает примеры ошибок и следит за их числом. На большом
+// наборе пропусков тысячи, а разобрать руками удаётся десяток, поэтому печать
+// ограничена ключами -examples и -type.
+type examplePrinter struct {
+	limit    int
+	onlyType string
+	shown    int
+}
+
+// miss печатает пример пропуска: эталонный фрагмент, замаскированный меньше
+// чем наполовину.
+func (p *examplePrinter) miss(g goldSpan, category, text, masked string) {
+	if p.onlyType != "" && p.onlyType != g.Type {
+		return
+	}
+	if !p.take() {
+		return
+	}
+	fmt.Printf("ПРОПУСК %-16s [%s] %q\n   текст: %s\n   маска: %s\n",
+		g.Type, category, text[g.Start:g.End], cut(text), cut(masked))
+}
+
+// unexpected печатает пример ложного срабатывания. Ключ -type такие примеры
+// прячет: у них нет типа, и в выборке по одному типу им не место.
+func (p *examplePrinter) unexpected(category, text, masked string) {
+	if p.onlyType != "" {
+		return
+	}
+	if !p.take() {
+		return
+	}
+	fmt.Printf("ЛИШНЕЕ  [%s]\n   текст: %s\n   маска: %s\n", category, cut(text), cut(masked))
+}
+
+// take занимает место под ещё один пример, если оно осталось.
+func (p *examplePrinter) take() bool {
+	if p.limit <= 0 || p.shown >= p.limit {
+		return false
+	}
+	p.shown++
+	return true
 }
 
 // changedRatio считает долю изменённых рун внутри эталонного фрагмента.
@@ -455,27 +568,15 @@ func report(title string, m map[string]*stat, only string, split bool) {
 		title, "срез", "изменено", "затронуто", "пропущено", "частично", "ложных", "фрагментов")
 	for _, k := range keys {
 		s := m[k]
-		touched := 0.0
-		missed := 0.0
-		partial := 0.0
-		if s.fragments > 0 {
-			touched = 100 * float64(s.touched) / float64(s.fragments)
-			missed = 100 * float64(s.missed) / float64(s.fragments)
-			partial = 100 * float64(s.partial) / float64(s.fragments)
-		}
+		// Доля ложных печатается только там, где есть что делить: у среза без
+		// рун вне эталона она не ноль, а неизвестна, и ноль тут соврал бы.
 		extra := ""
 		if s.outside > 0 {
-			extra = fmt.Sprintf("%9.2f%%", 100*float64(s.extra)/float64(s.outside))
-		}
-		mark := ""
-		if split {
-			mark = "  [задание]"
-			if !taskTypes[k] {
-				mark = "  [добавление]"
-			}
+			extra = fmt.Sprintf("%9.2f%%", percent(s.extra, s.outside))
 		}
 		fmt.Printf("%-24s %10.4f %9.1f%% %9.1f%% %9.1f%% %10s %10d%s\n",
-			k, avg(s), touched, missed, partial, extra, s.fragments, mark)
+			k, avg(s), percent(s.touched, s.fragments), percent(s.missed, s.fragments),
+			percent(s.partial, s.fragments), extra, s.fragments, typeMark(k, split))
 	}
 }
 
