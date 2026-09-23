@@ -45,8 +45,7 @@ lint: ## проверить формат и статический анализ
 		echo "установите: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"; \
 		exit 1; \
 	fi
-	# internal/pii подключается после слияния ветки sonar-lint-pii
-	golangci-lint run ./cmd/... ./internal/api/... ./internal/config/... ./internal/engine/... ./internal/logging/... ./internal/mask/... ./internal/metrics/... ./internal/store/...
+	golangci-lint run ./...
 
 .PHONY: check-config
 check-config: ## проверить файл настроек

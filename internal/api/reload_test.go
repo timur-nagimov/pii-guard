@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -51,7 +52,7 @@ func TestConfigReloadUnderLoad(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			req, err := http.NewRequest(http.MethodPost, ts.URL+"/process", strings.NewReader(body))
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/process", strings.NewReader(body))
 			if err != nil {
 				t.Errorf("запрос не собрался: %v", err)
 				return

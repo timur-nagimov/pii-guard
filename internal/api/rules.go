@@ -253,9 +253,22 @@ func (s *Server) handleRulesPost(w http.ResponseWriter, r *http.Request) {
 
 // applyRuleChange исполняет одну операцию над файлом настроек.
 func (s *Server) applyRuleChange(c ruleChange) (config.EditResult, error) {
-	path := s.configPath
-	switch c.Op {
-	case "add_type":
+	op, ok := ruleOps[c.Op]
+	if !ok {
+		return config.EditResult{}, errRule("неизвестная операция " + quote(c.Op) +
+			"; доступны: add_type, remove_type, set_system_types, set_system_enabled, set_system_allow_persons")
+	}
+	return op(s.configPath, c)
+}
+
+// ruleOp — одна операция над файлом настроек: проверяет поля правки и
+// вызывает соответствующую функцию пакета config.
+type ruleOp func(path string, c ruleChange) (config.EditResult, error)
+
+// ruleOps — таблица операций по имени. Каждая операция сама проверяет свои
+// поля и возвращает понятную ошибку, если нужного поля нет.
+var ruleOps = map[string]ruleOp{
+	"add_type": func(path string, c ruleChange) (config.EditResult, error) {
 		if c.Type == nil {
 			return config.EditResult{}, errRule("для добавления типа нужно поле type")
 		}
@@ -268,14 +281,16 @@ func (s *Server) applyRuleChange(c ruleChange) (config.EditResult, error) {
 			RequireAnchor: c.Type.RequireAnchor,
 			AnchorWindow:  c.Type.AnchorWindow,
 		})
+	},
 
-	case "remove_type":
+	"remove_type": func(path string, c ruleChange) (config.EditResult, error) {
 		if strings.TrimSpace(c.Name) == "" {
 			return config.EditResult{}, errRule("для удаления типа нужно поле name")
 		}
 		return config.RemoveCustomType(path, strings.ToUpper(strings.TrimSpace(c.Name)))
+	},
 
-	case "set_system_types":
+	"set_system_types": func(path string, c ruleChange) (config.EditResult, error) {
 		if strings.TrimSpace(c.System) == "" {
 			return config.EditResult{}, errRule("для правки системы нужно поле system")
 		}
@@ -283,8 +298,9 @@ func (s *Server) applyRuleChange(c ruleChange) (config.EditResult, error) {
 			return config.EditResult{}, errRule("для правки типов системы нужно поле types")
 		}
 		return config.SetSystemTypes(path, c.System, c.Types)
+	},
 
-	case "set_system_enabled":
+	"set_system_enabled": func(path string, c ruleChange) (config.EditResult, error) {
 		if strings.TrimSpace(c.System) == "" {
 			return config.EditResult{}, errRule("для правки системы нужно поле system")
 		}
@@ -292,8 +308,9 @@ func (s *Server) applyRuleChange(c ruleChange) (config.EditResult, error) {
 			return config.EditResult{}, errRule("для включения или выключения системы нужно поле enabled")
 		}
 		return config.SetSystemEnabled(path, c.System, *c.Enabled)
+	},
 
-	case "set_system_allow_persons":
+	"set_system_allow_persons": func(path string, c ruleChange) (config.EditResult, error) {
 		if strings.TrimSpace(c.System) == "" {
 			return config.EditResult{}, errRule("для правки системы нужно поле system")
 		}
@@ -301,11 +318,7 @@ func (s *Server) applyRuleChange(c ruleChange) (config.EditResult, error) {
 			return config.EditResult{}, errRule("для правки списка имён нужно поле persons")
 		}
 		return config.SetSystemAllowPersons(path, c.System, c.Persons)
-
-	default:
-		return config.EditResult{}, errRule("неизвестная операция " + quote(c.Op) +
-			"; доступны: add_type, remove_type, set_system_types, set_system_enabled, set_system_allow_persons")
-	}
+	},
 }
 
 // rulesWritable сообщает, знает ли сервис, какой файл править.

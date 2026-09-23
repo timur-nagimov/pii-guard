@@ -4,6 +4,7 @@
 // далее. Подстановка детерминирована по сиду от значения, поэтому одно и то же
 // значение всегда получает одну и ту же подстановку, а значение по подстановке
 // не восстанавливается.
+
 package mask
 
 import (
@@ -551,7 +552,7 @@ func syntheticDate(value string, seed uint64) string {
 		return maskRunes(value, false)
 	}
 	// Определяем формат по числу групп цифр: 3 группы — день.месяц.год.
-	day, month, year := 1, 1, 2000
+	var day, month, year int
 	if len(runs) >= 3 {
 		day = int(seed%28) + 1
 		month = int(seed/28%12) + 1
@@ -609,8 +610,7 @@ func DeclineVariants(name string) []string {
 // отчеств; редкие окончания остаются без изменений.
 func declineWord(w, caseName string) string {
 	low := strings.ToLower(w)
-	gen := func(s string) string { return s }
-	dat := func(s string) string { return s }
+	var gen, dat func(string) string
 	switch {
 	case strings.HasSuffix(low, "ский"):
 		gen = func(s string) string { return s[:len(s)-2] + "ого" }
