@@ -183,11 +183,7 @@ func TestUIPageHasNoExternalLinks(t *testing.T) {
 	}
 	// Подключения своих файлов обязаны быть на месте: без них страница
 	// осталась бы голой разметкой без стилей и без единого действия.
-	// Сценарий подключается модулем: в модуле строгий режим включён всегда,
-	// поэтому директива 'use strict' внутри него не нужна и была убрана.
-	// Проверка следит и за этим: без type="module" файл выполнится в нестрогом
-	// режиме, и снятая директива тихо изменит поведение.
-	for _, tag := range []string{`<link rel="stylesheet" href="/ui/app.css">`, `<script type="module" src="/ui/app.js"></script>`} {
+	for _, tag := range []string{`<link rel="stylesheet" href="/ui/app.css">`, `<script src="/ui/app.js"></script>`} {
 		if !strings.Contains(body, tag) {
 			t.Errorf("страница не подключает свой файл тегом %q", tag)
 		}

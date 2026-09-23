@@ -80,6 +80,7 @@ textarea {
   font-size: 13.5px;
   line-height: 1.6;
 }
+textarea:focus, select:focus, button:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .controls {
   display: flex;
@@ -114,11 +115,6 @@ button {
 button:hover { filter: brightness(1.07); }
 button:disabled { opacity: 0.55; cursor: progress; }
 button.secondary { background: #fff; color: var(--accent); }
-
-/* Рамка фокуса стоит после разборов самих textarea, select и button
-   намеренно: правило перебивает их по весу, и читать стили проще, когда
-   более весомое идёт следом за тем, что оно перебивает, а не до него. */
-textarea:focus, select:focus, button:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .hint { margin-left: auto; color: var(--ink-soft); font-size: 13px; }
 /* Та же подсказка, но не сбоку от элементов, а отдельной строкой под
@@ -253,11 +249,7 @@ table.coverage td.conf { color: var(--ink-soft); font-size: 11.5px; }
 .coverage-legend .hole { color: var(--bad); font-weight: 650; }
 .coverage-legend .demask { color: var(--ok); font-weight: 650; }
 .coverage-legend .custom { color: var(--accent); font-weight: 650; }
-/* Подпись «extra» в пояснении — это <strong>, и цвет ей возвращают заголовочный,
-   перебивая .coverage-legend strong. Элемент в записи назван явно, чтобы правило
-   не пересекалось с одноимённым классом внутри самой матрицы: там .src — это
-   подпись источника в клетке, вещь другая и со своим весом. */
-.coverage-legend strong.src { color: var(--ink-soft); }
+.coverage-legend .src { color: var(--ink-soft); }
 .coverage-meta { margin-top: 10px; font-size: 12.5px; color: var(--ink-soft); }
 .coverage-meta .updated { color: var(--ink-soft); }
 .coverage-meta .error { color: var(--bad); }
