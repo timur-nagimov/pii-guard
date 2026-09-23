@@ -74,8 +74,17 @@ func main() {
 		stopLog(boot, out)
 		os.Exit(1)
 	}
+	// Предупреждения настроек не мешают работать, но молчать о них нельзя:
+	// выключенная система снаружи выглядит как отказ в доступе без причины.
+	for _, w := range cfg.Warnings {
+		log.Warn("настройки: "+w, logging.Event(logging.EventConfigRejected))
+	}
+
 	if *checkConfig {
 		fmt.Println("настройки корректны")
+		for _, w := range cfg.Warnings {
+			fmt.Println("  предупреждение:", w)
+		}
 		stopLog(boot, out)
 		return
 	}
