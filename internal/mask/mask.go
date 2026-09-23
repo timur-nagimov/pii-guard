@@ -68,7 +68,9 @@ type Options struct {
 	Shared *TokenState
 }
 
-// TokenState — общее состояние нумерации плейсхолдеров между вызовами Apply.
+// TokenState — состояние нумерации плейсхолдеров и подстановок одного прохода
+// маскирования; общее состояние нескольких вызовов Apply — тот же набор карт,
+// поэтому он же передаётся в Options.Shared.
 type TokenState struct {
 	counters   map[pii.Type]int
 	valueToken map[string]string
@@ -115,10 +117,14 @@ func Apply(text string, spans []pii.Span, opts Options) Result {
 	b.Grow(len(text))
 
 	res := Result{}
-	counters := make(map[pii.Type]int)
-	valueToken := make(map[string]string)
-	synthetic := make(map[string]string)
-	syntheticUsed := make(map[string]bool)
+	// Своё состояние прохода; при общем состоянии берём карты вызывающей
+	// стороны — они ссылочные, поэтому applySpan пополняет их напрямую.
+	state := &TokenState{
+		counters:      make(map[pii.Type]int),
+		valueToken:    make(map[string]string),
+		synthetic:     make(map[string]string),
+		syntheticUsed: make(map[string]bool),
+	}
 	if opts.Shared != nil {
 		if opts.Shared.counters == nil {
 			opts.Shared.counters = make(map[pii.Type]int)
@@ -126,10 +132,7 @@ func Apply(text string, spans []pii.Span, opts Options) Result {
 			opts.Shared.synthetic = make(map[string]string)
 			opts.Shared.syntheticUsed = make(map[string]bool)
 		}
-		counters = opts.Shared.counters
-		valueToken = opts.Shared.valueToken
-		synthetic = opts.Shared.synthetic
-		syntheticUsed = opts.Shared.syntheticUsed
+		state = opts.Shared
 	}
 
 	prev := 0
@@ -139,7 +142,7 @@ func Apply(text string, spans []pii.Span, opts Options) Result {
 		}
 		b.WriteString(text[prev:s.Start])
 		value := text[s.Start:s.End]
-		b.WriteString(applySpan(s, value, opts, counters, valueToken, synthetic, syntheticUsed, &res))
+		b.WriteString(applySpan(s, value, opts, state, &res))
 		prev = s.End
 	}
 	b.WriteString(text[prev:])
@@ -151,34 +154,34 @@ func Apply(text string, spans []pii.Span, opts Options) Result {
 // applySpan маскирует один фрагмент и возвращает текст для подстановки.
 // Плейсхолдеры и подстановки synthetic добавляются в результат, чтобы их
 // можно было восстановить в ответе.
-func applySpan(s pii.Span, value string, opts Options, counters map[pii.Type]int, valueToken, synthetic map[string]string, syntheticUsed map[string]bool, res *Result) string {
+func applySpan(s pii.Span, value string, opts Options, state *TokenState, res *Result) string {
 	preset := opts.PresetFor(s.Type)
 
 	switch preset {
 	case PresetToken:
 		key := string(s.Type) + "\x00" + value
-		tok, seen := valueToken[key]
+		tok, seen := state.valueToken[key]
 		if !seen {
-			counters[s.Type]++
-			tok = "[" + string(s.Type) + "_" + itoa(counters[s.Type]) + "]"
-			valueToken[key] = tok
+			state.counters[s.Type]++
+			tok = "[" + string(s.Type) + "_" + itoa(state.counters[s.Type]) + "]"
+			state.valueToken[key] = tok
 			res.Placeholders = append(res.Placeholders, Placeholder{Token: tok, Value: value, Type: s.Type})
 		}
 		return tok
 	case PresetSynthetic:
 		key := string(s.Type) + "\x00" + value
-		sub, seen := synthetic[key]
+		sub, seen := state.synthetic[key]
 		if !seen {
 			seed := hashValue(value)
 			sub = syntheticValue(value, s.Type, seed)
 			// Разные значения не должны сталкиваться в пределах запроса:
 			// при совпадении подстановка пересчитывается с другим сидом.
-			for syntheticUsed[sub] {
+			for state.syntheticUsed[sub] {
 				seed++
 				sub = syntheticValue(value, s.Type, seed)
 			}
-			synthetic[key] = sub
-			syntheticUsed[sub] = true
+			state.synthetic[key] = sub
+			state.syntheticUsed[sub] = true
 			res.Placeholders = append(res.Placeholders, Placeholder{Token: sub, Value: value, Type: s.Type})
 		}
 		return sub

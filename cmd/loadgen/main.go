@@ -208,21 +208,6 @@ func (l *loadRun) run(ctx context.Context, workers int) (perWorker [][]time.Dura
 	return perWorker, time.Since(started)
 }
 
-// runWorker гоняет запросы одного отправителя, пока жив контекст, и собирает
-// задержки успешных ответов. Возвращает список задержек для этого отправителя.
-// Отдельный вход без сборки прогона целиком нужен тесту одного отправителя.
-func runWorker(ctx context.Context, client *http.Client, target string, texts []string, interval time.Duration, seed uint64, id int, c *counters) []time.Duration {
-	l := &loadRun{
-		client:   client,
-		target:   target,
-		texts:    texts,
-		interval: interval,
-		seed:     seed,
-		c:        c,
-	}
-	return l.worker(ctx, id)
-}
-
 // worker шлёт запросы до конца прогона и возвращает задержки удачных ответов.
 func (l *loadRun) worker(ctx context.Context, id int) []time.Duration {
 	// Отправитель выбирает тексты по своему зерну: прогон с тем же ключом

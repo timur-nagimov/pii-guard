@@ -44,6 +44,13 @@ const addrAnchorWindow = 48
 // дальше этого расстояния относятся уже к другому адресу.
 const addrMaxRunes = 120
 
+// addrNbsp — неразрывный пробел (U+00A0). Вынесен в константу, потому что
+// в разборе адреса он стоит наравне с обычным пробелом сразу в трёх
+// местах: в выгрузках его ставят между частями записи, а на вид он от
+// обычного неотличим, и каждый лишний литерал — шанс при правке
+// незаметно подменить его на обычный.
+const addrNbsp = "\u00a0"
+
 // Виды адресных компонентов, попадающие в поле Reason. Вынесены в константы,
 // чтобы не повторять строковые литералы в разборе. Словари типов лежат в
 // address_words.go и держат те же самые значения.
@@ -509,7 +516,7 @@ func addrNameContinues(d *Doc, ws []addrWord, j int) bool {
 	if gap == "." && addrInitial(ws[j-1]) && ws[j].title {
 		return true
 	}
-	if gap != " " && gap != "\u00a0" && gap != "-" {
+	if gap != " " && gap != addrNbsp && gap != "-" {
 		return false
 	}
 	if gap == "-" {
@@ -570,7 +577,7 @@ func addrMatchTyped(d *Doc, ws []addrWord, i int, types map[string]string) (addr
 // addrSpace сообщает, что промежуток между словами это пробел: обычный или
 // неразрывный. Неразрывный пробел приходит из выгрузок и на вид неотличим от
 // обычного, поэтому там, где ожидается пробел, он тоже допустим.
-func addrSpace(gap string) bool { return gap == " " || gap == "\u00a0" }
+func addrSpace(gap string) bool { return gap == " " || gap == addrNbsp }
 
 // addrMatchNameFirst разбирает обратный порядок «название плюс тип». Название
 // из словаря сюда не пускается: в записи «Москва ул. Ленина» город не является
@@ -766,7 +773,7 @@ func addrMatchGeo(d *Doc, ws []addrWord, i int) (addrComp, int, bool) {
 // или дефисом и могут образовать одно название.
 func addrWordsJoinable(d *Doc, ws []addrWord, i, j int) bool {
 	for k := i; k < j; k++ {
-		if gap := addrGap(d, ws, k); gap != " " && gap != "\u00a0" && gap != "-" {
+		if gap := addrGap(d, ws, k); gap != " " && gap != addrNbsp && gap != "-" {
 			return false
 		}
 	}

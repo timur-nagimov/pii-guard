@@ -621,21 +621,17 @@ func declineWord(w, caseName string) string {
 	case strings.HasSuffix(low, "ова"), strings.HasSuffix(low, "ева"), strings.HasSuffix(low, "ина"):
 		gen = func(s string) string { return s[:len(s)-1] + "ой" }
 		dat = func(s string) string { return s[:len(s)-1] + "ой" }
-	case strings.HasSuffix(low, "вна"):
-		gen = func(s string) string { return s[:len(s)-1] + "ы" }
-		dat = func(s string) string { return s[:len(s)-1] + "е" }
-	case strings.HasSuffix(low, "ич"):
-		gen = func(s string) string { return s + "а" }
-		dat = func(s string) string { return s + "у" }
-	case strings.HasSuffix(low, "ов"), strings.HasSuffix(low, "ев"), strings.HasSuffix(low, "ин"):
-		gen = func(s string) string { return s + "а" }
-		dat = func(s string) string { return s + "у" }
-	case strings.HasSuffix(low, "а"):
+	// Отчество на «вна» — частный случай слова на «а» и склоняется так же,
+	// поэтому правило записано одной веткой.
+	case strings.HasSuffix(low, "вна"), strings.HasSuffix(low, "а"):
 		gen = func(s string) string { return s[:len(s)-1] + "ы" }
 		dat = func(s string) string { return s[:len(s)-1] + "е" }
 	case strings.HasSuffix(low, "я"):
 		gen = func(s string) string { return s[:len(s)-1] + "и" }
 		dat = func(s string) string { return s[:len(s)-1] + "е" }
+	// Слова на согласный склоняются дописыванием окончания. Сюда же попадают
+	// фамилии на «ов», «ев», «ин» и отчества на «ич»: своего правила у них нет,
+	// а на «а» или «я» такое слово закончиться не может.
 	default:
 		gen = func(s string) string { return s + "а" }
 		dat = func(s string) string { return s + "у" }
