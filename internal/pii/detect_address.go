@@ -1023,10 +1023,10 @@ var birthAnchors = []string{
 	"место рождения", "место рожд", "места рождения", "мест. рожд",
 	"м.р.", "м. р.", "мр", "родился в", "родилась в", "родился", "родилась",
 	"уроженец", "уроженка", "уроженцем", "уроженки", "родом из",
+	"родина", "родины",
 	"страна и город рождения", "город рождения", "страна рождения",
 	"населённый пункт рождения", "населенный пункт рождения",
 	"нас. пункт рождения", "нп рождения",
-	"родина",
 	"place of birth", "birth place", "born in",
 }
 
@@ -1079,6 +1079,32 @@ var birthAbbrev = map[string]bool{
 	"г": true, "гор": true, "с": true, "п": true, "пос": true, "пгт": true,
 	"д": true, "дер": true, "обл": true, "респ": true, "кр": true,
 	"ст": true, "х": true, "им": true, "р": true, "н": true,
+}
+
+// birthCountryWords — названия стран, которые продолжают место рождения после
+// запятой: «г. Калуга, Россия». В нижнем регистре слово не заглавное, и без
+// этого списка запятая обрывала бы фрагмент на названии города.
+var birthCountryWords = map[string]bool{
+	"россия": true, "рф": true, "казахстан": true, "беларусь": true,
+	"белоруссия": true, "украина": true, "армения": true, "азербайджан": true,
+	"грузия": true, "молдова": true, "молдавия": true, "узбекистан": true,
+	"таджикистан": true, "киргизия": true, "киргизстан": true,
+	"туркменистан": true, "латвия": true, "литва": true, "эстония": true,
+	"германия": true, "сша": true, "китай": true, "польша": true,
+	"финляндия": true, "израиль": true, "турция": true, "болгария": true,
+	"сербия": true, "чехия": true, "словакия": true, "венгрия": true,
+	"румыния": true, "италия": true, "испания": true, "франция": true,
+	"великобритания": true, "англия": true, "япония": true, "корея": true,
+	"индия": true, "египет": true, "таиланд": true, "вьетнам": true,
+	"монголия": true, "афганистан": true, "иран": true, "ирак": true,
+	"сирия": true, "пакистан": true, "непал": true, "шри-ланка": true,
+	"куба": true, "мексика": true, "бразилия": true, "аргентина": true,
+	"канада": true, "австралия": true, "нидерланды": true, "бельгия": true,
+	"швейцария": true, "австрия": true, "швеция": true, "норвегия": true,
+	"дания": true, "греция": true, "португалия": true, "ирландия": true,
+	"хорватия": true, "словения": true, "македония": true, "албания": true,
+	"черногория": true, "босния": true, "люксембург": true, "исландия": true,
+	"мальта": true, "кипр": true,
 }
 
 // birthPlaceDetector находит место рождения по якорным словам. Детектор не
@@ -1332,9 +1358,15 @@ func birthContinues(d *Doc, ws []addrWord, j, start int) bool {
 	if ws[j].kind == KindDigit || birthStopWords[ws[j].lower] {
 		return false
 	}
-	if strings.Contains(gap, ",") && !ws[j].title && !addrIsTypeWord(ws[j].lower) &&
-		!birthPlaceContinuation(ws, j) {
-		return false
+	if strings.Contains(gap, ",") && !ws[j].title && !addrIsTypeWord(ws[j].lower) {
+		// После запятой место рождения продолжается хвостом региона или
+		// страны: «г. Калуга, ханты-мансийский автономный округ», «г. Калуга,
+		// Россия», «д. Михайловка, липецкая область». В нижнем регистре слово
+		// не заглавное, поэтому опорой служат словарь мест, тип населённого
+		// пункта или региона впереди и список стран.
+		if !birthPlaceContinuation(ws, j) && !birthRegionTail(ws, j) && !birthCountryWords[ws[j].lower] {
+			return false
+		}
 	}
 	return true
 }
@@ -1351,6 +1383,19 @@ func birthPlaceContinuation(ws []addrWord, j int) bool {
 	}
 	for k := j + 1; k < len(ws) && k <= j+3; k++ {
 		if addrIsTypeWord(FoldHomoglyphs(ws[k].lower)) {
+			return true
+		}
+	}
+	return false
+}
+
+// birthRegionTail сообщает, что слово начинает хвост региона: прилагательное
+// вроде «московская» или «ханты-мансийский», за которым в ближайших словах
+// идёт тип региона («область», «край», «округ»). Дефисное название разбивается
+// токенизатором на части, поэтому смотрим на несколько слов вперёд.
+func birthRegionTail(ws []addrWord, j int) bool {
+	for k := j + 1; k < len(ws) && k <= j+3; k++ {
+		if _, ok := addrRegionTypes[ws[k].lower]; ok {
 			return true
 		}
 	}
