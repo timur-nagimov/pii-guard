@@ -1093,19 +1093,37 @@ func (birthPlaceDetector) Types() []Type { return []Type{TypeBirthPlace} }
 // Detect обходит все вхождения якорей и забирает значение после каждого.
 func (birthPlaceDetector) Detect(d *Doc) []Span {
 	ws := addrWords(d)
+	// Сворачивание омоглифов стоит дорого: посимвольный обход вместо
+	// strings.Index, и так на каждый якорь. Проверка наличия латинских
+	// двойников делается один раз на весь текст, и чистый текст — а это
+	// почти весь поток — идёт прежним быстрым путём. Без этого разделения
+	// горячий путь замедлился на сорок процентов.
+	folded := hasASCIIHomoglyph(d.Lower)
 	out := make([]Span, 0, len(birthAnchors))
 	for _, a := range birthAnchors {
-		out = append(out, birthByAnchor(d, ws, a)...)
+		out = append(out, birthByAnchor(d, ws, a, folded)...)
 	}
 	return birthDedup(out)
 }
 
 // birthByAnchor находит все вхождения одного якоря и разбирает значение.
-func birthByAnchor(d *Doc, ws []addrWord, anchor string) []Span {
+func birthByAnchor(d *Doc, ws []addrWord, anchor string, folded bool) []Span {
 	var out []Span
-	runes := []rune(anchor)
+	var runes []rune
+	if folded {
+		runes = []rune(anchor)
+	}
 	for pos := 0; pos < len(d.Lower); {
-		at, end, ok := foldedIndex(d.Lower, pos, runes)
+		var at, end int
+		var ok bool
+		if folded {
+			at, end, ok = foldedIndex(d.Lower, pos, runes)
+		} else {
+			idx := strings.Index(d.Lower[pos:], anchor)
+			if idx >= 0 {
+				at, end, ok = pos+idx, pos+idx+len(anchor), true
+			}
+		}
 		if !ok {
 			break
 		}
@@ -1118,6 +1136,17 @@ func birthByAnchor(d *Doc, ws []addrWord, anchor string) []Span {
 		}
 	}
 	return out
+}
+
+// hasASCIIHomoglyph сообщает, что в тексте есть латинские буквы, похожие на
+// кириллические. Проверка идёт по байтам и обрывается на первой находке.
+func hasASCIIHomoglyph(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if b := s[i]; b < 128 && homoglyphASCII[b] != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // foldedIndex ищет якорь, считая латинские буквы, похожие на кириллические,
