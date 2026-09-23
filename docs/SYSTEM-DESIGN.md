@@ -159,7 +159,7 @@ flowchart TB
         P1["POST /process<br/>контракт проверки"]
         P2["POST /v1/chat/completions<br/>прокси к модели"]
         P3["POST /v1/inspect<br/>разбор с объяснением решения"]
-        P4["GET /ui<br/>страница проверки"]
+        P4["GET /ui, /ui/app.js, /ui/app.css<br/>страница проверки"]
         P5["GET /v1/coverage, /v1/systems<br/>матрица покрытия и список систем"]
         P6["GET /healthz, /readyz, /metrics<br/>служебные"]
     end
