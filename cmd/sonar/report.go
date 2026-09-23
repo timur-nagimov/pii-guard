@@ -285,10 +285,15 @@ func renderSummary(b *strings.Builder, rep *Report) {
 	}
 }
 
+// metricTableHead — шапка сводной таблицы «показатель — значение». Разделы
+// отчёта читают подряд и сверяют между собой, поэтому колонки во всех сводных
+// таблицах обязаны стоять одинаково.
+const metricTableHead = "| Показатель | Значение |\n|---|---|\n"
+
 // renderLoad выводит показатели скорости.
 func renderLoad(b *strings.Builder, l *LoadReport) {
 	b.WriteString("## Нагрузка\n\n")
-	b.WriteString("| Показатель | Значение |\n|---|---|\n")
+	b.WriteString(metricTableHead)
 	fmt.Fprintf(b, "| Целевая частота, запросов в секунду | %.2f |\n", l.TargetRPS)
 	fmt.Fprintf(b, "| Достигнутая частота, запросов в секунду | %.2f |\n", l.AchievedRPS)
 	fmt.Fprintf(b, "| Частота с учётом проверок устойчивости | %.2f |\n", l.AchievedTotalRPS)
@@ -322,7 +327,7 @@ func renderStatuses(b *strings.Builder, statuses map[string]int) {
 // renderMasking выводит качество прямого шага.
 func renderMasking(b *strings.Builder, m *MaskingReport) {
 	b.WriteString("## Маскирование\n\n")
-	b.WriteString("| Показатель | Значение |\n|---|---|\n")
+	b.WriteString(metricTableHead)
 	fmt.Fprintf(b, "| Элементов оценено | %d |\n", m.Samples)
 	fmt.Fprintf(b, "| Элементов без маски | %d |\n", m.Failed)
 	fmt.Fprintf(b, "| Эталонных фрагментов | %d |\n", m.Fragments)
@@ -360,7 +365,7 @@ func renderSliceTable(b *strings.Builder, title, column string, data map[string]
 // renderDemask выводит качество обратного шага.
 func renderDemask(b *strings.Builder, d DemaskReport) {
 	b.WriteString("## Обратный шаг\n\n")
-	b.WriteString("| Показатель | Значение |\n|---|---|\n")
+	b.WriteString(metricTableHead)
 	fmt.Fprintf(b, "| Элементов | %d |\n", d.Total)
 	fmt.Fprintf(b, "| Совпало побайтово | %d |\n", d.Exact)
 	fmt.Fprintf(b, "| Доля точного восстановления | %.2f%% |\n", d.ExactShare*100)
