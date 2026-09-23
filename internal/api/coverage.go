@@ -139,6 +139,7 @@ func extraTypes() []pii.Type {
 	return []pii.Type{
 		pii.TypeSNILS, pii.TypeForeignPassport, pii.TypeResidencePermit,
 		pii.TypeBirthCert, pii.TypeMilitaryID,
+		pii.TypeAccount, pii.TypeOMS, pii.TypePlate, pii.TypeVIN, pii.TypeIPAddress,
 	}
 }
 

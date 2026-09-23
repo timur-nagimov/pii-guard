@@ -338,6 +338,7 @@ func buildEngine(minConf float64, preset mask.Preset) (*engine.Engine, config.Sy
 		pii.NewDriverLicenseLettersDetector(),
 		pii.NewCardHolderDetector(),
 		pii.NewExtraDocumentsDetector(),
+		pii.NewExtraDetector(),
 	)
 	defs := config.Defaults{
 		Preset:            preset,

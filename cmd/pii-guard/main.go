@@ -295,6 +295,7 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 		pii.NewDriverLicenseLettersDetector(),
 		pii.NewCardHolderDetector(),
 		pii.NewExtraDocumentsDetector(),
+		pii.NewExtraDetector(),
 	)
 	if len(cfg.CustomTypes) > 0 {
 		custom, cerr := pii.NewCustomDetector(customRules(cfg))

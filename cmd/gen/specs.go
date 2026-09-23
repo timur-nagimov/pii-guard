@@ -355,3 +355,70 @@ func specByName(name string) (valueSpec, bool) {
 	}
 	return valueSpec{}, false
 }
+
+// extraSpecs — типы, расширяющие перечень идентифицируемых персональных данных:
+// банковские реквизиты, документы и идентификаторы, которые постоянно
+// встречаются в банковских анкетах.
+func extraSpecs() []valueSpec {
+	return []valueSpec{
+		{
+			name: "account", typ: pii.TypeAccount, label: "Номер счёта",
+			anchors: []string{
+				"Номер счёта", "Счёт", "Расчётный счёт", "р/с", "Лицевой счёт",
+				"л/с", "Счёт для зачисления", "Номер лицевого счёта",
+				"Счёт получателя", "Зачислить на счёт", "Счёт клиента",
+				"Расчетный счет", "Счет для пополнения",
+			},
+			value: func(g *Generator, _ person) []frag {
+				return one(pii.TypeAccount, g.accountNumber())
+			},
+		},
+		{
+			name: "oms", typ: pii.TypeOMS, label: "Полис ОМС",
+			anchors: []string{
+				"Полис ОМС", "Полис", "Медицинский полис", "Страховой полис",
+				"Номер полиса", "Полис обязательного медицинского страхования",
+				"Полис клиента", "ОМС", "Номер медицинского полиса",
+				"Полис застрахованного", "Медицинская страховка",
+			},
+			value: func(g *Generator, _ person) []frag {
+				return one(pii.TypeOMS, g.omsNumber())
+			},
+		},
+		{
+			name: "plate", typ: pii.TypePlate, label: "Госномер",
+			anchors: []string{
+				"Госномер", "г/н", "Гос. номер", "Номер автомобиля",
+				"Автомобиль", "Машина", "Транспортное средство", "ТС",
+				"Госзнак", "Регистрационный знак", "Номер машины",
+				"Номер авто", "Гос номер",
+			},
+			value: func(g *Generator, _ person) []frag {
+				return one(pii.TypePlate, g.plateNumber())
+			},
+		},
+		{
+			name: "vin", typ: pii.TypeVIN, label: "VIN",
+			anchors: []string{
+				"VIN", "ВИН", "Идентификационный номер", "Номер кузова",
+				"Номер шасси", "VIN-код", "ВИН-код", "Номер VIN",
+				"Идентификационный номер транспортного средства",
+				"VIN номер", "Номер вина",
+			},
+			value: func(g *Generator, _ person) []frag {
+				return one(pii.TypeVIN, g.vinNumber())
+			},
+		},
+		{
+			name: "ip_address", typ: pii.TypeIPAddress, label: "IP-адрес",
+			anchors: []string{
+				"IP-адрес", "IP", "Айпи", "С адреса", "Вход с",
+				"Сессия с", "IP адрес", "Сетевой адрес", "Адрес узла",
+				"Айпи-адрес",
+			},
+			value: func(g *Generator, _ person) []frag {
+				return one(pii.TypeIPAddress, g.ipAddress())
+			},
+		},
+	}
+}

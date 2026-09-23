@@ -293,7 +293,53 @@ func (g *Generator) Each(n int, fn func(Record) error) error {
 			return err
 		}
 	}
+	// Расширенные типы порождаются отдельным проходом после основного: они не
+	// должны менять случайную последовательность общих категорий, иначе
+	// существующие типы получат другие, более трудные записи и просядут.
+	// Каждому типу отводится фиксированное число записей, чтобы их хватило на
+	// честный замер качества.
+	return g.eachExtra(n, fn)
+}
+
+// extraPerType — сколько записей каждого расширенного типа порождается в
+// отдельном проходе. Не меньше ста, как требует задание.
+const extraPerType = 200
+
+// eachExtra порождает записи расширенных типов отдельным проходом.
+func (g *Generator) eachExtra(n int, fn func(Record) error) error {
+	extras := extraCategories()
+	// Число записей каждого типа не зависит от размера набора: расширенные
+	// типы добавляются сверх основного выпуска.
+	for _, c := range extras {
+		for k := 0; k < extraPerType; k++ {
+			id := fmt.Sprintf("%s-%s-%06d", sourceSynthetic, c.name, k)
+			r := buildRecord(id, c.name, c.gen(g))
+			if g.lowercase {
+				r = lowerRecord(r)
+			}
+			if err := fn(r); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+// extraCategories возвращает категории расширенных типов: по одной простой на
+// каждый тип и по одной отрицательной на каждый тип.
+func extraCategories() []categorySpec {
+	var out []categorySpec
+	for _, s := range extraSpecs() {
+		out = append(out, categorySpec{name: s.name, weight: 0, gen: simpleCategoryGen(s)})
+	}
+	out = append(out,
+		categorySpec{name: "neg_account", gen: negAccount, negative: true},
+		categorySpec{name: "neg_oms", gen: negOMS, negative: true},
+		categorySpec{name: "neg_plate", gen: negPlate, negative: true},
+		categorySpec{name: "neg_vin", gen: negVIN, negative: true},
+		categorySpec{name: "neg_ip", gen: negIP, negative: true},
+	)
+	return out
 }
 
 // lowerRecord переводит запись в нижний регистр и пересчитывает разметку.
