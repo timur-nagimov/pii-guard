@@ -2,16 +2,11 @@ package pii
 
 import "testing"
 
-func TestDebugLiniya(t *testing.T) {
-	txt := "Адрес регистрации: индекс 643810, пос. Новосёлово, линия Гагарина, д. 44, к. 135"
-	d := NewDoc(txt)
+func TestDebugCVVLeak(t *testing.T) {
+	text := "Анкета клиента. ФИО: Гремислав Аполлинариевич Кудринцев. Паспорт 4509123456, выдан МВД по Республике Марий Эл Йошкар-Ола, код подразделения 770-055. Место рождения: Йошкар-Ола. Дата рождения 12.03.1987. СНИЛС 524905738261, ИНН 16405912384. Водительское удостоверение 77 АХ 918273. Адрес: город Йошкар-Ола улица Первомайская дом 42 квартира 17, индекс 425000. Почта zhmurkin.gremislav@postbox-rare.example, телефон +7 916 555-84-19. Карта 4276380012345678, CVV 987, пин 9182, держатель Кудринцев Г А."
+	d := NewDoc(text)
 	spans := NewAddressDetector().Detect(d)
 	for _, s := range spans {
-		t.Logf("span: %q [%d:%d]", txt[s.Start:s.End], s.Start, s.End)
-	}
-	ws := addrWords(d)
-	comps := addrScan(d, ws)
-	for _, c := range comps {
-		t.Logf("comp: %q kinds=%v solo=%v", d.Text[c.start:c.end], c.kinds, c.solo)
+		t.Logf("ADDRESS span: %q", text[s.Start:s.End])
 	}
 }
