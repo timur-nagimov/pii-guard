@@ -415,7 +415,9 @@ func TestConcurrentSweep(t *testing.T) {
 		defer wg.Done()
 		<-start
 		for i := 0; i < 500; i++ {
-			s.Get(fmt.Sprintf("id-%d", i))
+			// Здесь важен только факт вызова: проверяется, что чтение не
+			// конфликтует с вытеснением записей, а не результат чтения.
+			_, _ = s.Get(fmt.Sprintf("id-%d", i))
 			s.Len()
 		}
 	}()

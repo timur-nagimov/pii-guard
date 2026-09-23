@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"log/slog"
 	"net"
@@ -29,7 +30,7 @@ type corruptedRedis struct {
 // startCorruptedRedis поднимает заглушку и останавливает её по окончании теста.
 func startCorruptedRedis(t *testing.T) *corruptedRedis {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("не удалось поднять заглушку Redis: %v", err)
 	}

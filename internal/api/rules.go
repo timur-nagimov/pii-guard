@@ -253,24 +253,64 @@ func (s *Server) handleRulesPost(w http.ResponseWriter, r *http.Request) {
 
 // applyRuleChange исполняет одну операцию над файлом настроек.
 func (s *Server) applyRuleChange(c ruleChange) (config.EditResult, error) {
-	path := s.configPath
-	switch c.Op {
-	case "add_type":
-		return ruleAddType(path, c)
+	op, ok := ruleOps[c.Op]
+	if !ok {
+		return config.EditResult{}, errRule("неизвестная операция " + quote(c.Op) +
+			"; доступны: add_type, remove_type, set_system_types, set_system_enabled, set_system_allow_persons")
+	}
+	return op(s.configPath, c)
+}
 
-	case "remove_type":
+// ruleOp — одна операция над файлом настроек: проверяет поля правки и
+// вызывает соответствующую функцию пакета config.
+type ruleOp func(path string, c ruleChange) (config.EditResult, error)
+
+// ruleOps — таблица операций по имени. Каждая операция сама проверяет свои
+// поля и возвращает понятную ошибку, если нужного поля нет.
+var ruleOps = map[string]ruleOp{
+	"add_type": func(path string, c ruleChange) (config.EditResult, error) {
+		if c.Type == nil {
+			return config.EditResult{}, errRule("для добавления типа нужно поле type")
+		}
+		return config.AddCustomType(path, config.CustomType{
+			Name:          pii.Type(strings.ToUpper(strings.TrimSpace(c.Type.Name))),
+			Pattern:       c.Type.Pattern,
+			Group:         c.Type.Group,
+			Validator:     c.Type.Validator,
+			Anchors:       c.Type.Anchors,
+			RequireAnchor: c.Type.RequireAnchor,
+			AnchorWindow:  c.Type.AnchorWindow,
+		})
+	},
+
+	"remove_type": func(path string, c ruleChange) (config.EditResult, error) {
 		if strings.TrimSpace(c.Name) == "" {
 			return config.EditResult{}, errRule("для удаления типа нужно поле name")
 		}
 		return config.RemoveCustomType(path, strings.ToUpper(strings.TrimSpace(c.Name)))
+	},
 
-	case "set_system_types":
-		return ruleSetSystemTypes(path, c)
+	"set_system_types": func(path string, c ruleChange) (config.EditResult, error) {
+		if strings.TrimSpace(c.System) == "" {
+			return config.EditResult{}, errRule("для правки системы нужно поле system")
+		}
+		if c.Types == nil {
+			return config.EditResult{}, errRule("для правки типов системы нужно поле types")
+		}
+		return config.SetSystemTypes(path, c.System, c.Types)
+	},
 
-	case "set_system_enabled":
-		return ruleSetSystemEnabled(path, c)
+	"set_system_enabled": func(path string, c ruleChange) (config.EditResult, error) {
+		if strings.TrimSpace(c.System) == "" {
+			return config.EditResult{}, errRule("для правки системы нужно поле system")
+		}
+		if c.Enabled == nil {
+			return config.EditResult{}, errRule("для включения или выключения системы нужно поле enabled")
+		}
+		return config.SetSystemEnabled(path, c.System, *c.Enabled)
+	},
 
-	case "set_system_allow_persons":
+	"set_system_allow_persons": func(path string, c ruleChange) (config.EditResult, error) {
 		if strings.TrimSpace(c.System) == "" {
 			return config.EditResult{}, errRule("для правки системы нужно поле system")
 		}
@@ -278,54 +318,7 @@ func (s *Server) applyRuleChange(c ruleChange) (config.EditResult, error) {
 			return config.EditResult{}, errRule("для правки списка имён нужно поле persons")
 		}
 		return config.SetSystemAllowPersons(path, c.System, c.Persons)
-
-	default:
-		return config.EditResult{}, errRule("неизвестная операция " + quote(c.Op) +
-			"; доступны: add_type, remove_type, set_system_types, set_system_enabled, set_system_allow_persons")
-	}
-}
-
-// ruleAddType добавляет свой тип. Имя приводится к верхнему регистру: типы
-// сравниваются по имени, и «badge» с «BADGE» обязаны означать одно и то же.
-func ruleAddType(path string, c ruleChange) (config.EditResult, error) {
-	if c.Type == nil {
-		return config.EditResult{}, errRule("для добавления типа нужно поле type")
-	}
-	return config.AddCustomType(path, config.CustomType{
-		Name:          pii.Type(strings.ToUpper(strings.TrimSpace(c.Type.Name))),
-		Pattern:       c.Type.Pattern,
-		Group:         c.Type.Group,
-		Validator:     c.Type.Validator,
-		Anchors:       c.Type.Anchors,
-		RequireAnchor: c.Type.RequireAnchor,
-		AnchorWindow:  c.Type.AnchorWindow,
-	})
-}
-
-// ruleSetSystemTypes задаёт список типов системы. Пустой список и отсутствие
-// поля означают разное, поэтому проверяется именно nil: пустым списком систему
-// осознанно оставляют без типов, а пропущенное поле это ошибка вызова.
-func ruleSetSystemTypes(path string, c ruleChange) (config.EditResult, error) {
-	if strings.TrimSpace(c.System) == "" {
-		return config.EditResult{}, errRule("для правки системы нужно поле system")
-	}
-	if c.Types == nil {
-		return config.EditResult{}, errRule("для правки типов системы нужно поле types")
-	}
-	return config.SetSystemTypes(path, c.System, c.Types)
-}
-
-// ruleSetSystemEnabled включает или выключает систему. Признак — указатель:
-// пропущенное поле нельзя принять за «выключить», это отключило бы маскирование
-// целой системе по недосмотру.
-func ruleSetSystemEnabled(path string, c ruleChange) (config.EditResult, error) {
-	if strings.TrimSpace(c.System) == "" {
-		return config.EditResult{}, errRule("для правки системы нужно поле system")
-	}
-	if c.Enabled == nil {
-		return config.EditResult{}, errRule("для включения или выключения системы нужно поле enabled")
-	}
-	return config.SetSystemEnabled(path, c.System, *c.Enabled)
+	},
 }
 
 // rulesWritable сообщает, знает ли сервис, какой файл править.
