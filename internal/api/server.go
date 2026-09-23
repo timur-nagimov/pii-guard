@@ -38,6 +38,23 @@ type Server struct {
 	lg    *logging.Logger
 	audit *logging.Audit
 
+	// configPath — файл настроек, который правит ручка управления правилами.
+	// Пустое значение означает, что править нечего: сервер поднят тестом или
+	// из настроек в памяти, и ручка честно отвечает отказом вместо того,
+	// чтобы угадывать путь. Задаётся при запуске, до сборки маршрутов, и
+	// дальше не меняется, поэтому читается без синхронизации.
+	configPath string
+
+	// reload перечитывает файл настроек и применяет их немедленно. Тем же
+	// кодом это делает наблюдение за файлом, просто по таймеру.
+	//
+	// Ручка управления правилами вызывает его сразу после записи: иначе
+	// правка действовала бы только к следующему обходу, то есть до пяти
+	// секунд, и человек, добавивший тип, увидел бы в списке старое. Пустое
+	// значение допустимо — тогда ручка честно говорит, что правка вступит в
+	// силу не сразу.
+	reload func() error
+
 	sem      chan struct{}
 	heavySem chan struct{}
 
@@ -66,6 +83,14 @@ func (s *Server) SetLogging(lg *logging.Logger) {
 		s.audit = lg.Audit()
 	}
 }
+
+// SetConfigPath сообщает серверу, какой файл настроек правит ручка управления
+// правилами. Вызывается при запуске, до сборки маршрутов.
+func (s *Server) SetConfigPath(path string) { s.configPath = path }
+
+// SetReloader задаёт способ немедленно применить настройки из файла.
+// Вызывается при запуске, до сборки маршрутов.
+func (s *Server) SetReloader(f func() error) { s.reload = f }
 
 // Config возвращает действующие настройки.
 func (s *Server) Config() *config.Config { return s.cfg.Load() }
@@ -97,6 +122,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/inspect", s.handleInspect)
 	mux.HandleFunc("/v1/coverage", s.handleCoverage)
 	mux.HandleFunc("/v1/systems", s.handleSystems)
+	mux.HandleFunc("/v1/rules", s.handleRules)
 	mux.HandleFunc("/ui", s.handleUI)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleReady)

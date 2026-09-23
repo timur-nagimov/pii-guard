@@ -296,12 +296,8 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 		pii.NewCardHolderDetector(),
 		pii.NewExtraDocumentsDetector(),
 	)
-	if len(cfg.CustomTypes) > 0 {
-		custom, cerr := pii.NewCustomDetector(customRules(cfg))
-		if cerr != nil {
-			return fmt.Errorf("правила custom_types: %w", cerr)
-		}
-		reg.Register(custom)
+	if err := applyCustomTypes(reg, cfg); err != nil {
+		return fmt.Errorf("правила custom_types: %w", err)
 	}
 
 	m := metrics.New()
@@ -336,6 +332,9 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 	})
 	srv := api.New(cfg, st, eng, m, log)
 	srv.SetLogging(lg)
+	// Ручка управления правилами правит тот же файл, из которого сервис
+	// прочитал настройки, и её правка подхватывается обычным перечитыванием.
+	srv.SetConfigPath(configPath)
 	watchStoreDegradation(cfg, st, srv, m, log)
 
 	// Маршруты собираются один раз и отдаются обоим слушателям. Второй вызов
@@ -396,7 +395,11 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
-	go watchConfig(configPath, srv, eng, log, reload)
+	applyConfig := newConfigApplier(configPath, srv, eng, reg, log)
+	// Ручка управления правилами применяет свою правку тем же кодом, что и
+	// наблюдение за файлом, только сразу, а не к ближайшему обходу.
+	srv.SetReloader(func() error { return applyConfig("rules_api") })
+	go watchConfig(configPath, applyConfig, log, reload)
 
 	select {
 	case err := <-errCh:
@@ -524,7 +527,7 @@ func startPprof(addr string, log *slog.Logger) {
 // watchConfig применяет новые настройки по сигналу SIGHUP и при изменении
 // файла на диске. Настройки, не прошедшие проверку, отбрасываются: сервис
 // продолжает работать со старыми.
-func watchConfig(path string, srv *api.Server, eng *engine.Engine, log *slog.Logger, sig <-chan os.Signal) {
+func watchConfig(path string, apply func(reason string) error, log *slog.Logger, sig <-chan os.Signal) {
 	var lastMod time.Time
 	if st, err := os.Stat(path); err == nil {
 		lastMod = st.ModTime()
@@ -534,26 +537,21 @@ func watchConfig(path string, srv *api.Server, eng *engine.Engine, log *slog.Log
 
 	// Возвращает признак применения: отклонённые настройки не должны
 	// двигать отметку времени, иначе следующая правка потеряется.
-	apply := func(reason string) bool {
-		cfg, err := config.Load(path)
+	applied := func(reason string) bool {
+		err := apply(reason)
 		if err != nil {
 			log.Warn("новые настройки отклонены",
 				logging.Event(logging.EventConfigRejected), logging.Component("config"),
 				slog.String("reason", reason), logging.Err(err))
 			return false
 		}
-		srv.SetConfig(cfg)
-		eng.ResetFilters()
-		log.Info("настройки применены",
-			logging.Event(logging.EventConfigApplied), logging.Component("config"),
-			slog.String("reason", reason), slog.Int("systems", len(cfg.Systems)))
 		return true
 	}
 
 	for {
 		select {
 		case <-sig:
-			_ = apply("signal")
+			_ = applied("signal")
 		case <-ticker.C:
 			st, err := os.Stat(path)
 			if err != nil {
@@ -570,12 +568,64 @@ func watchConfig(path string, srv *api.Server, eng *engine.Engine, log *slog.Log
 			// секунд, пока его не починят. Журнал от этого не пухнет, потому
 			// что одинаковые записи глушатся повторами.
 			if st.ModTime().After(lastMod) {
-				if apply("file_changed") {
+				if applied("file_changed") {
 					lastMod = st.ModTime()
 				}
 			}
 		}
 	}
+}
+
+// newConfigApplier собирает функцию применения настроек из файла.
+//
+// Одна и та же функция используется наблюдением за файлом и ручкой управления
+// правилами: две отдельные реализации разошлись бы, и правка через интерфейс
+// начала бы применяться иначе, чем правка файла руками.
+//
+// Настройки применяются целиком или никак. Полупримененные настройки — это
+// системы, которым роздан список типов, искать которые нечем.
+func newConfigApplier(path string, srv *api.Server, eng *engine.Engine, reg *pii.Registry, log *slog.Logger) func(reason string) error {
+	return func(reason string) error {
+		cfg, err := config.Load(path)
+		if err != nil {
+			return err
+		}
+		// Детектор своих типов пересобирается до подмены настроек: если новое
+		// правило не компилируется, настройки не применяются вовсе.
+		if err := applyCustomTypes(reg, cfg); err != nil {
+			return err
+		}
+		srv.SetConfig(cfg)
+		eng.ResetFilters()
+		log.Info("настройки применены",
+			logging.Event(logging.EventConfigApplied), logging.Component("config"),
+			slog.String("reason", reason), slog.Int("systems", len(cfg.Systems)),
+			slog.Int("custom_types", len(cfg.CustomTypes)))
+		return nil
+	}
+}
+
+// applyCustomTypes пересобирает детектор типов из настроек.
+//
+// Вызывается и при запуске, и при каждом применении новых настроек. До
+// появления сменного слота детектор собирался только при запуске, и
+// добавленный в настройки тип молча не действовал до перезапуска сервиса:
+// журнал писал «настройки применены», а искать новый тип было нечем.
+//
+// Неверное правило оставляет прежний детектор нетронутым. Это важнее, чем
+// применить настройки наполовину: иначе одна опечатка в новом типе
+// обесточила бы все остальные.
+func applyCustomTypes(reg *pii.Registry, cfg *config.Config) error {
+	if len(cfg.CustomTypes) == 0 {
+		reg.SetCustom(nil)
+		return nil
+	}
+	custom, err := pii.NewCustomDetector(customRules(cfg))
+	if err != nil {
+		return err
+	}
+	reg.SetCustom(custom)
+	return nil
 }
 
 // customRules переводит описания типов из настроек в правила детектора.

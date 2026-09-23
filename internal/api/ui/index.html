@@ -243,6 +243,32 @@ table.coverage td.conf { color: var(--ink-soft); font-size: 11.5px; }
 .coverage-meta { margin-top: 10px; font-size: 12.5px; color: var(--ink-soft); }
 .coverage-meta .updated { color: var(--ink-soft); }
 .coverage-meta .error { color: var(--bad); }
+/* Управление правилами: свои типы и списки типов у систем. */
+.rules-state { font-size: 13px; padding: 9px 12px; border-radius: 8px; margin-bottom: 14px; }
+.rules-state.ro { background: #fdf4e6; color: #7a5312; border: 1px solid #f0dcb8; }
+.rules-state.rw { background: #ebf7ee; color: #1d6b32; border: 1px solid #c9e7d2; }
+.rules-token { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.rules-token input { font-size: 13px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; min-width: 220px; }
+.rules-sub { margin: 18px 0 8px; font-size: 13px; font-weight: 650; color: var(--ink); }
+.rules-hint { font-size: 12.5px; color: var(--ink-soft); margin-bottom: 8px; }
+.rule-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; align-items: end; }
+.rule-form .field { display: flex; flex-direction: column; gap: 4px; }
+.rule-form label { font-size: 12.5px; color: var(--ink-soft); }
+.rule-form input[type="text"], .rule-form input[type="number"], .rule-form select {
+  font-size: 13px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px; width: 100%;
+}
+.rule-form input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12.5px; }
+.rule-form .check { flex-direction: row; align-items: center; gap: 6px; }
+.rule-form .actions { display: flex; gap: 8px; }
+.sys-rule { border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px; margin-bottom: 10px; }
+.sys-rule .head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.sys-rule .name { font-weight: 650; font-size: 13.5px; }
+.sys-rule .off { color: var(--ink-soft); font-size: 12.5px; }
+.sys-rule .types { display: flex; flex-wrap: wrap; gap: 7px 12px; margin-top: 10px; }
+.sys-rule .types label { font-size: 12.5px; display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.sys-rule .types label.custom { color: var(--accent); }
+.sys-rule .foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.sys-rule .foot .state { font-size: 12.5px; color: var(--ink-soft); }
 /* Готовые примеры и загрузка файла: ряд кнопок под основными элементами. */
 .examples { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .examples .label { font-size: 13px; color: var(--ink-soft); margin-right: 2px; }
@@ -306,6 +332,76 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     <span><b class="src">extra</b> — тип добавлен ядром сверх задания.</span>
   </div>
   <div class="coverage-meta" id="coverage-meta"></div>
+</section>
+
+<section class="panel" id="panel-rules">
+  <h2>Правила</h2>
+  <p class="rules-hint">
+    Здесь заводят свои типы персональных данных, убирают их и выбирают, что маскирует каждая система.
+    Правка идёт в тот же файл настроек, из которого работает сервис, и применяется сразу.
+    Встроенные типы удалить нельзя — их выключают снятием галочки у системы.
+  </p>
+
+  <div class="rules-state ro" id="rules-state"></div>
+  <div class="rules-token" id="rules-token" hidden>
+    <label for="rules-token-input">Признак управления</label>
+    <input type="password" id="rules-token-input" autocomplete="off" placeholder="значение PII_ADMIN_TOKEN">
+    <button class="secondary" id="rules-token-apply" type="button">Проверить</button>
+    <span class="rules-hint">Хранится только в этой вкладке и пропадает при обновлении страницы.</span>
+  </div>
+
+  <div class="rules-sub">Свои типы</div>
+  <table>
+    <thead>
+      <tr><th>Тип</th><th>Выражение</th><th>Якоря</th><th>Контроль</th><th></th></tr>
+    </thead>
+    <tbody id="rules-custom"></tbody>
+  </table>
+  <div id="rules-custom-empty" class="empty" hidden>Своих типов пока нет.</div>
+
+  <div class="rules-sub">Добавить тип</div>
+  <div class="rule-form">
+    <div class="field">
+      <label for="rule-name">Имя типа</label>
+      <input type="text" id="rule-name" placeholder="BADGE" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="rule-pattern">Выражение</label>
+      <input type="text" id="rule-pattern" class="mono" placeholder="(\d{6})" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="rule-group">Группа</label>
+      <input type="number" id="rule-group" min="0" value="1">
+    </div>
+    <div class="field">
+      <label for="rule-validator">Контрольная сумма</label>
+      <select id="rule-validator">
+        <option value="" selected>нет</option>
+        <option value="luhn">luhn</option>
+        <option value="inn">inn</option>
+        <option value="snils">snils</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="rule-anchors">Якоря через запятую</label>
+      <input type="text" id="rule-anchors" placeholder="пропуск, бейдж" autocomplete="off">
+    </div>
+    <div class="field check">
+      <input type="checkbox" id="rule-require-anchor" checked>
+      <label for="rule-require-anchor">Требовать якорь рядом</label>
+    </div>
+    <div class="field actions">
+      <button id="rule-add" type="button">Добавить</button>
+    </div>
+  </div>
+  <div class="rules-hint">
+    Выражение — в синтаксисе Go, без опережающих и ретроспективных проверок.
+    Короткие неспецифичные формы вроде шести цифр подряд без якоря дают ложные срабатывания,
+    поэтому требование якоря включено по умолчанию.
+  </div>
+
+  <div class="rules-sub">Что маскирует каждая система</div>
+  <div id="rules-systems"></div>
 </section>
 
 <section class="panel">
@@ -1096,6 +1192,298 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     }
   }
 
+  // ── Управление правилами ──────────────────────────────────────────────
+  //
+  // Правка правил меняет то, что сервис защищает, поэтому права на неё
+  // строже, чем на всё остальное на этой странице: либо запрос идёт с самой
+  // машины, либо предъявлен отдельный признак управления. Страница узнаёт об
+  // этом у сервиса и показывает кнопки только тогда, когда они сработают:
+  // кнопка, которая всегда отвечает отказом, хуже её отсутствия.
+
+  // Признак управления живёт только в памяти вкладки. Класть его в хранилище
+  // браузера нельзя: это секрет, а хранилище переживает закрытие вкладки и
+  // достаётся любому сценарию на той же странице.
+  var rulesToken = '';
+  var rulesState = { writable: false, writeEnabled: false, builtin: [], custom: [], systems: [] };
+
+  function rulesHeaders() {
+    var h = { 'Content-Type': 'application/json' };
+    if (rulesToken !== '') { h['X-Admin-Token'] = rulesToken; }
+    return h;
+  }
+
+  function ruleNote(message, isError) { note(message, isError); }
+
+  async function sendRuleChange(body) {
+    var resp = await fetch('/v1/rules', {
+      method: 'POST',
+      headers: rulesHeaders(),
+      body: JSON.stringify(body)
+    });
+    var raw = await resp.text();
+    var data = null;
+    if (raw) {
+      try { data = JSON.parse(raw); } catch (err) { data = null; }
+    }
+    if (!resp.ok) {
+      var reason = data && data.error && data.error.message
+        ? data.error.message
+        : 'сервис ответил кодом ' + resp.status;
+      ruleNote('Правка не принята: ' + reason, true);
+      return false;
+    }
+    var done = data && data.message ? data.message : 'правка применена';
+    if (data && data.warning) {
+      ruleNote(data.warning, true);
+    } else if (data && data.effective === 'within_5s') {
+      ruleNote(done + '; подействует в течение пяти секунд', false);
+    } else {
+      ruleNote(done, false);
+    }
+    await refreshRules();
+    refreshCoverage();
+    return true;
+  }
+
+  function renderRulesState() {
+    var box = el('rules-state');
+    clear(box);
+    var tokenRow = el('rules-token');
+
+    if (!rulesState.writeEnabled) {
+      box.className = 'rules-state ro';
+      box.textContent = 'Только просмотр: сервис запущен без пути к файлу настроек, править правила через страницу нельзя.';
+      tokenRow.hidden = true;
+      return;
+    }
+    if (rulesState.writable) {
+      box.className = 'rules-state rw';
+      box.textContent = 'Правка разрешена. Изменения идут в файл настроек и применяются сразу.';
+      tokenRow.hidden = false;
+      return;
+    }
+    box.className = 'rules-state ro';
+    box.textContent = 'Только просмотр: правка доступна с самой машины либо по признаку управления. '
+      + 'Введите значение переменной PII_ADMIN_TOKEN, заданной при запуске сервиса.';
+    tokenRow.hidden = false;
+  }
+
+  function renderCustomTypes() {
+    var body = el('rules-custom');
+    clear(body);
+    var list = rulesState.custom;
+    el('rules-custom-empty').hidden = list.length > 0;
+
+    list.forEach(function (ct) {
+      var row = document.createElement('tr');
+      cell(row, ct.name);
+      cell(row, ct.pattern, 'value');
+      cell(row, (ct.anchors || []).join(', ') || '—');
+      cell(row, ct.validator || '—');
+
+      var actions = document.createElement('td');
+      var btn = document.createElement('button');
+      btn.className = 'secondary';
+      btn.type = 'button';
+      btn.textContent = 'Убрать';
+      btn.disabled = !rulesState.writable;
+      btn.addEventListener('click', async function () {
+        btn.disabled = true;
+        await sendRuleChange({ op: 'remove_type', name: ct.name });
+      });
+      actions.appendChild(btn);
+      row.appendChild(actions);
+      body.appendChild(row);
+    });
+  }
+
+  function renderRuleSystems() {
+    var host = el('rules-systems');
+    clear(host);
+
+    // Свои типы показываются вместе со встроенными: для системы разницы нет,
+    // а помечаются цветом, чтобы было видно, что заведено руками.
+    var customNames = rulesState.custom.map(function (c) { return c.name; });
+    var all = rulesState.builtin.concat(customNames);
+
+    rulesState.systems.forEach(function (sys) {
+      var box = document.createElement('div');
+      box.className = 'sys-rule';
+
+      var head = document.createElement('div');
+      head.className = 'head';
+      var name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = sys.name;
+      head.appendChild(name);
+
+      var onOff = document.createElement('label');
+      var onOffBox = document.createElement('input');
+      onOffBox.type = 'checkbox';
+      onOffBox.checked = sys.enabled;
+      onOffBox.disabled = !rulesState.writable;
+      onOffBox.addEventListener('change', async function () {
+        onOffBox.disabled = true;
+        await sendRuleChange({ op: 'set_system_enabled', system: sys.name, enabled: onOffBox.checked });
+      });
+      onOff.appendChild(onOffBox);
+      onOff.appendChild(document.createTextNode(' включена'));
+      head.appendChild(onOff);
+
+      if (!sys.enabled) {
+        var off = document.createElement('span');
+        off.className = 'off';
+        off.textContent = 'выключена: запросы от неё не принимаются';
+        head.appendChild(off);
+      }
+      box.appendChild(head);
+
+      var types = document.createElement('div');
+      types.className = 'types';
+      var boxes = {};
+
+      var allLabel = document.createElement('label');
+      var allBox = document.createElement('input');
+      allBox.type = 'checkbox';
+      allBox.checked = sys.all_types;
+      allBox.disabled = !rulesState.writable;
+      allLabel.appendChild(allBox);
+      allLabel.appendChild(document.createTextNode(' все типы'));
+      types.appendChild(allLabel);
+
+      all.forEach(function (t) {
+        var label = document.createElement('label');
+        if (customNames.indexOf(t) >= 0) { label.className = 'custom'; }
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = sys.all_types || (sys.types || []).indexOf(t) >= 0;
+        cb.disabled = !rulesState.writable || sys.all_types;
+        boxes[t] = cb;
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(' ' + t));
+        types.appendChild(label);
+      });
+
+      // «Все типы» — не сумма галочек, а отдельное состояние настроек: при
+      // нём система маскирует и типы, добавленные позже. Поэтому остальные
+      // галочки при нём только показывают следствие и не редактируются.
+      allBox.addEventListener('change', function () {
+        all.forEach(function (t) {
+          boxes[t].disabled = allBox.checked;
+          if (allBox.checked) { boxes[t].checked = true; }
+        });
+      });
+      box.appendChild(types);
+
+      var foot = document.createElement('div');
+      foot.className = 'foot';
+      var save = document.createElement('button');
+      save.type = 'button';
+      save.textContent = 'Сохранить типы';
+      save.disabled = !rulesState.writable;
+      save.addEventListener('click', async function () {
+        var chosen = allBox.checked
+          ? ['all']
+          : all.filter(function (t) { return boxes[t].checked; });
+        if (chosen.length === 0) {
+          ruleNote('Ни один тип не выбран. Пустой список в настройках означает «все типы», '
+            + 'поэтому его не принимают: чтобы система перестала работать, снимите «включена».', true);
+          return;
+        }
+        save.disabled = true;
+        await sendRuleChange({ op: 'set_system_types', system: sys.name, types: chosen });
+      });
+      foot.appendChild(save);
+
+      var state = document.createElement('span');
+      state.className = 'state';
+      state.textContent = sys.all_types
+        ? 'сейчас: все типы, включая те, что добавят позже'
+        : 'сейчас: ' + counted((sys.types || []).length, 'тип', 'типа', 'типов');
+      foot.appendChild(state);
+      box.appendChild(foot);
+
+      host.appendChild(box);
+    });
+  }
+
+  function renderRules(data) {
+    rulesState = {
+      writable: !!data.writable,
+      writeEnabled: !!data.write_enabled,
+      builtin: data.builtin_types || [],
+      custom: data.custom_types || [],
+      systems: data.systems || []
+    };
+    renderRulesState();
+    renderCustomTypes();
+    renderRuleSystems();
+  }
+
+  async function refreshRules() {
+    try {
+      var resp = await fetch('/v1/rules', { method: 'GET', headers: rulesHeaders() });
+      var raw = await resp.text();
+      var data = null;
+      if (raw) {
+        try { data = JSON.parse(raw); } catch (err) { data = null; }
+      }
+      if (!resp.ok || !data) {
+        ruleNote('Перечень правил недоступен: сервис ответил кодом ' + resp.status, true);
+        return;
+      }
+      renderRules(data);
+    } catch (err) {
+      ruleNote('Перечень правил недоступен: ' + (err && err.message ? err.message : 'соединение не установлено'), true);
+    }
+  }
+
+  function collectNewType() {
+    var name = el('rule-name').value.trim();
+    var pattern = el('rule-pattern').value.trim();
+    if (name === '' || pattern === '') {
+      ruleNote('Для нового типа нужны имя и выражение.', true);
+      return null;
+    }
+    var anchors = el('rule-anchors').value
+      .split(',')
+      .map(function (a) { return a.trim(); })
+      .filter(function (a) { return a !== ''; });
+    var group = parseInt(el('rule-group').value, 10);
+    return {
+      name: name,
+      pattern: pattern,
+      group: isNaN(group) ? 0 : group,
+      validator: el('rule-validator').value,
+      anchors: anchors,
+      require_anchor: el('rule-require-anchor').checked
+    };
+  }
+
+  el('rule-add').addEventListener('click', async function () {
+    var type = collectNewType();
+    if (type === null) { return; }
+    var btn = el('rule-add');
+    btn.disabled = true;
+    var ok = await sendRuleChange({ op: 'add_type', type: type });
+    btn.disabled = false;
+    if (ok) {
+      el('rule-name').value = '';
+      el('rule-pattern').value = '';
+      el('rule-anchors').value = '';
+    }
+  });
+
+  el('rules-token-apply').addEventListener('click', async function () {
+    rulesToken = el('rules-token-input').value;
+    await refreshRules();
+    if (rulesState.writable) {
+      hideNote();
+    } else {
+      ruleNote('Признак управления не принят: правка по-прежнему недоступна.', true);
+    }
+  });
+
   nodes.run.addEventListener('click', runInspect);
   nodes.roundtrip.addEventListener('click', runRoundtrip);
   nodes.text.addEventListener('keydown', function (event) {
@@ -1384,6 +1772,8 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   // по таймеру.
   refreshCoverage();
   setInterval(refreshCoverage, 5000);
+
+  refreshRules();
 })();
 </script>
 </body>
