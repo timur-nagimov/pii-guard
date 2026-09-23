@@ -143,7 +143,7 @@ func (extraDetector) detectAlnum(d *Doc) []Span {
 					out = append(out, s)
 				}
 			}
-			i = tokenIndexAt(d, toks, end)
+			i = tokenIndexAt(toks, end)
 			continue
 		}
 		// Пробуем собрать VIN: семнадцать знаков латиницы и цифр без пробелов.
@@ -153,7 +153,7 @@ func (extraDetector) detectAlnum(d *Doc) []Span {
 					out = append(out, s)
 				}
 			}
-			i = tokenIndexAt(d, toks, end)
+			i = tokenIndexAt(toks, end)
 		}
 	}
 	return out
@@ -180,7 +180,7 @@ func plateSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 	}
 	// Три цифры.
 	pos = skipPlateSpace(d, toks, pos)
-	if !isDigitToken(d, toks, pos, 3) {
+	if !isDigitToken(toks, pos, 3) {
 		return 0, 0, false
 	}
 	pos++
@@ -192,7 +192,7 @@ func plateSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 	}
 	// Две или три цифры региона.
 	pos = skipPlateSpace(d, toks, pos)
-	if !isDigitToken(d, toks, pos, 2) && !isDigitToken(d, toks, pos, 3) {
+	if !isDigitToken(toks, pos, 2) && !isDigitToken(toks, pos, 3) {
 		return 0, 0, false
 	}
 	pos++
@@ -245,7 +245,7 @@ func skipPlateSpace(d *Doc, toks []Token, pos int) int {
 }
 
 // isDigitToken сообщает, что токен — ровно n цифр.
-func isDigitToken(d *Doc, toks []Token, pos, n int) bool {
+func isDigitToken(toks []Token, pos, n int) bool {
 	if pos >= len(toks) || toks[pos].Kind != KindDigit {
 		return false
 	}
@@ -312,7 +312,7 @@ func vinSpan(d *Doc, toks []Token, i int) (int, int, bool) {
 }
 
 // tokenIndexAt возвращает индекс токена, содержащего байтовое смещение.
-func tokenIndexAt(d *Doc, toks []Token, off int) int {
+func tokenIndexAt(toks []Token, off int) int {
 	for k := range toks {
 		if toks[k].End > off {
 			return k
@@ -437,8 +437,8 @@ func isServiceIPv4(s string) bool {
 	if len(parts) != 4 {
 		return false
 	}
-	a, _ := atoi(parts[0])
-	b, _ := atoi(parts[1])
+	a := atoi(parts[0])
+	b := atoi(parts[1])
 	switch {
 	case a == 127:
 		return true
@@ -449,18 +449,18 @@ func isServiceIPv4(s string) bool {
 }
 
 // atoi разбирает десятичное число из строки.
-func atoi(s string) (int, bool) {
+func atoi(s string) int {
 	if s == "" {
-		return 0, false
+		return 0
 	}
 	n := 0
 	for i := 0; i < len(s); i++ {
 		if s[i] < '0' || s[i] > '9' {
-			return 0, false
+			return 0
 		}
 		n = n*10 + int(s[i]-'0')
 	}
-	return n, true
+	return n
 }
 
 // extraAnchorNear ищет якорь в окне вокруг значения. Окно задаётся в рунах и

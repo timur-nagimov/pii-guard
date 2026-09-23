@@ -8,15 +8,54 @@ import (
 // Якорные слова для форматных типов. Все задаются в нижнем регистре:
 // поиск идёт по копии текста в нижнем регистре, поэтому регистр исходной
 // записи значения не имеет.
+
+// Общие якорные слова, повторяющиеся в списках разных детекторов. Вынесены
+// в константы, чтобы не дублировать строковые литералы по файлам.
+const (
+	anchorWordInn        = "инн"
+	anchorWordCard       = "карт"
+	anchorWordDriver     = "водительск"
+	anchorWordCVV        = "cvc"
+	anchorWordDept       = "к/п"
+	anchorWordAddress    = "адрес"
+	anchorWordMkr        = "мкр"
+	anchorWordContract   = "договор"
+	anchorWordPassport   = "паспорт"
+	anchorWordIssued     = "выдан"
+	anchorWordRegistered = "зарегистрирован"
+	anchorWordHolder     = "держател"
+	anchorWordCitizen    = "гражданин"
+	anchorWordDeptCode   = "код подразделения"
+	anchorWordNumber     = "номер"
+	anchorWordApplicant  = "заявител"
+	anchorWordRegion     = "обл"
+	anchorWordGor        = "гор"
+	anchorWordPos        = "пос"
+	anchorWordResp       = "респ"
+	anchorWordProsp      = "просп"
+	anchorWordSeries     = "серии"
+	anchorWordSNILS      = "снилс"
+	anchorWordCVV2       = "cvv"
+	anchorWordClient     = "клиент"
+	anchorWordLives      = "проживает"
+	anchorWordTel        = "тел"
+	anchorWordSeriesFull = "серия"
+	anchorWordPhone      = "телефон"
+	anchorWordPayer      = "плательщик"
+	// patternPassportGroups — форма паспорта «серия-номер»: две группы по две
+	// цифры и шесть цифр номера. Повторяется в проверках формы.
+	patternPassportGroups = "2-2-6"
+)
+
 var (
-	anchorsPassport = []string{"паспорт", "пасп", "серия", "серии", "сери", "номер", "№", "выдан", "удостоверение личности", "паспортные данные", "данные документа", "документ", "passport"}
-	anchorsINN      = []string{"инн", "налогоплательщик", "идентификационный номер"}
-	anchorsCard     = []string{"карт", "card", "pan", "visa", "mastercard", "мир", "maestro", "счёт карты", "номер карты"}
-	anchorsPhone    = []string{"тел", "телефон", "моб", "сот", "звонить", "whatsapp", "вайбер", "номер телефона", "связь", "phone"}
+	anchorsPassport = []string{anchorWordPassport, "пасп", anchorWordSeriesFull, anchorWordSeries, "сери", anchorWordNumber, "№", anchorWordIssued, "удостоверение личности", "паспортные данные", "данные документа", "документ", "passport"}
+	anchorsINN      = []string{anchorWordInn, "налогоплательщик", "идентификационный номер"}
+	anchorsCard     = []string{anchorWordCard, "card", "pan", "visa", "mastercard", "мир", "maestro", "счёт карты", "номер карты"}
+	anchorsPhone    = []string{anchorWordTel, anchorWordPhone, "моб", "сот", "звонить", "whatsapp", "вайбер", "номер телефона", "связь", "phone"}
 	anchorsPostcode = []string{"индекс", "почтовый индекс", "почтовый код", "индекс получателя", "индекс адреса", "индекс отправления", "индекс по прописке", "zip", "postcode"}
-	anchorsSNILS    = []string{"снилс", "страховой номер", "лицевого счета", "лицевого счёта"}
-	anchorsDriver   = []string{"водительск", "в/у", "ву ", "права", "driver"}
-	anchorsCVV      = []string{"cvv", "cvc", "cvv2", "cvc2", "код безопасности", "защитный код", "три цифры", "с обратной стороны", "с оборота", "оборотн",
+	anchorsSNILS    = []string{anchorWordSNILS, "страховой номер", "лицевого счета", "лицевого счёта"}
+	anchorsDriver   = []string{anchorWordDriver, "в/у", "ву ", "права", "driver"}
+	anchorsCVV      = []string{anchorWordCVV2, anchorWordCVV, "cvv2", "cvc2", "код безопасности", "защитный код", "три цифры", "с обратной стороны", "с оборота", "оборотн",
 		// «Проверочный код карты» — обычная формулировка в анкетах. Слово
 		// «карты» в якоре оставлено намеренно: голый «проверочный код» это
 		// ещё и код подтверждения из сообщения, а он персональными данными
@@ -30,37 +69,37 @@ var (
 	// 995» и «КП (714-563)»; от «кпп» (КПП организации) его защищает правило
 	// «между якорем и значением не должно быть других цифр» — у «кпп» всегда
 	// есть лишняя буква «п» перед цифрами.
-	anchorsDept = []string{"код подразделения", "код подр", "подразделени", "подразделение", "к/п", "к\\п", "кп:", "кп", "код п/п", "код органа выдачи", "номер подразделения выдачи", "наименование органа выдачи", "орган выдачи"}
+	anchorsDept = []string{anchorWordDeptCode, "код подр", "подразделени", "подразделение", anchorWordDept, "к\\п", "кп:", "кп", "код п/п", "код органа выдачи", "номер подразделения выдачи", "наименование органа выдачи", "орган выдачи"}
 
 	// anchorsDeptWide — сильные якоря кода подразделения, которые допустимо
 	// искать в более широком окне. Между якорем и значением может стоять
 	// уточнение «по паспорту»: «код подразделения по паспорту: 993 542».
 	// Короткие сокращения «кп» и «к/п» сюда не входят: они слишком общие,
 	// чтобы доверять им на расстоянии.
-	anchorsDeptWide = []string{"код подразделения", "код органа выдачи", "номер подразделения выдачи", "подразделение", "подразделени"}
+	anchorsDeptWide = []string{anchorWordDeptCode, "код органа выдачи", "номер подразделения выдачи", "подразделение", "подразделени"}
 
 	// anchorsAddressLead — адресные слова, после которых шесть цифр почти
 	// всегда почтовый индекс, даже если слово «индекс» не написано:
 	// «Адрес регистрации: 150861, Свердловская область».
-	anchorsAddressLead = []string{"адрес", "адресу", "проживает", "прописк", "доставки"}
+	anchorsAddressLead = []string{anchorWordAddress, "адресу", anchorWordLives, "прописк", "доставки"}
 
 	// anchorsAddressWord — признаки того, что число стоит внутри адреса.
 	// Нужны для индекса в конце адреса, где слева от него уже идут номера
 	// дома и строения и обычное окно якоря до слова «адрес» не достаёт.
-	anchorsAddressWord = []string{"адрес", "проживает", "прописк", "улица", "ул.", "бульвар", "проспект", "переул", "шоссе", "набережн", "наб.", "микрорайон", "мкр", "квартал", "корп", "стр.", "кв.", "д. "}
+	anchorsAddressWord = []string{anchorWordAddress, anchorWordLives, "прописк", "улица", "ул.", "бульвар", "проспект", "переул", "шоссе", "набережн", "наб.", "микрорайон", anchorWordMkr, "квартал", "корп", "стр.", "кв.", "д. "}
 
 	// anchorsPassportStrict — якоря, которые говорят о паспорте однозначно.
 	// Слова «номер» и «№» сюда не входят: они стоят рядом с любым служебным
 	// номером организации.
 	// Объединение двух ночных правок: сборка добавила русские обороты из
 	// анкет, ветка латиницы английский passport. Нужны все.
-	anchorsPassportStrict = []string{"паспорт", "пасп.", "пасп ", "серия", "серии",
+	anchorsPassportStrict = []string{anchorWordPassport, "пасп.", "пасп ", anchorWordSeriesFull, anchorWordSeries,
 		"основной документ", "данные документа", "документ: паспорт", "passport"}
 
 	// anchorsStrongPersonal — сильные персональные якоря. Если такое слово
 	// стоит между служебным признаком и числом, признак к числу не относится:
 	// в записи «по договору 12, паспорт 4509 123456» речь всё-таки о паспорте.
-	anchorsStrongPersonal = []string{"паспорт", "пасп", "серия", "серии", "снилс", "инн", "карт", "подразделени", "к/п", "индекс", "телефон", "удостоверен", "водительск", "passport"}
+	anchorsStrongPersonal = []string{anchorWordPassport, "пасп", anchorWordSeriesFull, anchorWordSeries, anchorWordSNILS, anchorWordInn, anchorWordCard, "подразделени", anchorWordDept, "индекс", anchorWordPhone, "удостоверен", anchorWordDriver, "passport"}
 
 	// negAnchorsMoney — рядом с денежными словами число почти наверняка сумма.
 	negAnchorsMoney = []string{"сумма", "руб", "₽", "оплат", "стоимость", "баланс", "остаток", "счёт на", "счет на"}
@@ -69,7 +108,7 @@ var (
 	// накладная, обращение. Рядом с ними число не является персональными
 	// данными.
 	negAnchorsOrder = []string{
-		"заказ", "договор", "накладн", "счёт-фактур", "счет-фактур", "артикул",
+		"заказ", anchorWordContract, "накладн", "счёт-фактур", "счет-фактур", "артикул",
 		"заявк", "обращени", "тикет", "операци", "чеке", "транзакци",
 	}
 
@@ -88,8 +127,8 @@ var (
 	// fuzzyMinRunes сюда не попадают: у них одна замена буквы даёт другое
 	// слово и якорь начинает срабатывать где попало.
 	fuzzyAnchorsDept     = []string{"подразделения", "подразделение", "подразделением", "подразделений"}
-	fuzzyAnchorsPassport = []string{"паспорт", "паспорта", "паспорте", "паспортные", "паспортный"}
-	fuzzyAnchorsPhone    = []string{"телефон", "телефона", "телефону"}
+	fuzzyAnchorsPassport = []string{anchorWordPassport, "паспорта", "паспорте", "паспортные", "паспортный"}
+	fuzzyAnchorsPhone    = []string{anchorWordPhone, "телефона", "телефону"}
 )
 
 // anchorWindow — стандартное окно поиска якоря в рунах. Окно задаётся именно
@@ -558,7 +597,7 @@ func matchINN(c numContext) (numMatch, bool) {
 	// числа, поэтому без этой оговорки «27-12 564508» рядом со словами
 	// «удостоверение личности» становилось ИНН и паспорт оставался открытым.
 	// Сплошные десять цифр сюда не попадают намеренно: это как раз форма ИНН.
-	if (c.pattern == "4-6" || c.pattern == "2-2-6") && c.anchorAt(anchorsPassport) {
+	if (c.pattern == "4-6" || c.pattern == patternPassportGroups) && c.anchorAt(anchorsPassport) {
 		return numMatch{}, false
 	}
 	if INNValid(c.digits) && !c.money() && !c.service() {
@@ -599,7 +638,7 @@ func matchPassportShape(c numContext) (numMatch, bool) {
 	if c.anchorFuzzy(fuzzyAnchorsPassport) {
 		return numMatch{TypePassport, ConfHigh, "passport:anchor_typo", 0, 0}, true
 	}
-	if c.pattern == "4-6" || c.pattern == "2-2-6" {
+	if c.pattern == "4-6" || c.pattern == patternPassportGroups {
 		return numMatch{TypePassport, ConfAnchored, "passport:shape", 0, 0}, true
 	}
 	// Десять цифр подряд — форма слабее: так пишут и паспорт, и служебный
@@ -613,7 +652,7 @@ func matchPassportShape(c numContext) (numMatch, bool) {
 
 // matchDriver: две цифры региона, две цифры серии и номер.
 func matchDriver(c numContext) (numMatch, bool) {
-	if c.pattern != "2-2-6" && c.pattern != "10" {
+	if c.pattern != patternPassportGroups && c.pattern != "10" {
 		return numMatch{}, false
 	}
 	if c.anchorAt(anchorsDriver) {
@@ -864,7 +903,7 @@ func isPassportShape(pattern, digits string) bool {
 		return false
 	}
 	switch pattern {
-	case "4-6", "2-2-6", "10", "4-2-4":
+	case "4-6", patternPassportGroups, "10", "4-2-4":
 		return true
 	default:
 		return false
@@ -873,7 +912,7 @@ func isPassportShape(pattern, digits string) bool {
 
 // passportConnectors — слова, которые допустимо встретить между серией и
 // номером паспорта.
-var passportConnectors = []string{"номер", "ном", "no", "n", "серия", "серии", "сер", "№", "#", ":", ",", "-", "/", ".", "с", "н", " "}
+var passportConnectors = []string{anchorWordNumber, "ном", "no", "n", anchorWordSeriesFull, anchorWordSeries, "сер", "№", "#", ":", ",", "-", "/", ".", "с", "н", " "}
 
 // collectDigits собирает группу ровно из want цифр, начиная с кандидата i.
 // Группу разрешено набирать из нескольких соседних кандидатов, разделённых
