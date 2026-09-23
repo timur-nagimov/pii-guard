@@ -119,7 +119,7 @@ func testRedisConfig(addr string) RedisConfig {
 }
 
 // dialTo открывает соединение с заглушкой и закрывает его по окончании теста.
-func dialTo(t *testing.T, cfg RedisConfig) *respConn {
+func dialTo(t *testing.T, cfg *RedisConfig) *respConn {
 	t.Helper()
 	c, err := dialRESP(cfg)
 	if err != nil {
@@ -140,39 +140,39 @@ func TestRespReplyKinds(t *testing.T) {
 		"*0\r\n"
 	srv := startCanned(t, []byte(canned), modeKeep)
 	cfg := testRedisConfig(srv.addr())
-	c := dialTo(t, cfg)
+	c := dialTo(t, &cfg)
 
-	status, err := c.do(cfg, "PING")
+	status, err := c.do(&cfg, "PING")
 	if err != nil || status.kind != kindStatus || status.text() != "OK" {
 		t.Fatalf("простая строка разобрана как %+v, ошибка %v", status, err)
 	}
 
-	num, err := c.do(cfg, "DEL", "k")
+	num, err := c.do(&cfg, "DEL", "k")
 	if err != nil || num.kind != kindInt || num.num != 42 {
 		t.Fatalf("целое разобрано как %+v, ошибка %v", num, err)
 	}
 
-	bulk, err := c.do(cfg, "GET", "k")
+	bulk, err := c.do(&cfg, "GET", "k")
 	if err != nil || bulk.kind != kindBulk || bulk.text() != "зд" {
 		t.Fatalf("объёмная строка разобрана как %+v, ошибка %v", bulk, err)
 	}
 
-	empty, err := c.do(cfg, "GET", "missing")
+	empty, err := c.do(&cfg, "GET", "missing")
 	if err != nil || !empty.null {
 		t.Fatalf("пустая объёмная строка разобрана как %+v, ошибка %v", empty, err)
 	}
 
-	arr, err := c.do(cfg, "MGET", "a", "b")
+	arr, err := c.do(&cfg, "MGET", "a", "b")
 	if err != nil || len(arr.arr) != 2 || arr.arr[0].text() != "foo" || arr.arr[1].num != 7 {
 		t.Fatalf("массив разобран как %+v, ошибка %v", arr, err)
 	}
 
-	nullArr, err := c.do(cfg, "MGET", "none")
+	nullArr, err := c.do(&cfg, "MGET", "none")
 	if err != nil || !nullArr.null {
 		t.Fatalf("пустой массив разобран как %+v, ошибка %v", nullArr, err)
 	}
 
-	zeroArr, err := c.do(cfg, "MGET")
+	zeroArr, err := c.do(&cfg, "MGET")
 	if err != nil || zeroArr.kind != kindArray || len(zeroArr.arr) != 0 {
 		t.Fatalf("массив нулевой длины разобран как %+v, ошибка %v", zeroArr, err)
 	}
@@ -183,8 +183,8 @@ func TestRespReplyKinds(t *testing.T) {
 func TestRespCommandEncoding(t *testing.T) {
 	srv := startCanned(t, []byte("+OK\r\n"), modeKeep)
 	cfg := testRedisConfig(srv.addr())
-	c := dialTo(t, cfg)
-	if _, err := c.do(cfg, "SET", "pii:id", "значение", "PX", "1000"); err != nil {
+	c := dialTo(t, &cfg)
+	if _, err := c.do(&cfg, "SET", "pii:id", "значение", "PX", "1000"); err != nil {
 		t.Fatalf("команда не выполнилась: %v", err)
 	}
 	want := "*5\r\n$3\r\nSET\r\n$6\r\npii:id\r\n$16\r\nзначение\r\n$2\r\nPX\r\n$4\r\n1000\r\n"
@@ -211,9 +211,9 @@ func waitFor(t *testing.T, srv *cannedServer, n int) string {
 func TestRespServerError(t *testing.T) {
 	srv := startCanned(t, []byte("-ERR unknown command\r\n+PONG\r\n"), modeKeep)
 	cfg := testRedisConfig(srv.addr())
-	c := dialTo(t, cfg)
+	c := dialTo(t, &cfg)
 
-	_, err := c.do(cfg, "BADCMD")
+	_, err := c.do(&cfg, "BADCMD")
 	var rerr *RedisError
 	if !errors.As(err, &rerr) {
 		t.Fatalf("получена ошибка %v, ожидался RedisError", err)
@@ -221,7 +221,7 @@ func TestRespServerError(t *testing.T) {
 	if !strings.Contains(rerr.Error(), "unknown command") {
 		t.Errorf("текст ошибки %q не содержит ответ сервера", rerr.Error())
 	}
-	if rep, perr := c.do(cfg, "PING"); perr != nil || rep.text() != "PONG" {
+	if rep, perr := c.do(&cfg, "PING"); perr != nil || rep.text() != "PONG" {
 		t.Fatalf("после ошибки сервера соединение не работает: %+v, %v", rep, perr)
 	}
 }
@@ -246,8 +246,8 @@ func TestRespBrokenReplies(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			srv := startCanned(t, []byte(c.canned), modeCloseAfterWrite)
 			cfg := testRedisConfig(srv.addr())
-			conn := dialTo(t, cfg)
-			_, err := conn.do(cfg, "PING")
+			conn := dialTo(t, &cfg)
+			_, err := conn.do(&cfg, "PING")
 			if !errors.Is(err, c.want) {
 				t.Fatalf("получена ошибка %v, ожидалась %v", err, c.want)
 			}
@@ -260,8 +260,8 @@ func TestRespBrokenReplies(t *testing.T) {
 func TestRespConnectionClosed(t *testing.T) {
 	srv := startCanned(t, nil, modeCloseAtOnce)
 	cfg := testRedisConfig(srv.addr())
-	c := dialTo(t, cfg)
-	if _, err := c.do(cfg, "PING"); err == nil {
+	c := dialTo(t, &cfg)
+	if _, err := c.do(&cfg, "PING"); err == nil {
 		t.Fatal("обрыв соединения не дал ошибки")
 	}
 }
@@ -271,7 +271,7 @@ func TestRespConnectionClosed(t *testing.T) {
 func TestRespDialUnreachable(t *testing.T) {
 	cfg := testRedisConfig(unusedAddr(t))
 	started := time.Now()
-	if _, err := dialRESP(cfg); err == nil {
+	if _, err := dialRESP(&cfg); err == nil {
 		t.Fatal("соединение с закрытым портом внезапно удалось")
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
@@ -297,7 +297,7 @@ func TestRespAuth(t *testing.T) {
 	srv := startCanned(t, []byte("+OK\r\n"), modeKeep)
 	cfg := testRedisConfig(srv.addr())
 	cfg.Password = "секрет"
-	c := dialTo(t, cfg)
+	c := dialTo(t, &cfg)
 	_ = c
 	want := "*2\r\n$4\r\nAUTH\r\n$12\r\nсекрет\r\n"
 	if got := waitFor(t, srv, len(want)); got != want {
@@ -310,7 +310,7 @@ func TestRespAuthRejected(t *testing.T) {
 	srv := startCanned(t, []byte("-ERR invalid password\r\n"), modeKeep)
 	cfg := testRedisConfig(srv.addr())
 	cfg.Password = "неверный"
-	if _, err := dialRESP(cfg); err == nil {
+	if _, err := dialRESP(&cfg); err == nil {
 		t.Fatal("отказ по паролю не дал ошибки")
 	}
 }
@@ -319,7 +319,8 @@ func TestRespAuthRejected(t *testing.T) {
 // запрос идёт по нему же.
 func TestRespPoolReuse(t *testing.T) {
 	srv := startCanned(t, []byte("+PONG\r\n+PONG\r\n"), modeKeep)
-	p := newRespPool(testRedisConfig(srv.addr()))
+	cfg := testRedisConfig(srv.addr())
+	p := newRespPool(&cfg)
 	defer p.Close()
 	for i := 0; i < 2; i++ {
 		rep, err := p.do("PING")
@@ -336,7 +337,8 @@ func TestRespPoolReuse(t *testing.T) {
 // возвращается.
 func TestRespPoolDiscardsBroken(t *testing.T) {
 	srv := startCanned(t, nil, modeCloseAtOnce)
-	p := newRespPool(testRedisConfig(srv.addr()))
+	cfg := testRedisConfig(srv.addr())
+	p := newRespPool(&cfg)
 	defer p.Close()
 	if _, err := p.do("PING"); err == nil {
 		t.Fatal("обрыв соединения не дал ошибки")
@@ -356,7 +358,7 @@ func TestRespPoolBusy(t *testing.T) {
 	cfg := testRedisConfig(srv.addr())
 	cfg.PoolSize = 1
 	cfg.DialTimeout = 50 * time.Millisecond
-	p := newRespPool(cfg)
+	p := newRespPool(&cfg)
 	defer p.Close()
 
 	held, err := p.acquire()
@@ -375,7 +377,8 @@ func TestRespPoolBusy(t *testing.T) {
 // TestRespPoolClosed проверяет работу после закрытия пула.
 func TestRespPoolClosed(t *testing.T) {
 	srv := startCanned(t, []byte("+PONG\r\n"), modeKeep)
-	p := newRespPool(testRedisConfig(srv.addr()))
+	cfg := testRedisConfig(srv.addr())
+	p := newRespPool(&cfg)
 	if _, err := p.do("PING"); err != nil {
 		t.Fatalf("запрос до закрытия не прошёл: %v", err)
 	}

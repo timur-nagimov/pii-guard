@@ -11,15 +11,15 @@ import (
 // вытеснение шло по всем сегментам сразу, и один запрос сверх предела уносил
 // до двухсот пятидесяти шести действующих записей.
 func TestEvictOnlyOneOverLimit(t *testing.T) {
-	const max = 10
-	s := newTestStore(t, Config{TTL: time.Hour, MaxRecords: max})
-	for i := 0; i < max; i++ {
+	const limit = 10
+	s := newTestStore(t, Config{TTL: time.Hour, MaxRecords: limit})
+	for i := 0; i < limit; i++ {
 		if _, err := s.Put(fmt.Sprintf("id-%d", i), "текст", "маска", "sys", nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if n := s.Len(); n != max {
-		t.Fatalf("до превышения предела в хранилище %d записей, ожидалось %d", n, max)
+	if n := s.Len(); n != limit {
+		t.Fatalf("до превышения предела в хранилище %d записей, ожидалось %d", n, limit)
 	}
 	if _, err := s.Put("id-over", "текст", "маска", "sys", nil); err != nil {
 		t.Fatal(err)
@@ -28,11 +28,11 @@ func TestEvictOnlyOneOverLimit(t *testing.T) {
 	// с ними разойтись. Прежняя версия теста смотрела только на него, и
 	// проверка мутацией это вскрыла: удаление записей из каждого сегмента без
 	// правки счётчика тест проходил, хотя хранилище теряло 255 записей.
-	if n := realCount(s); n != max {
-		t.Fatalf("в сегментах осталось %d записей, ожидалось %d (вытеснено слишком много)", n, max)
+	if n := realCount(s); n != limit {
+		t.Fatalf("в сегментах осталось %d записей, ожидалось %d (вытеснено слишком много)", n, limit)
 	}
-	if n := s.Len(); n != max {
-		t.Fatalf("после превышения предела на одну запись в хранилище %d записей, ожидалось %d (вытеснено слишком много)", n, max)
+	if n := s.Len(); n != limit {
+		t.Fatalf("после превышения предела на одну запись в хранилище %d записей, ожидалось %d (вытеснено слишком много)", n, limit)
 	}
 }
 
@@ -41,7 +41,7 @@ func TestEvictOnlyOneOverLimit(t *testing.T) {
 // расхождение между ними как раз и есть тот дефект, который ищем.
 func realCount(s *MemoryStore) int {
 	n := 0
-	for _, sh := range s.shards {
+	for _, sh := range &s.shards {
 		sh.mu.Lock()
 		n += len(sh.data)
 		sh.mu.Unlock()

@@ -233,19 +233,27 @@ func round(v float64, digits int) float64 {
 	return float64(int64(shifted-0.5)) / p
 }
 
+// Права на каталог и файлы отчёта. Отчёт снимается с боевого стенда и несёт
+// куски настоящих текстов, поэтому доступ даётся только владельцу прогона:
+// на общей машине чужой учётной записи в отчёте делать нечего.
+const (
+	reportDirPerm  = 0o750
+	reportFilePerm = 0o600
+)
+
 // WriteReports кладёт отчёт в два файла: удобный для чтения и машинный.
-func WriteReports(dir string, rep Report) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+func WriteReports(dir string, rep *Report) error {
+	if err := os.MkdirAll(dir, reportDirPerm); err != nil {
 		return fmt.Errorf("не удалось создать каталог отчёта: %w", err)
 	}
 	data, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {
 		return fmt.Errorf("не удалось собрать машинный отчёт: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "report.json"), append(data, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "report.json"), append(data, '\n'), reportFilePerm); err != nil {
 		return fmt.Errorf("не удалось записать report.json: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte(RenderMarkdown(rep)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte(RenderMarkdown(rep)), reportFilePerm); err != nil {
 		return fmt.Errorf("не удалось записать report.md: %w", err)
 	}
 	return nil
@@ -253,12 +261,12 @@ func WriteReports(dir string, rep Report) error {
 
 // RenderMarkdown собирает отчёт для чтения глазами. Срезы отсортированы от
 // худшего к лучшему: сверху видно, какой тип проседает.
-func RenderMarkdown(rep Report) string {
+func RenderMarkdown(rep *Report) string {
 	var b strings.Builder
 	b.WriteString("# Отчёт имитатора проверяющей системы\n\n")
 	renderSummary(&b, rep)
-	renderLoad(&b, rep.Load)
-	renderMasking(&b, rep.Masking)
+	renderLoad(&b, &rep.Load)
+	renderMasking(&b, &rep.Masking)
 	renderSliceTable(&b, "## Качество по типам", "Тип", rep.Masking.ByType, false)
 	renderSliceTable(&b, "## Качество по категориям набора", "Категория", rep.Masking.ByCategory, true)
 	renderDemask(&b, rep.Demask)
@@ -267,7 +275,7 @@ func RenderMarkdown(rep Report) string {
 }
 
 // renderSummary выводит шапку отчёта.
-func renderSummary(b *strings.Builder, rep Report) {
+func renderSummary(b *strings.Builder, rep *Report) {
 	fmt.Fprintf(b, "Сервис: `%s`\n\n", rep.URL)
 	fmt.Fprintf(b, "Набор: `%s`, элементов %d, эталонных фрагментов %d\n\n",
 		rep.Dataset.Path, rep.Dataset.Samples, rep.Dataset.Fragments)
@@ -278,7 +286,7 @@ func renderSummary(b *strings.Builder, rep Report) {
 }
 
 // renderLoad выводит показатели скорости.
-func renderLoad(b *strings.Builder, l LoadReport) {
+func renderLoad(b *strings.Builder, l *LoadReport) {
 	b.WriteString("## Нагрузка\n\n")
 	b.WriteString("| Показатель | Значение |\n|---|---|\n")
 	fmt.Fprintf(b, "| Целевая частота, запросов в секунду | %.2f |\n", l.TargetRPS)
@@ -312,7 +320,7 @@ func renderStatuses(b *strings.Builder, statuses map[string]int) {
 }
 
 // renderMasking выводит качество прямого шага.
-func renderMasking(b *strings.Builder, m MaskingReport) {
+func renderMasking(b *strings.Builder, m *MaskingReport) {
 	b.WriteString("## Маскирование\n\n")
 	b.WriteString("| Показатель | Значение |\n|---|---|\n")
 	fmt.Fprintf(b, "| Элементов оценено | %d |\n", m.Samples)

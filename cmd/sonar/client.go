@@ -82,7 +82,7 @@ type Response struct {
 
 // Latency возвращает длительность последней попытки: именно её видит
 // проверяющая система как время ответа на запрос.
-func (r Response) Latency() time.Duration {
+func (r *Response) Latency() time.Duration {
 	if len(r.Attempts) == 0 {
 		return 0
 	}
@@ -157,7 +157,8 @@ func (c *Client) Do(ctx context.Context, payload, id string) Response {
 			return resp
 		}
 	}
-	return finishResponse(resp)
+	finishResponse(&resp)
+	return resp
 }
 
 // Probe выполняет ровно одну попытку без повторов. Нужен для проверок
@@ -183,10 +184,10 @@ func (c *Client) Probe(ctx context.Context, payload, id string) Response {
 }
 
 // finishResponse проставляет исход, когда попытки закончились неудачей.
-func finishResponse(resp Response) Response {
+func finishResponse(resp *Response) {
 	if len(resp.Attempts) == 0 {
 		resp.Outcome = outcomeInvalid
-		return resp
+		return
 	}
 	last := resp.Attempts[len(resp.Attempts)-1]
 	resp.Status = last.Status
@@ -199,7 +200,6 @@ func finishResponse(resp Response) Response {
 	default:
 		resp.Outcome = outcomeInvalid
 	}
-	return resp
 }
 
 // attempt делает один запрос и относит ответ к успеху, отказу или перегрузке.
@@ -217,7 +217,9 @@ func (c *Client) attempt(ctx context.Context, payload, id string) Attempt {
 	req.Header.Set("Content-Type", "application/json")
 
 	started := time.Now()
-	resp, err := c.http.Do(req)
+	// Адрес стенда задаёт оператор ключом запуска, а схема проверена при
+	// разборе ключей: чужому адресу взяться здесь неоткуда.
+	resp, err := c.http.Do(req) //nolint:gosec // адрес стенда задаёт оператор ключом запуска
 	if err != nil {
 		// Конец прогона обрывает запрос на полпути. Это не отказ сервиса,
 		// поэтому такой запрос не идёт ни в задержки, ни в серию невалидных.

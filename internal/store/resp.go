@@ -59,7 +59,7 @@ type respConn struct {
 }
 
 // dialRESP открывает соединение и при необходимости проходит проверку пароля.
-func dialRESP(cfg RedisConfig) (*respConn, error) {
+func dialRESP(cfg *RedisConfig) (*respConn, error) {
 	dialer := net.Dialer{Timeout: cfg.DialTimeout}
 	nc, err := dialer.DialContext(context.Background(), "tcp", cfg.Addr)
 	if err != nil {
@@ -84,7 +84,7 @@ func (c *respConn) close() {
 }
 
 // do отправляет команду и читает ответ.
-func (c *respConn) do(cfg RedisConfig, args ...string) (reply, error) {
+func (c *respConn) do(cfg *RedisConfig, args ...string) (reply, error) {
 	if err := c.write(cfg, args); err != nil {
 		return reply{}, err
 	}
@@ -95,7 +95,7 @@ func (c *respConn) do(cfg RedisConfig, args ...string) (reply, error) {
 }
 
 // write собирает команду в виде массива объёмных строк и отправляет её целиком.
-func (c *respConn) write(cfg RedisConfig, args []string) error {
+func (c *respConn) write(cfg *RedisConfig, args []string) error {
 	c.buf = c.buf[:0]
 	c.buf = append(c.buf, kindArray)
 	c.buf = strconv.AppendInt(c.buf, int64(len(args)), 10)
@@ -215,9 +215,9 @@ type respPool struct {
 }
 
 // newRespPool готовит пул. Соединения открываются по мере надобности.
-func newRespPool(cfg RedisConfig) *respPool {
+func newRespPool(cfg *RedisConfig) *respPool {
 	p := &respPool{
-		cfg:  cfg,
+		cfg:  *cfg,
 		idle: make(chan *respConn, cfg.PoolSize),
 		sem:  make(chan struct{}, cfg.PoolSize),
 	}
@@ -243,7 +243,7 @@ func (p *respPool) acquire() (*respConn, error) {
 	case c := <-p.idle:
 		return c, nil
 	case <-p.sem:
-		c, err := dialRESP(p.cfg)
+		c, err := dialRESP(&p.cfg)
 		if err != nil {
 			p.sem <- struct{}{}
 			return nil, err
@@ -283,7 +283,7 @@ func (p *respPool) do(args ...string) (reply, error) {
 	if err != nil {
 		return reply{}, err
 	}
-	rep, err := c.do(p.cfg, args...)
+	rep, err := c.do(&p.cfg, args...)
 	var rerr *RedisError
 	if err == nil || errors.As(err, &rerr) {
 		p.release(c)

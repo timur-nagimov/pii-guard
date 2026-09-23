@@ -85,7 +85,7 @@ func NormalizedLevenshtein(a, b string) float64 {
 // Если длина ответа не изменилась, смещения эталонных фрагментов остаются
 // верными и сравнение прямое; иначе позиции восстанавливаются сопоставлением
 // рун, потому что маска могла сдвинуть текст.
-func ScoreMasking(s Sample, masked string) MaskScore {
+func ScoreMasking(s *Sample, masked string) MaskScore {
 	var sc MaskScore
 	if len(masked) == len(s.Text) {
 		sc = scoreSameLength(s, masked)
@@ -102,7 +102,7 @@ func ScoreMasking(s Sample, masked string) MaskScore {
 }
 
 // scoreSameLength оценивает ответ, сохранивший длину исходного текста.
-func scoreSameLength(s Sample, masked string) MaskScore {
+func scoreSameLength(s *Sample, masked string) MaskScore {
 	sc := MaskScore{Exact: true, Fragments: make([]FragmentScore, 0, len(s.Fragments))}
 	for _, f := range s.Fragments {
 		sc.Fragments = append(sc.Fragments, fragmentScore(f, masked[f.Start:f.End]))
@@ -112,7 +112,7 @@ func scoreSameLength(s Sample, masked string) MaskScore {
 }
 
 // scoreShifted оценивает ответ, изменивший длину текста.
-func scoreShifted(s Sample, masked string) MaskScore {
+func scoreShifted(s *Sample, masked string) MaskScore {
 	origRunes := []rune(s.Text)
 	maskedRunes := []rune(masked)
 	if len(origRunes) > alignLimit || len(maskedRunes) > alignLimit {
@@ -131,7 +131,7 @@ func scoreShifted(s Sample, masked string) MaskScore {
 
 // scoreHeuristic оценивает слишком длинный ответ без сопоставления рун: важно
 // лишь то, уцелело ли исходное значение в тексте целиком.
-func scoreHeuristic(s Sample, masked string) MaskScore {
+func scoreHeuristic(s *Sample, masked string) MaskScore {
 	sc := MaskScore{Approx: true, Fragments: make([]FragmentScore, 0, len(s.Fragments))}
 	for _, f := range s.Fragments {
 		score := FragmentScore{Type: f.Type, Distance: 1, Changed: true}
@@ -150,7 +150,7 @@ func fragmentScore(f Fragment, got string) FragmentScore {
 }
 
 // fragmentMask отмечает байты, попавшие внутрь эталонных фрагментов.
-func fragmentMask(s Sample) []bool {
+func fragmentMask(s *Sample) []bool {
 	m := make([]bool, len(s.Text))
 	for _, f := range s.Fragments {
 		for i := f.Start; i < f.End && i < len(m); i++ {
@@ -162,7 +162,7 @@ func fragmentMask(s Sample) []bool {
 
 // outsideBytes считает изменённые байты вне эталонных фрагментов для ответа
 // той же длины.
-func outsideBytes(s Sample, masked string) (changed, total int) {
+func outsideBytes(s *Sample, masked string) (changed, total int) {
 	inside := fragmentMask(s)
 	for i := 0; i < len(s.Text); i++ {
 		if inside[i] {
@@ -178,7 +178,7 @@ func outsideBytes(s Sample, masked string) (changed, total int) {
 
 // outsideRunes считает изменённые байты вне эталонных фрагментов по итогам
 // сопоставления рун: несопоставленная руна считается изменённой целиком.
-func outsideRunes(s Sample, origRunes []rune, align []int) (changed, total int) {
+func outsideRunes(s *Sample, origRunes []rune, align []int) (changed, total int) {
 	inside := fragmentMask(s)
 	offset := 0
 	for i, r := range origRunes {
