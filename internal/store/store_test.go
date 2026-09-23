@@ -295,6 +295,63 @@ func TestMaxRecordsDefault(t *testing.T) {
 	}
 }
 
+// putAndVerify сохраняет запись и тут же читает её обратно. Расхождение
+// возвращается ошибкой, а не валит тест на месте: функция работает внутри
+// рабочей горутины, а звать оттуда t.Fatalf нельзя.
+func putAndVerify(s *MemoryStore, id string) error {
+	original := fmt.Sprintf("текст %s", id)
+	if _, err := s.Put(id, original, "маска "+id, "sys", nil); err != nil {
+		return err
+	}
+	e, ok := s.Get(id)
+	if !ok {
+		return fmt.Errorf("запись %s пропала сразу после сохранения", id)
+	}
+	got, err := s.Original(e)
+	if err != nil {
+		return err
+	}
+	if got != original {
+		return fmt.Errorf("запись %s расшифрована как %q", id, got)
+	}
+	return nil
+}
+
+// readBack читает запись, если она уже сохранена. Отсутствие записи ошибкой не
+// считается: читатель ходит по тем же идентификаторам и законно опережает
+// писателя, а вот частично записанное значение обязано выдать себя ошибкой
+// расшифровки. Длина опрашивается следом, потому что счётчик живёт под тем же
+// замком и ловит гонку не хуже самого чтения.
+func readBack(s *MemoryStore, id string) error {
+	if e, ok := s.Get(id); ok {
+		if _, err := s.Original(e); err != nil {
+			return err
+		}
+	}
+	s.Len()
+	return nil
+}
+
+// spawnWorkers поднимает n горутин, каждая прогоняет step по своим per
+// идентификаторам. Все ждут общего сигнала start: без него горутины успевают
+// отработать по очереди и гонка не воспроизводится. Первая ошибка
+// останавливает свою горутину — дальше пошли бы сообщения про ту же гонку.
+func spawnWorkers(wg *sync.WaitGroup, start <-chan struct{}, errs chan<- error, n, per int, step func(id string) error) {
+	for w := 0; w < n; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			<-start
+			for i := 0; i < per; i++ {
+				if err := step(fmt.Sprintf("w%d-%d", w, i)); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(w)
+	}
+}
+
 // TestConcurrentPutGet проверяет одновременную запись и чтение. Хранилище
 // обслуживает все запросы сервиса сразу, поэтому тест обязан проходить с
 // ключом проверки гонок.
@@ -307,55 +364,14 @@ func TestConcurrentPutGet(t *testing.T) {
 	start := make(chan struct{})
 	errs := make(chan error, writers*2)
 
-	for w := 0; w < writers; w++ {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
-			<-start
-			for i := 0; i < perWriter; i++ {
-				id := fmt.Sprintf("w%d-%d", w, i)
-				original := fmt.Sprintf("текст %s", id)
-				if _, err := s.Put(id, original, "маска "+id, "sys", nil); err != nil {
-					errs <- err
-					return
-				}
-				e, ok := s.Get(id)
-				if !ok {
-					errs <- fmt.Errorf("запись %s пропала сразу после сохранения", id)
-					return
-				}
-				got, err := s.Original(e)
-				if err != nil {
-					errs <- err
-					return
-				}
-				if got != original {
-					errs <- fmt.Errorf("запись %s расшифрована как %q", id, got)
-					return
-				}
-			}
-		}(w)
-	}
-
+	spawnWorkers(&wg, start, errs, writers, perWriter, func(id string) error {
+		return putAndVerify(s, id)
+	})
 	// Читатели ходят по тем же идентификаторам и не должны ни падать, ни
 	// видеть частично записанные значения.
-	for r := 0; r < writers; r++ {
-		wg.Add(1)
-		go func(r int) {
-			defer wg.Done()
-			<-start
-			for i := 0; i < perWriter; i++ {
-				id := fmt.Sprintf("w%d-%d", r, i)
-				if e, ok := s.Get(id); ok {
-					if _, err := s.Original(e); err != nil {
-						errs <- err
-						return
-					}
-				}
-				s.Len()
-			}
-		}(r)
-	}
+	spawnWorkers(&wg, start, errs, writers, perWriter, func(id string) error {
+		return readBack(s, id)
+	})
 
 	close(start)
 	wg.Wait()
