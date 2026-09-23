@@ -18,6 +18,27 @@ type numericHit struct {
 	value string
 }
 
+// checkNumericHit сверяет один найденный фрагмент: тип, значение, уверенность
+// и заполненность причины. Значение сверяется по тексту, а не по длине: так
+// виден сдвиг границ на один знак, который иначе тихо съел бы край соседнего
+// фрагмента. Помощник общий с прогонщиком расширенных типов — ожидание там
+// описывается теми же парами «тип и точное значение».
+func checkNumericHit(t *testing.T, text string, i int, s Span, want numericHit) {
+	t.Helper()
+	if s.Type != want.typ {
+		t.Errorf("фрагмент %d: тип %s, ожидался %s", i, s.Type, want.typ)
+	}
+	if value := text[s.Start:s.End]; value != want.value {
+		t.Errorf("фрагмент %d: значение %q, ожидалось %q", i, value, want.value)
+	}
+	if s.Conf < ConfMedium {
+		t.Errorf("фрагмент %d: уверенность %.2f ниже средней", i, s.Conf)
+	}
+	if s.Reason == "" {
+		t.Errorf("фрагмент %d: не заполнена причина срабатывания", i)
+	}
+}
+
 // runNumericCases прогоняет табличный набор через детектор форматных типов.
 // Детектор создаётся здесь же, поэтому тест не зависит от других детекторов.
 func runNumericCases(t *testing.T, cases []numericCase) {
@@ -31,18 +52,7 @@ func runNumericCases(t *testing.T, cases []numericCase) {
 				t.Fatalf("найдено %d фрагментов, ожидалось %d: %s", len(got), len(c.want), describeSpans(c.text, got))
 			}
 			for i, s := range got {
-				if s.Type != c.want[i].typ {
-					t.Errorf("фрагмент %d: тип %s, ожидался %s", i, s.Type, c.want[i].typ)
-				}
-				if value := c.text[s.Start:s.End]; value != c.want[i].value {
-					t.Errorf("фрагмент %d: значение %q, ожидалось %q", i, value, c.want[i].value)
-				}
-				if s.Conf < ConfMedium {
-					t.Errorf("фрагмент %d: уверенность %.2f ниже средней", i, s.Conf)
-				}
-				if s.Reason == "" {
-					t.Errorf("фрагмент %d: не заполнена причина срабатывания", i)
-				}
+				checkNumericHit(t, c.text, i, s, c.want[i])
 			}
 		})
 	}

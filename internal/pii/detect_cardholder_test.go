@@ -12,6 +12,36 @@ type cardHolderCase struct {
 	conf float64
 }
 
+// cardHolderAssertNone требует, чтобы детектор промолчал. Считаются только
+// фрагменты ожидаемого типа: случай закрепляет поведение держателя карты, а
+// не чужие находки в том же тексте.
+func cardHolderAssertNone(t *testing.T, d *Doc, spans []Span, tc cardHolderCase) {
+	t.Helper()
+	for _, s := range spans {
+		if tc.typ == "" || s.Type == tc.typ {
+			t.Fatalf("лишнее срабатывание %s на %q: %q", s.Type, tc.text, d.Text[s.Start:s.End])
+		}
+	}
+}
+
+// cardHolderMatches сверяет один фрагмент с ожиданием случая. Чужой тип или
+// другое значение — не ошибка, а повод смотреть следующий фрагмент: детектор
+// отдаёт и соседние находки. Ошибкой считается только низкая уверенность у
+// того самого фрагмента, который случай и ждёт.
+func cardHolderMatches(t *testing.T, d *Doc, s Span, tc cardHolderCase) bool {
+	t.Helper()
+	if s.Type != tc.typ {
+		return false
+	}
+	if d.Text[s.Start:s.End] != tc.want {
+		return false
+	}
+	if tc.conf > 0 && s.Conf < tc.conf {
+		t.Fatalf("уверенность %v ниже ожидаемой %v", s.Conf, tc.conf)
+	}
+	return true
+}
+
 // runCardHolderCases прогоняет случаи через один детектор. Тест не зависит от
 // других детекторов: регистр не используется, детектор вызывается напрямую.
 func runCardHolderCases(t *testing.T, det Detector, cases []cardHolderCase) {
@@ -21,25 +51,13 @@ func runCardHolderCases(t *testing.T, det Detector, cases []cardHolderCase) {
 			d := NewDoc(tc.text)
 			spans := det.Detect(d)
 			if tc.want == "" {
-				for _, s := range spans {
-					if tc.typ == "" || s.Type == tc.typ {
-						t.Fatalf("лишнее срабатывание %s на %q: %q", s.Type, tc.text, d.Text[s.Start:s.End])
-					}
-				}
+				cardHolderAssertNone(t, d, spans, tc)
 				return
 			}
 			for _, s := range spans {
-				if s.Type != tc.typ {
-					continue
+				if cardHolderMatches(t, d, s, tc) {
+					return
 				}
-				got := d.Text[s.Start:s.End]
-				if got != tc.want {
-					continue
-				}
-				if tc.conf > 0 && s.Conf < tc.conf {
-					t.Fatalf("уверенность %v ниже ожидаемой %v", s.Conf, tc.conf)
-				}
-				return
 			}
 			t.Fatalf("не найден фрагмент %q типа %s в %q, получено %v", tc.want, tc.typ, tc.text, cardHolderDump(d, spans))
 		})

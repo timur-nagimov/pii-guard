@@ -6,6 +6,48 @@ import (
 	"unicode/utf8"
 )
 
+// checkDocTokens сверяет классы разобранных токенов. Класс решает, где
+// детекторы видят границу слова, поэтому сверяется каждый токен, а не только
+// их число: одна подменённая граница тихо меняет находки всего движка.
+func checkDocTokens(t *testing.T, d *Doc, wantKinds []Kind) {
+	t.Helper()
+	if len(d.Tokens) != len(wantKinds) {
+		t.Fatalf("токенов %d, ожидалось %d: %+v", len(d.Tokens), len(wantKinds), d.Tokens)
+	}
+	for i, tok := range d.Tokens {
+		if tok.Kind != wantKinds[i] {
+			t.Errorf("токен %d: класс %d, ожидался %d", i, tok.Kind, wantKinds[i])
+		}
+	}
+}
+
+// checkDocReparsed сверяет переиспользованный документ с эталонным разбором.
+// Сверяются все поля сразу: недосброшенным может остаться любое из них, а
+// цикл переразборов отвечает только за повторы.
+func checkDocReparsed(t *testing.T, d, want *Doc) {
+	t.Helper()
+	if d.Text != want.Text {
+		t.Fatalf("после переиспользования Text = %q, ожидалось %q", d.Text, want.Text)
+	}
+	if d.Lower != want.Lower {
+		t.Fatalf("после переиспользования Lower = %q, ожидалось %q", d.Lower, want.Lower)
+	}
+	if len(d.Tokens) != len(want.Tokens) {
+		t.Fatalf("после переиспользования токенов %d, ожидалось %d", len(d.Tokens), len(want.Tokens))
+	}
+	for j := range want.Tokens {
+		if d.Tokens[j] != want.Tokens[j] {
+			t.Fatalf("токен %d после переиспользования = %+v, ожидался %+v", j, d.Tokens[j], want.Tokens[j])
+		}
+	}
+	if d.RuneLen() != want.RuneLen() {
+		t.Fatalf("после переиспользования RuneLen = %d, ожидалось %d", d.RuneLen(), want.RuneLen())
+	}
+	if got, wantRuns := d.NumRuns(), want.NumRuns(); len(got) != len(wantRuns) {
+		t.Fatalf("после переиспользования числовых последовательностей %d, ожидалось %d", len(got), len(wantRuns))
+	}
+}
+
 // TestNewDocBasics проверяет разбор текста на разных алфавитах. Doc строится
 // один раз на запрос и дальше только читается, поэтому ошибка разбора
 // отражается сразу на всех детекторах.
@@ -72,14 +114,7 @@ func TestNewDocBasics(t *testing.T) {
 			if got := d.RuneLen(); got != c.wantRunes {
 				t.Fatalf("RuneLen = %d, ожидалось %d", got, c.wantRunes)
 			}
-			if len(d.Tokens) != len(c.wantKinds) {
-				t.Fatalf("токенов %d, ожидалось %d: %+v", len(d.Tokens), len(c.wantKinds), d.Tokens)
-			}
-			for i, tok := range d.Tokens {
-				if tok.Kind != c.wantKinds[i] {
-					t.Errorf("токен %d: класс %d, ожидался %d", i, tok.Kind, c.wantKinds[i])
-				}
-			}
+			checkDocTokens(t, d, c.wantKinds)
 		})
 	}
 }
@@ -100,26 +135,7 @@ func TestDocParseReuse(t *testing.T) {
 		d := &Doc{}
 		for i := 0; i < 3; i++ {
 			d.Parse(text)
-			if d.Text != want.Text {
-				t.Fatalf("после переиспользования Text = %q, ожидалось %q", d.Text, want.Text)
-			}
-			if d.Lower != want.Lower {
-				t.Fatalf("после переиспользования Lower = %q, ожидалось %q", d.Lower, want.Lower)
-			}
-			if len(d.Tokens) != len(want.Tokens) {
-				t.Fatalf("после переиспользования токенов %d, ожидалось %d", len(d.Tokens), len(want.Tokens))
-			}
-			for j := range want.Tokens {
-				if d.Tokens[j] != want.Tokens[j] {
-					t.Fatalf("токен %d после переиспользования = %+v, ожидался %+v", j, d.Tokens[j], want.Tokens[j])
-				}
-			}
-			if d.RuneLen() != want.RuneLen() {
-				t.Fatalf("после переиспользования RuneLen = %d, ожидалось %d", d.RuneLen(), want.RuneLen())
-			}
-			if got, wantRuns := d.NumRuns(), want.NumRuns(); len(got) != len(wantRuns) {
-				t.Fatalf("после переиспользования числовых последовательностей %d, ожидалось %d", len(got), len(wantRuns))
-			}
+			checkDocReparsed(t, d, want)
 		}
 	}
 }

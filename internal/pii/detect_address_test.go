@@ -21,6 +21,42 @@ func addrSpanTexts(d *Doc, spans []Span) []string {
 	return out
 }
 
+// addrWantSpan сверяет число найденных фрагментов с ожиданием случая и
+// сообщает, есть ли дальше что разбирать. Пустое want означает требование
+// молчания: сверять там нечего, и случай на этом закончен.
+func addrWantSpan(t *testing.T, d *Doc, spans []Span, c addrCase) bool {
+	t.Helper()
+	if c.want == "" {
+		if len(spans) != 0 {
+			t.Fatalf("ожидалось отсутствие фрагментов, найдено %d: %q", len(spans), addrSpanTexts(d, spans))
+		}
+		return false
+	}
+	if len(spans) != 1 {
+		t.Fatalf("ожидался один фрагмент, найдено %d: %q", len(spans), addrSpanTexts(d, spans))
+	}
+	return true
+}
+
+// addrCheckSpan сверяет один найденный фрагмент с ожиданием случая. Сверка
+// значения, типа и уверенности одинакова для адреса и места рождения, поэтому
+// живёт отдельно: прогонщику остаётся только число фрагментов.
+func addrCheckSpan(t *testing.T, d *Doc, s Span, want Type, c addrCase) {
+	t.Helper()
+	if got := d.Text[s.Start:s.End]; got != c.want {
+		t.Errorf("фрагмент = %q, ожидался %q", got, c.want)
+	}
+	if s.Type != want {
+		t.Errorf("тип = %s, ожидался %s", s.Type, want)
+	}
+	if s.Conf != c.conf {
+		t.Errorf("уверенность = %.2f, ожидалась %.2f", s.Conf, c.conf)
+	}
+	if s.Reason == "" {
+		t.Error("признаки фрагмента не заполнены")
+	}
+}
+
 // addrRunCases прогоняет табличный тест для одного детектора. Тест намеренно
 // не использует Registry и другие детекторы: проверяется только поведение
 // адресного детектора.
@@ -30,28 +66,10 @@ func addrRunCases(t *testing.T, det Detector, want Type, cases []addrCase) {
 		t.Run(c.name, func(t *testing.T) {
 			d := NewDoc(c.text)
 			spans := det.Detect(d)
-			if c.want == "" {
-				if len(spans) != 0 {
-					t.Fatalf("ожидалось отсутствие фрагментов, найдено %d: %q", len(spans), addrSpanTexts(d, spans))
-				}
+			if !addrWantSpan(t, d, spans, c) {
 				return
 			}
-			if len(spans) != 1 {
-				t.Fatalf("ожидался один фрагмент, найдено %d: %q", len(spans), addrSpanTexts(d, spans))
-			}
-			s := spans[0]
-			if got := d.Text[s.Start:s.End]; got != c.want {
-				t.Errorf("фрагмент = %q, ожидался %q", got, c.want)
-			}
-			if s.Type != want {
-				t.Errorf("тип = %s, ожидался %s", s.Type, want)
-			}
-			if s.Conf != c.conf {
-				t.Errorf("уверенность = %.2f, ожидалась %.2f", s.Conf, c.conf)
-			}
-			if s.Reason == "" {
-				t.Error("признаки фрагмента не заполнены")
-			}
+			addrCheckSpan(t, d, spans[0], want, c)
 		})
 	}
 }

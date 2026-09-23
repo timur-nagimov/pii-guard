@@ -23,18 +23,7 @@ func runExtraCases(t *testing.T, cases []extraCase) {
 				t.Fatalf("найдено %d фрагментов, ожидалось %d: %s", len(got), len(c.want), describeSpans(c.text, got))
 			}
 			for i, s := range got {
-				if s.Type != c.want[i].typ {
-					t.Errorf("фрагмент %d: тип %s, ожидался %s", i, s.Type, c.want[i].typ)
-				}
-				if value := c.text[s.Start:s.End]; value != c.want[i].value {
-					t.Errorf("фрагмент %d: значение %q, ожидалось %q", i, value, c.want[i].value)
-				}
-				if s.Conf < ConfMedium {
-					t.Errorf("фрагмент %d: уверенность %.2f ниже средней", i, s.Conf)
-				}
-				if s.Reason == "" {
-					t.Errorf("фрагмент %d: не заполнена причина срабатывания", i)
-				}
+				checkNumericHit(t, c.text, i, s, c.want[i])
 			}
 		})
 	}
