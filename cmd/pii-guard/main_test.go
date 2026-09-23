@@ -1,11 +1,21 @@
 package main
 
 import (
+	"context"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"pii-guard/internal/api"
 	"pii-guard/internal/config"
+	"pii-guard/internal/engine"
+	"pii-guard/internal/metrics"
 	"pii-guard/internal/pii"
+	"pii-guard/internal/store"
 )
 
 // Перечитывание настроек обязано пересобирать детектор своих типов.
@@ -110,5 +120,116 @@ func TestCustomRulesCarriesEveryField(t *testing.T) {
 		t.Error("требование якоря потеряно")
 	case r.AnchorWindow != 24:
 		t.Errorf("окно якоря: %d", r.AnchorWindow)
+	}
+}
+
+// dobCount считает фрагменты даты рождения в результате разбора.
+func dobCount(spans []pii.Span) int {
+	n := 0
+	for _, s := range spans {
+		if s.Type == pii.TypeDOB {
+			n++
+		}
+	}
+	return n
+}
+
+// Перечитывание настроек обязано менять режим дат по умолчанию на лету:
+// ослабление режима начинает находить даты без якоря без перезапуска.
+//
+// Раньше детектор дат собирался один раз при запуске, и ослабление режима не
+// действовало до перезапуска: движок лишь дополнительно фильтровал, поэтому
+// ужесточение работало, а ослабление нет.
+func TestApplyConfigChangesDateMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	write := func(mode string) {
+		t.Helper()
+		cfg := "server:\n  http: \":0\"\n" +
+			"defaults:\n  date_without_anchor: " + mode + "\n" +
+			"systems:\n  alfasonar:\n    enabled: true\n    auth: none\n    types: [all]\n"
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatalf("настройки не записаны: %v", err)
+		}
+	}
+	write("anchor_only")
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("настройки не разобрались: %v", err)
+	}
+	st, err := store.New(store.Config{Key: make([]byte, 32), TTL: time.Hour, MaxRecords: 100})
+	if err != nil {
+		t.Fatalf("хранилище не создалось: %v", err)
+	}
+	t.Cleanup(st.Close)
+
+	reg := pii.NewRegistry()
+	reg.Register(pii.NewNumericDetector(), pii.NewEmailDetector(), pii.NewFIODetector())
+	dateDet := pii.NewDateDetector(cfg.Defaults.DateWithoutAnchor)
+	reg.Register(dateDet)
+	eng := engine.New(reg)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := api.New(cfg, st, eng, metrics.New(), log)
+
+	apply := newConfigApplier(path, srv, eng, reg, dateDet, log)
+
+	text := "Клиент Иванов Иван Иванович, 12.03.1985"
+	// В строгом режиме дата без якоря не находится.
+	if got := dobCount(reg.Detect(pii.NewDoc(text))); got != 0 {
+		t.Fatalf("в строгом режиме найдена дата без якоря: %d фрагментов", got)
+	}
+
+	// Ослабляем режим и применяем настройки: дата обязана начать находиться.
+	write("pii_context")
+	if err := apply("test"); err != nil {
+		t.Fatalf("настройки не применены: %v", err)
+	}
+	if got := dobCount(reg.Detect(pii.NewDoc(text))); got != 1 {
+		t.Fatalf("после ослабления режима дата не найдена: %d фрагментов", got)
+	}
+}
+
+// Наблюдение за файлом обязано завершаться вместе с сервисом: без контекста
+// горутина жила бы после остановки и держала бы файл настроек открытым.
+func TestWatchConfigStopsOnContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("systems:\n  alfasonar:\n    enabled: true\n"), 0o600); err != nil {
+		t.Fatalf("настройки не записаны: %v", err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	apply := func(string) error { return nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		watchConfig(ctx, path, apply, log, make(chan os.Signal))
+		close(done)
+	}()
+
+	// Отмена контекста обязана завершить наблюдение.
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("наблюдение не завершилось после отмены контекста")
+	}
+}
+
+// restartRequiredChanges обязана называть изменённые поля, которые требуют
+// перезапуска, и молчать о тех, что применяются на лету. На этом сравнении
+// держится честный журнал: сервис не говорит «применены» про то, чего не
+// сделал.
+func TestRestartRequiredChanges(t *testing.T) {
+	old := &config.Config{}
+	new := &config.Config{}
+	// Поле, требующее перезапуска.
+	new.Server.WriteTimeout = 10 * time.Second
+	// Поле, применяемое на лету: его в списке быть не должно.
+	new.Defaults.DateWithoutAnchor = "any"
+
+	fields := restartRequiredChanges(old, new)
+	if len(fields) != 1 || fields[0] != "server.write_timeout" {
+		t.Fatalf("поля: %v, ожидалось только server.write_timeout", fields)
 	}
 }
