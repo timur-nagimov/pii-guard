@@ -615,6 +615,12 @@ func restorePlaceholders(text string, back map[string]string) string {
 			}
 			pairs = append(pairs, pair{variant, quoted})
 		}
+		// Подстановка synthetic — настоящее имя, которое модель может
+		// просклонять в ответе. Склонённые формы подстановки тоже заменяются
+		// исходным значением, иначе восстановление потеряет данные.
+		for _, declined := range mask.DeclineVariants(token) {
+			pairs = append(pairs, pair{declined, quoted})
+		}
 	}
 	if len(pairs) == 0 {
 		return text

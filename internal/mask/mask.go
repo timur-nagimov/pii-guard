@@ -71,6 +71,13 @@ type Options struct {
 type TokenState struct {
 	counters   map[pii.Type]int
 	valueToken map[string]string
+	// synthetic — соответствие «значение → подстановка» для вида synthetic.
+	// Нужно, чтобы одно и то же значение в одном запросе всегда получало одну
+	// и ту же подстановку, а разные значения не сталкивались.
+	synthetic map[string]string
+	// syntheticUsed — уже выданные подстановки, чтобы избежать коллизий в
+	// пределах запроса.
+	syntheticUsed map[string]bool
 }
 
 // PresetFor возвращает пресет для типа с учётом переопределений.
@@ -109,13 +116,19 @@ func Apply(text string, spans []pii.Span, opts Options) Result {
 	res := Result{}
 	counters := make(map[pii.Type]int)
 	valueToken := make(map[string]string)
+	synthetic := make(map[string]string)
+	syntheticUsed := make(map[string]bool)
 	if opts.Shared != nil {
 		if opts.Shared.counters == nil {
 			opts.Shared.counters = make(map[pii.Type]int)
 			opts.Shared.valueToken = make(map[string]string)
+			opts.Shared.synthetic = make(map[string]string)
+			opts.Shared.syntheticUsed = make(map[string]bool)
 		}
 		counters = opts.Shared.counters
 		valueToken = opts.Shared.valueToken
+		synthetic = opts.Shared.synthetic
+		syntheticUsed = opts.Shared.syntheticUsed
 	}
 
 	prev := 0
@@ -138,6 +151,23 @@ func Apply(text string, spans []pii.Span, opts Options) Result {
 				res.Placeholders = append(res.Placeholders, Placeholder{Token: tok, Value: value, Type: s.Type})
 			}
 			b.WriteString(tok)
+		case PresetSynthetic:
+			key := string(s.Type) + "\x00" + value
+			sub, seen := synthetic[key]
+			if !seen {
+				seed := hashValue(value)
+				sub = syntheticValue(value, s.Type, seed)
+				// Разные значения не должны сталкиваться в пределах запроса:
+				// при совпадении подстановка пересчитывается с другим сидом.
+				for syntheticUsed[sub] {
+					seed++
+					sub = syntheticValue(value, s.Type, seed)
+				}
+				synthetic[key] = sub
+				syntheticUsed[sub] = true
+				res.Placeholders = append(res.Placeholders, Placeholder{Token: sub, Value: value, Type: s.Type})
+			}
+			b.WriteString(sub)
 		default:
 			b.WriteString(maskValue(value, preset))
 		}
@@ -158,11 +188,6 @@ func maskValue(value string, preset Preset) string {
 		return maskPartial(value)
 	case PresetInitials:
 		return maskInitials(value)
-	case PresetSynthetic:
-		// Правдоподобная подстановка — отдельный пресет со своим словарём.
-		// Пока он не подключён, значение маскируется полностью: это никогда
-		// не приводит к утечке.
-		return maskRunes(value, false)
 	default:
 		return maskRunes(value, false)
 	}
