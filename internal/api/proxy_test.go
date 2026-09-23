@@ -558,6 +558,31 @@ func TestRestorePlaceholdersDeterministic(t *testing.T) {
 	}
 }
 
+// TestRestoreDeclinedSyntheticFIO проверяет, что восстановление подстановки
+// synthetic работает, когда модель просклоняла имя в ответе: родительный и
+// дательный падежи заменяются исходным значением.
+func TestRestoreDeclinedSyntheticFIO(t *testing.T) {
+	back := map[string]string{
+		"Киселев Пахом Сергеевич": "Иванов Иван Иванович",
+	}
+	cases := []struct {
+		name string
+		text string
+		want string
+	}{
+		{"родительный падеж", "Клиент Киселева Пахома Сергеевича", "Клиент Иванов Иван Иванович"},
+		{"дательный падеж", "Клиент Киселеву Пахому Сергеевичу", "Клиент Иванов Иван Иванович"},
+		{"начальная форма", "Клиент Киселев Пахом Сергеевич", "Клиент Иванов Иван Иванович"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := restorePlaceholders(c.text, back); got != c.want {
+				t.Fatalf("восстановление дало %q, ожидалось %q", got, c.want)
+			}
+		})
+	}
+}
+
 // TestProxyMethodNotAllowed проверяет, что ручка прокси принимает только POST.
 func TestProxyMethodNotAllowed(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
