@@ -24,6 +24,7 @@ deploy/terraform/.terraform.lock.hcl
 /sonar
 /score
 /pii-guard
+/loadgen
 reports/
 
 # Пробы из чужих наборов не выкладываются: лицензии не объявлены.
