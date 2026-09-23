@@ -44,12 +44,12 @@ func NewMemory(cfg Config) (*MemoryStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newMemoryWithCodec(c, cfg), nil
+	return newMemoryWithCodec(c, &cfg), nil
 }
 
 // newMemoryWithCodec собирает хранилище на готовом шифровании. Нужен, чтобы
 // память и общее хранилище пользовались одним ключом.
-func newMemoryWithCodec(c *codec, cfg Config) *MemoryStore {
+func newMemoryWithCodec(c *codec, cfg *Config) *MemoryStore {
 	ttl := cfg.TTL
 	if ttl <= 0 {
 		ttl = defaultTTL
@@ -168,7 +168,7 @@ func (s *MemoryStore) sweepLoop() {
 func (s *MemoryStore) sweep() {
 	now := time.Now()
 	removed := 0
-	for _, sh := range s.shards {
+	for _, sh := range &s.shards {
 		sh.mu.Lock()
 		for id, e := range sh.data {
 			if now.After(e.ExpiresAt) {
@@ -196,7 +196,7 @@ func (s *MemoryStore) evictOldest() {
 	var oldestShard *shard
 	var oldestID string
 	var oldest time.Time
-	for _, sh := range s.shards {
+	for _, sh := range &s.shards {
 		sh.mu.Lock()
 		id, exp := oldestIn(sh.data)
 		if id != "" && (oldest.IsZero() || exp.Before(oldest)) {

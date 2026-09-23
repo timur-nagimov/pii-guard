@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sort"
@@ -54,107 +55,217 @@ func (c *counters) noteError(msg string) {
 	c.errSeen[msg]++
 }
 
-func main() {
-	url := flag.String("url", "http://127.0.0.1:8080", "адрес сервиса")
-	dataset := flag.String("dataset", "", "файл с текстами, по строке JSON на элемент")
-	rps := flag.Int("rps", 1000, "целевая частота запросов в секунду, ноль означает без ограничения")
-	duration := flag.Duration("duration", 30*time.Second, "длительность прогона")
-	workers := flag.Int("workers", 256, "число одновременных отправителей")
-	payload := flag.Int("payload", 0, "размер текста в байтах; если задан, набор не используется")
-	seed := flag.Uint64("seed", 42, "начальное значение для выбора текстов")
-	flag.Parse()
+// flags собирает ключи запуска.
+type flags struct {
+	url      string
+	dataset  string
+	rps      int
+	duration time.Duration
+	workers  int
+	payload  int
+	seed     uint64
+}
 
-	target := strings.TrimRight(*url, "/") + "/process"
-	texts, err := loadTexts(*dataset, *payload)
-	if err != nil {
+func main() {
+	f := parseFlags()
+	if err := run(f); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), *duration)
+// parseFlags читает ключи запуска.
+func parseFlags() flags {
+	var f flags
+	flag.StringVar(&f.url, "url", "http://127.0.0.1:8080", "адрес сервиса")
+	flag.StringVar(&f.dataset, "dataset", "", "файл с текстами, по строке JSON на элемент")
+	flag.IntVar(&f.rps, "rps", 1000, "целевая частота запросов в секунду, ноль означает без ограничения")
+	flag.DurationVar(&f.duration, "duration", 30*time.Second, "длительность прогона")
+	flag.IntVar(&f.workers, "workers", 256, "число одновременных отправителей")
+	flag.IntVar(&f.payload, "payload", 0, "размер текста в байтах; если задан, набор не используется")
+	flag.Uint64Var(&f.seed, "seed", 42, "начальное значение для выбора текстов")
+	flag.Parse()
+	return f
+}
+
+// run выполняет прогон целиком: берёт тексты, подаёт нагрузку, печатает итог.
+func run(f flags) error {
+	target, err := processURL(f.url)
+	if err != nil {
+		return err
+	}
+	texts, err := loadTexts(f.dataset, f.payload)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := runContext(f.duration)
 	defer cancel()
+
+	var c counters
+	l := &loadRun{
+		client:   newClient(f.workers),
+		target:   target,
+		texts:    texts,
+		interval: sendInterval(f.rps, f.workers),
+		seed:     f.seed,
+		c:        &c,
+	}
+	latencies, elapsed := l.run(ctx, f.workers)
+	printReport(&c, sortedLatencies(latencies), f.rps, elapsed)
+	return nil
+}
+
+// processURL дописывает путь ручки и проверяет схему адреса. Схему проверяем
+// не из недоверия к оператору, а потому что опечатка в ключе запуска
+// выглядела бы как отказ стенда: запрос не ушёл бы никуда, а в итоге прогона
+// это читается как «сервис не отвечает».
+func processURL(raw string) (string, error) {
+	trimmed := strings.TrimRight(raw, "/")
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("не разобрать адрес сервиса %q: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("адрес сервиса должен начинаться с http:// или https://, задано %q", raw)
+	}
+	return trimmed + "/process", nil
+}
+
+// runContext обрывает прогон по времени и по сигналу остановки: нагрузку
+// нередко прекращают руками, и оборванные на полпути запросы не должны
+// попадать в счётчик ошибок.
+func runContext(d time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-stop
 		cancel()
 	}()
+	return ctx, cancel
+}
 
-	client := &http.Client{
+// newClient держит пул соединений под число отправителей. Пул меньше их числа
+// превратил бы прогон в измерение очереди за соединением, а не предела сервиса.
+func newClient(workers int) *http.Client {
+	return &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
-			MaxIdleConns:        *workers * 2,
-			MaxIdleConnsPerHost: *workers * 2,
-			MaxConnsPerHost:     *workers * 2,
+			MaxIdleConns:        workers * 2,
+			MaxIdleConnsPerHost: workers * 2,
+			MaxConnsPerHost:     workers * 2,
 			IdleConnTimeout:     60 * time.Second,
 		},
 	}
+}
 
-	var c counters
-	latencies := make([][]time.Duration, *workers)
+// sendInterval считает паузу между запросами одного отправителя.
+//
+// Интервал между запросами одного отправителя подобран так, чтобы вместе
+// они давали заданную частоту. При нулевой частоте отправители работают
+// без пауз и показывают предел связки.
+func sendInterval(rps, workers int) time.Duration {
+	if rps <= 0 {
+		return 0
+	}
+	return time.Duration(float64(workers) / float64(rps) * float64(time.Second))
+}
+
+// loadRun — общее для всех отправителей: куда слать, что слать и куда
+// складывать итоги. Собирается один раз, чтобы каждый отправитель не таскал
+// один и тот же набор параметров по отдельности.
+type loadRun struct {
+	client   *http.Client
+	target   string
+	texts    []string
+	interval time.Duration
+	seed     uint64
+	c        *counters
+}
+
+// run поднимает отправителей и ждёт конца прогона. Задержки собираются в
+// отдельный ряд на отправителя: общий ряд под замком стоил бы дороже самой
+// отправки и занизил бы измеряемый предел.
+func (l *loadRun) run(ctx context.Context, workers int) (perWorker [][]time.Duration, elapsed time.Duration) {
+	perWorker = make([][]time.Duration, workers)
 	var wg sync.WaitGroup
 	started := time.Now()
-
-	// Интервал между запросами одного отправителя подобран так, чтобы вместе
-	// они давали заданную частоту. При нулевой частоте отправители работают
-	// без пауз и показывают предел связки.
-	var interval time.Duration
-	if *rps > 0 {
-		interval = time.Duration(float64(*workers) / float64(*rps) * float64(time.Second))
-	}
-
-	for w := 0; w < *workers; w++ {
+	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			rnd := rand.New(rand.NewPCG(*seed, uint64(id)))
-			local := make([]time.Duration, 0, 4096)
-			next := time.Now()
-			for ctx.Err() == nil {
-				if interval > 0 {
-					next = next.Add(interval)
-					if d := time.Until(next); d > 0 {
-						select {
-						case <-time.After(d):
-						case <-ctx.Done():
-							break
-						}
-					}
-				}
-				text := texts[rnd.IntN(len(texts))]
-				id := fmt.Sprintf("load-%d-%d", id, c.sent.Add(1))
-				lat, status, sendErr := send(ctx, client, target, text, id)
-				if ctx.Err() != nil {
-					// Прогон закончился: запрос оборвал не сервис, а мы сами,
-					// и считать это сбоем нельзя.
-					break
-				}
-				if sendErr != nil {
-					c.noteError(sendErr.Error())
-				}
-				switch {
-				case status == http.StatusOK:
-					c.ok.Add(1)
-					local = append(local, lat)
-				case status == http.StatusTooManyRequests:
-					c.throttled.Add(1)
-				default:
-					c.failed.Add(1)
-				}
-			}
-			latencies[id] = local
+			perWorker[id] = l.worker(ctx, id)
 		}(w)
 	}
 	wg.Wait()
-	elapsed := time.Since(started)
+	return perWorker, time.Since(started)
+}
 
+// worker шлёт запросы до конца прогона и возвращает задержки удачных ответов.
+func (l *loadRun) worker(ctx context.Context, id int) []time.Duration {
+	// Отправитель выбирает тексты по своему зерну: прогон с тем же ключом
+	// должен повторяться дословно, иначе замеры не сравнить между собой.
+	rnd := rand.New(rand.NewPCG(l.seed, uint64(id))) //nolint:gosec // воспроизводимость важнее криптостойкости
+	local := make([]time.Duration, 0, 4096)
+	next := time.Now()
+	for ctx.Err() == nil {
+		if l.interval > 0 {
+			next = next.Add(l.interval)
+			waitTurn(ctx, time.Until(next))
+		}
+		text := l.texts[rnd.IntN(len(l.texts))]
+		reqID := fmt.Sprintf("load-%d-%d", id, l.c.sent.Add(1))
+		lat, status, sendErr := send(ctx, l.client, l.target, text, reqID)
+		if ctx.Err() != nil {
+			// Прогон закончился: запрос оборвал не сервис, а мы сами,
+			// и считать это сбоем нельзя.
+			break
+		}
+		if sendErr != nil {
+			l.c.noteError(sendErr.Error())
+		}
+		switch status {
+		case http.StatusOK:
+			l.c.ok.Add(1)
+			local = append(local, lat)
+		case http.StatusTooManyRequests:
+			l.c.throttled.Add(1)
+		default:
+			l.c.failed.Add(1)
+		}
+	}
+	return local
+}
+
+// waitTurn выдерживает паузу до следующего запроса. Конец прогона паузу
+// прерывает, но сам по себе цикл не останавливает: решение о выходе принимает
+// отправитель по итогу очередного запроса.
+func waitTurn(ctx context.Context, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	select {
+	case <-time.After(d):
+	case <-ctx.Done():
+	}
+}
+
+// sortedLatencies сводит задержки всех отправителей в один упорядоченный ряд:
+// доли считаются по прогону целиком, а не по отдельному отправителю.
+func sortedLatencies(perWorker [][]time.Duration) []time.Duration {
 	var all []time.Duration
-	for _, l := range latencies {
+	for _, l := range perWorker {
 		all = append(all, l...)
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i] < all[j] })
+	return all
+}
 
-	fmt.Printf("частота: цель %d, достигнуто %.0f запросов в секунду\n", *rps, float64(c.ok.Load()+c.throttled.Load()+c.failed.Load())/elapsed.Seconds())
+// printReport печатает итог прогона. Причины сбоев идут отдельной строкой:
+// без них потолок пропускной способности легко спутать с отказом отправителя.
+func printReport(c *counters, all []time.Duration, rps int, elapsed time.Duration) {
+	fmt.Printf("частота: цель %d, достигнуто %.0f запросов в секунду\n", rps, float64(c.ok.Load()+c.throttled.Load()+c.failed.Load())/elapsed.Seconds())
 	fmt.Printf("успешно %d, отказов с просьбой повторить %d, ошибок %d\n", c.ok.Load(), c.throttled.Load(), c.failed.Load())
 	c.errMu.Lock()
 	for msg, n := range c.errSeen {
@@ -167,18 +278,20 @@ func main() {
 	}
 }
 
-func send(ctx context.Context, client *http.Client, url, text, id string) (time.Duration, int, error) {
+func send(ctx context.Context, client *http.Client, target, text, id string) (time.Duration, int, error) {
 	body, err := json.Marshal(map[string]string{"payload": text, "payload_id": id})
 	if err != nil {
 		return 0, 0, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		return 0, 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	start := time.Now()
-	resp, err := client.Do(req)
+	// Адрес стенда задаёт оператор ключом запуска, а схема проверена при
+	// разборе ключей: чужому адресу взяться здесь неоткуда.
+	resp, err := client.Do(req) //nolint:gosec // адрес стенда задаёт оператор ключом запуска
 	if err != nil {
 		return 0, 0, err
 	}

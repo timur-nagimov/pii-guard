@@ -166,7 +166,7 @@ func (s *Stats) Finish() {
 
 // Observe учитывает выполненный запрос и сообщает, можно ли продолжать прогон.
 // Возвращает false, когда набралась серия из пяти невалидных ответов подряд.
-func (s *Stats) Observe(resp Response) bool {
+func (s *Stats) Observe(resp *Response) bool {
 	s.mu.Lock()
 	for _, at := range resp.Attempts {
 		if at.Aborted {
@@ -192,7 +192,7 @@ func (s *Stats) Observe(resp Response) bool {
 
 // ObserveProbe учитывает проверку устойчивости, не влияя на счётчик серии:
 // такие запросы проверяющая система не шлёт, и её правила к ним не применимы.
-func (s *Stats) ObserveProbe(resp Response) {
+func (s *Stats) ObserveProbe(resp *Response) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, at := range resp.Attempts {

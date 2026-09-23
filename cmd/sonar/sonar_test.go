@@ -296,7 +296,7 @@ func TestScoreMaskingSameLength(t *testing.T) {
 	}
 	masked := "client " + strings.Repeat("*", 6) + ", card " + strings.Repeat("*", 19)
 
-	sc := ScoreMasking(sample, masked)
+	sc := ScoreMasking(&sample, masked)
 	if !sc.Exact {
 		t.Fatal("длины совпадают, оценка должна быть точной")
 	}
@@ -322,7 +322,7 @@ func TestScoreMaskingUntouched(t *testing.T) {
 		Text:      "телефон +79991234567 записан",
 		Fragments: []Fragment{{Start: len("телефон "), End: len("телефон +79991234567"), Type: "PHONE", Value: "+79991234567"}},
 	}
-	sc := ScoreMasking(sample, sample.Text)
+	sc := ScoreMasking(&sample, sample.Text)
 	if sc.Fragments[0].Distance != 0 || sc.Fragments[0].Changed {
 		t.Fatalf("нетронутый фрагмент должен давать ноль, получено %f", sc.Fragments[0].Distance)
 	}
@@ -335,7 +335,7 @@ func TestScoreMaskingOutsideNoise(t *testing.T) {
 		Text:      "заказ 12345 сумма 1000",
 		Fragments: []Fragment{{Start: 0, End: len("заказ"), Type: "ORDER", Value: "заказ"}},
 	}
-	sc := ScoreMasking(sample, "заказ ***** сумма 1000")
+	sc := ScoreMasking(&sample, "заказ ***** сумма 1000")
 	if sc.OutsideChangedBytes != 5 {
 		t.Fatalf("вне фрагментов изменено %d байт, ожидалось 5", sc.OutsideChangedBytes)
 	}
@@ -347,7 +347,7 @@ func TestScoreMaskingShifted(t *testing.T) {
 		Text:      "клиент Иванов Иван Иванович, счёт открыт",
 		Fragments: []Fragment{{Start: len("клиент "), End: len("клиент Иванов Иван Иванович"), Type: "FIO", Value: "Иванов Иван Иванович"}},
 	}
-	sc := ScoreMasking(sample, "клиент [FIO_1], счёт открыт")
+	sc := ScoreMasking(&sample, "клиент [FIO_1], счёт открыт")
 	if sc.Exact {
 		t.Fatal("длины разные, оценка не может быть точной")
 	}
@@ -493,7 +493,7 @@ func TestWriteReports(t *testing.T) {
 		},
 		Demask: DemaskReport{Total: 1, Exact: 1, ExactShare: 1},
 	}
-	if err := WriteReports(dir, rep); err != nil {
+	if err := WriteReports(dir, &rep); err != nil {
 		t.Fatalf("отчёты не записаны: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "report.json"))
@@ -594,7 +594,7 @@ func maskingStub() http.HandlerFunc {
 	var store atomic.Pointer[map[string]entry]
 	initial := map[string]entry{}
 	store.Store(&initial)
-	var mu chanMutex = make(chanMutex, 1)
+	mu := make(chanMutex, 1)
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req processRequest
@@ -653,7 +653,7 @@ func TestStatsIgnoresAborted(t *testing.T) {
 		Attempts: []Attempt{{Aborted: true, Latency: 5 * time.Second}},
 	}
 	for i := 0; i < 10; i++ {
-		if !stats.Observe(aborted) {
+		if !stats.Observe(&aborted) {
 			t.Fatal("оборванный запрос не должен останавливать прогон")
 		}
 	}
