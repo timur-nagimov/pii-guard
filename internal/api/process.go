@@ -92,20 +92,9 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	result, dir, code, err := s.processOne(id, payload, sys, cfg)
 	if err != nil {
-		// Профиль проверяющей системы никогда не отвечает пятисотой ошибкой:
-		// пять подряд невалидных ответов останавливают весь прогон.
-		if sys.ErrorMode(cfg.Defaults) == config.OnErrorOpen {
-			took := time.Since(started)
-			s.metrics.ObserveDegraded(sys.Name)
-			w.Header().Set("X-PII-Degraded", "1")
-			s.writeJSON(w, http.StatusOK, processResponse{Result: payload})
-			s.logProcess(r, sys.Name, id, dirMask, len(payload), nil, took, true)
-			// Текст ушёл назад неизменённым, то есть персональные данные в нём
-			// остались. Для отчётности это событие важнее удачного
-			// маскирования, поэтому в аудит оно идёт обязательно.
-			s.auditProcess(r, sys, id, dirMask, len(payload), nil, took, "degraded")
-			return
-		}
+		// Сбой обработки, при котором частичного результата нет: хранилище
+		// недоступно или обработчик упал вне детекторов. Открытый текст не
+		// возвращается ни в каком режиме: персональные данные не выходят наружу.
 		w.Header().Set("Retry-After", "1")
 		s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "временная ошибка обработки")
 		return
@@ -120,9 +109,27 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	took := time.Since(started)
+	// Деградация: часть детекторов или кусков отказала, текст обработан
+	// остальными. В щадящем режиме отдаём частичную маску с признаком
+	// деградации, в строгом — просим повторить. Открытый текст не отдаётся
+	// ни в одном из режимов.
+	if result.degraded {
+		if sys.ErrorMode(cfg.Defaults) == config.OnErrorClosed {
+			w.Header().Set("Retry-After", "1")
+			s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "временная ошибка обработки")
+			return
+		}
+		s.metrics.ObserveDegraded(sys.Name)
+		w.Header().Set("X-PII-Degraded", "1")
+		s.writeJSON(w, http.StatusOK, processResponse{Result: result.text})
+		s.logProcess(r, sys.Name, id, dir, len(payload), result.counts, took, true, result.failedTypes)
+		s.auditProcess(r, sys, id, dir, len(payload), result.counts, took, "degraded")
+		return
+	}
+
 	s.writeJSON(w, http.StatusOK, processResponse{Result: result.text})
 	s.metrics.ObserveProcess(sys.Name, string(dir), took, len(payload), result.counts)
-	s.logProcess(r, sys.Name, id, dir, len(payload), result.counts, took, false)
+	s.logProcess(r, sys.Name, id, dir, len(payload), result.counts, took, false, nil)
 	s.auditProcess(r, sys, id, dir, len(payload), result.counts, took, "ok")
 }
 
@@ -151,6 +158,12 @@ func (s *Server) auditProcess(r *http.Request, sys config.System, payloadID stri
 type outcome struct {
 	text   string
 	counts map[string]int
+	// degraded — признак того, что часть детекторов или кусков отказала и
+	// текст обработан не полностью.
+	degraded bool
+	// failedTypes — имена типов, чьи детекторы отказали. Только имена, без
+	// значений: список безопасно писать в журнал.
+	failedTypes []string
 }
 
 // processOne определяет направление и выполняет маскирование либо обратное
@@ -218,13 +231,13 @@ func (s *Server) maskAndStore(id, payload string, sys config.System, cfg *config
 	if _, err := s.store.Put(id, payload, res.Text, sys.Name, res.Meta()); err != nil {
 		return outcome{}, err
 	}
-	return outcome{text: res.Text, counts: countsToStrings(res)}, nil
+	return outcome{text: res.Text, counts: countsToStrings(res), degraded: res.Degraded, failedTypes: res.FailedTypes}, nil
 }
 
 // maskOnly маскирует текст, не трогая хранилище.
 func (s *Server) maskOnly(payload string, sys config.System, cfg *config.Config) outcome {
 	res := s.engine.Mask(payload, sys, cfg.Defaults)
-	return outcome{text: res.Text, counts: countsToStrings(res)}
+	return outcome{text: res.Text, counts: countsToStrings(res), degraded: res.Degraded, failedTypes: res.FailedTypes}
 }
 
 // countsOf восстанавливает число фрагментов по метаданным записи.
