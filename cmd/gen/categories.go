@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // categorySpec — категория набора: имя, относительный вес в выпуске и
 // порождающая функция.
@@ -30,10 +33,17 @@ func compositeCategories() []categorySpec {
 		{name: "mixed", weight: 10, gen: genMixed},
 		{name: "case_variants", weight: 4, gen: genCaseVariants},
 		{name: "latin", weight: 4, gen: genLatin},
+		{name: "latin_names", weight: 4, gen: genLatinNames},
+		{name: "intl_phone", weight: 4, gen: genIntlPhone},
+		{name: "english_anchor", weight: 4, gen: genEnglishAnchor},
+		{name: "mixed_anchor", weight: 4, gen: genMixedAnchor},
 		{name: "anchored_invalid_checksum", weight: 5, gen: genInvalidChecksum},
 		{name: "date_no_anchor", weight: 4, gen: genDateNoAnchor},
 		{name: "table", weight: 6, gen: genTable},
 		{name: "typos", weight: 4, gen: genTypos},
+		{name: "noise", weight: 4, gen: genNoise},
+		{name: "latin_mixed", weight: 4, gen: genLatinMixed},
+		{name: "long_64k", weight: 2, gen: genLong64k},
 	}
 }
 
@@ -86,6 +96,19 @@ func negativeCategories() []categorySpec {
 		{name: "neg_confirm_code", gen: negConfirmCode, negative: true},
 		{name: "neg_flight_number", gen: negFlightNumber, negative: true},
 		{name: "neg_track_number", gen: negTrackNumber, negative: true},
+		{name: "neg_vehicle_plate", gen: negVehiclePlate, negative: true},
+		{name: "neg_imei", gen: negIMEI, negative: true},
+		{name: "neg_serial_number", gen: negSerialNumber, negative: true},
+		{name: "neg_insurance_policy", gen: negInsurancePolicy, negative: true},
+		{name: "neg_medical_card", gen: negMedicalCard, negative: true},
+		{name: "neg_student_ticket", gen: negStudentTicket, negative: true},
+		{name: "neg_employee_badge", gen: negEmployeeBadge, negative: true},
+		{name: "neg_room_number", gen: negRoomNumber, negative: true},
+		{name: "neg_route_number", gen: negRouteNumber, negative: true},
+		{name: "neg_historical_figure", gen: negHistoricalFigure, negative: true},
+		{name: "neg_poet_verse", gen: negPoetVerse, negative: true},
+		{name: "neg_company_inn", gen: negCompanyINN, negative: true},
+		{name: "neg_contract_number", gen: negContractNumber, negative: true},
 	}
 }
 
@@ -262,11 +285,51 @@ func (g *Generator) Each(n int, fn func(Record) error) error {
 		// Префикс источника в идентификаторе: набор склеивается из нескольких
 		// источников, и одинаковых номеров между ними быть не должно.
 		id := fmt.Sprintf("%s-%s-%06d", sourceSynthetic, c.name, i)
-		if err := fn(buildRecord(id, c.name, c.gen(g))); err != nil {
+		r := buildRecord(id, c.name, c.gen(g))
+		if g.lowercase {
+			r = lowerRecord(r)
+		}
+		if err := fn(r); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// lowerRecord переводит запись в нижний регистр и пересчитывает разметку.
+// Срез в нижнем регистре проверяет требование независимости от регистра:
+// детектор обязан находить данные и в тексте, где всё строчными. Перевод в
+// нижний регистр сохраняет длину строки в байтах для кириллицы и латиницы,
+// но разметка пересчитывается заново по значениям, чтобы не полагаться на
+// это свойство.
+func lowerRecord(r Record) Record {
+	text := strings.ToLower(r.Text)
+	spans := make([]Span, 0, len(r.Spans))
+	values := make([]string, 0, len(r.Values))
+	for i, s := range r.Spans {
+		v := strings.ToLower(r.Values[i])
+		// Значение ищется от конца предыдущего фрагмента: порядок в тексте
+		// сохраняется, и поиск не может заскочить вперёд.
+		from := 0
+		if len(spans) > 0 {
+			from = spans[len(spans)-1].End
+		}
+		idx := strings.Index(text[from:], v)
+		if idx < 0 {
+			// Если значение не нашлось, оставляем исходные границы: они верны,
+			// потому что длина строки при переводе в нижний регистр не меняется.
+			spans = append(spans, s)
+			values = append(values, v)
+			continue
+		}
+		start := from + idx
+		spans = append(spans, Span{Start: start, End: start + len(v), Type: s.Type})
+		values = append(values, v)
+	}
+	r.Text = text
+	r.Spans = spans
+	r.Values = values
+	return r
 }
 
 // Generate порождает n записей в память. Используется тестами и мелкими

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("Email: solovev-m@gmail.com. Ответ направим в течение трёх рабочих дней.")

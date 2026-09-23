@@ -182,8 +182,20 @@ func (s *ctxScan) spanText(i int) string {
 	return s.d.Text[sp.Start:sp.End]
 }
 
+// spanInBounds сообщает, что границы фрагмента лежат в пределах текста.
+// Фрагмент с испорченными границами нельзя разбирать: срез по нему упал бы.
+func (s *ctxScan) spanInBounds(i int) bool {
+	sp := s.spans[i]
+	return sp.Start >= 0 && sp.End <= len(s.d.Text) && sp.End > sp.Start
+}
+
 // typeRules применяет правила, зависящие от типа фрагмента.
 func (s *ctxScan) typeRules(i int) string {
+	// Фрагмент с испорченными границами не разбирается: срез по нему упал бы
+	// за границы текста. Такой фрагмент оставляем как есть, не снимая.
+	if !s.spanInBounds(i) {
+		return ""
+	}
 	if ctxIsIPv4(s.spanText(i)) {
 		return reasonNetworkAddress
 	}
@@ -548,7 +560,7 @@ func (s *ctxScan) markOrgAddresses() {
 	}
 	var addrs []int
 	for i, sp := range s.spans {
-		if sp.Type == TypeAddress && s.reasons[i] == "" {
+		if sp.Type == TypeAddress && s.reasons[i] == "" && s.spanInBounds(i) {
 			addrs = append(addrs, i)
 		}
 	}

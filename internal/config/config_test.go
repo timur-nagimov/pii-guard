@@ -162,11 +162,17 @@ systems:
 	}
 }
 
-// TestEnvExpansionMissing проверяет, что незаданная переменная окружения не
-// превращается в систему с пустым ключом: такая система пускала бы всех.
+// TestEnvExpansionMissing проверяет главное свойство: система, у которой
+// переменная окружения с хешем ключа не задана, НЕ ДОЛЖНА пускать запросы.
+// Пустой хеш означал бы, что подойдёт любой ключ, то есть система открыта.
+//
+// Способ, которым свойство обеспечивается, поменялся. Раньше настройки
+// отвергались целиком, и свежий клон с пустым .env не запускался вовсе.
+// Теперь такая система выключается с предупреждением: свойство сохранено,
+// запуск не ломается. Проверяем именно свойство, а не способ.
 func TestEnvExpansionMissing(t *testing.T) {
 	t.Setenv("TEST_MISSING_KEY_SHA256", "")
-	_, err := Parse([]byte(`
+	cfg, err := Parse([]byte(`
 systems:
   demo:
     enabled: true
@@ -174,11 +180,17 @@ systems:
       header: X-Demo-Key
       key_sha256: "${TEST_MISSING_KEY_SHA256}"
 `))
-	if err == nil {
-		t.Fatal("настройки с пустым хешем ключа приняты")
+	if err != nil {
+		t.Fatalf("настройки должны приниматься, получена ошибка: %v", err)
 	}
-	if !strings.Contains(err.Error(), "хеш ключа") {
-		t.Fatalf("сообщение об ошибке %q не объясняет причину", err)
+	if cfg.Systems["demo"].Enabled {
+		t.Fatal("система с пустым хешем ключа осталась включённой: она пускала бы всех")
+	}
+	if cfg.Systems["demo"].Auth.KeySHA256 != "" {
+		t.Fatal("пустой хеш ключа не должен подменяться значением")
+	}
+	if len(cfg.Warnings) == 0 {
+		t.Fatal("о выключенной системе не предупредили")
 	}
 }
 
@@ -332,17 +344,6 @@ systems:
       FIO: звёздочки
 `,
 			wantErr: "неизвестный пресет",
-		},
-		{
-			name: "система с ключом без хеша",
-			yaml: `
-systems:
-  demo:
-    enabled: true
-    auth:
-      header: X-Demo-Key
-`,
-			wantErr: "не задан хеш ключа доступа",
 		},
 		{
 			name: "хеш ключа неверной длины",
@@ -611,4 +612,157 @@ systems:
 	if _, ok := cfg.System("нет такой"); ok {
 		t.Fatal("найдена система, которой нет")
 	}
+}
+
+// TestSystemWithoutKeyIsDisabled закрепляет поведение, которое важнее удобства:
+// система без ключа доступа ВЫКЛЮЧАЕТСЯ, а не роняет запуск целиком.
+//
+// Прежде настройки отвергались, и свежий клон с пустым .env не стартовал: тот,
+// кто копировал .env.example и запускал по инструкции, получал отказ. При этом
+// анонимный профиль проверяющей системы ключа не требует, то есть контракт
+// работал бы и без остальных.
+//
+// Выключение это безопасное направление. Опасным было бы обратное, включить
+// систему без проверки ключа, и тест проверяет, что этого не происходит.
+func TestSystemWithoutKeyIsDisabled(t *testing.T) {
+	cfg, err := Parse([]byte(`
+systems:
+  anon:
+    enabled: true
+    auth: none
+    types: [all]
+  demo:
+    enabled: true
+    auth:
+      header: X-Demo-Key
+`))
+	if err != nil {
+		t.Fatalf("настройки должны приниматься, получена ошибка: %v", err)
+	}
+
+	if cfg.Systems["demo"].Enabled {
+		t.Error("система без ключа доступа осталась включённой")
+	}
+	if !cfg.Systems["anon"].Enabled {
+		t.Error("анонимная система выключилась, хотя ключа не требует")
+	}
+
+	var found bool
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "demo") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("о выключенной системе не предупредили, предупреждения: %v", cfg.Warnings)
+	}
+}
+
+// TestDuplicateKeyHashRejected закрепляет защиту от случайного поведения.
+// Один хеш ключа у двух систем делает выбор системы зависящим от порядка
+// обхода карты, а он в Go не определён: на одинаковых запросах сервис
+// опознавал бы то одну систему, то другую. Снаружи это выглядит как плавающее
+// поведение без причины.
+func TestDuplicateKeyHashRejected(t *testing.T) {
+	const h = "1111111111111111111111111111111111111111111111111111111111111111"
+	_, err := Parse([]byte(`
+systems:
+  alpha:
+    enabled: true
+    auth:
+      header: X-Key
+      key_sha256: "` + h + `"
+  beta:
+    enabled: true
+    auth:
+      header: X-Key
+      key_sha256: "` + h + `"
+`))
+	if err == nil {
+		t.Fatal("настройки с одинаковым хешем у двух систем приняты")
+	}
+	if !strings.Contains(err.Error(), "делят один хеш") {
+		t.Fatalf("сообщение %q не объясняет причину", err)
+	}
+	// Сообщение должно быть устойчивым: имена перечисляются по порядку.
+	if !strings.Contains(err.Error(), "alpha") || !strings.Contains(err.Error(), "beta") {
+		t.Errorf("в сообщении нет обеих систем: %v", err)
+	}
+}
+
+// TestLimitOrderingChecked закрепляет проверку соотношений между сроками и
+// пределами. По отдельности каждое значение выглядит разумным, а вместе они
+// дают поведение, которое никто не закладывал, и в бою это не видно: сервис
+// работает, просто не так, как написано в документах.
+func TestLimitOrderingChecked(t *testing.T) {
+	t.Run("ожидание дольше срока записи ответа", func(t *testing.T) {
+		// Запрос успеет получить обрыв соединения раньше, чем честный отказ.
+		_, err := Parse([]byte(`
+server:
+  write_timeout: 1s
+limits:
+  inflight: 10
+  heavy_inflight: 2
+  max_wait: 2s
+systems:
+  anon:
+    enabled: true
+    auth: none
+    types: [all]
+`))
+		if err == nil {
+			t.Fatal("настройки приняты, хотя ожидание места дольше срока записи ответа")
+		}
+		if !strings.Contains(err.Error(), "обрыв соединения") {
+			t.Errorf("сообщение %q не объясняет последствие", err)
+		}
+	})
+
+	t.Run("тяжёлый предел не меньше общего", func(t *testing.T) {
+		// Это не ошибка, а бессмыслица: ограничитель ничего не ограничивает.
+		// Поэтому предупреждение, а не отказ.
+		cfg, err := Parse([]byte(`
+server:
+  write_timeout: 9s
+limits:
+  inflight: 10
+  heavy_inflight: 20
+  max_wait: 500ms
+systems:
+  anon:
+    enabled: true
+    auth: none
+    types: [all]
+`))
+		if err != nil {
+			t.Fatalf("настройки должны приниматься с предупреждением, получена ошибка: %v", err)
+		}
+		var found bool
+		for _, w := range cfg.Warnings {
+			if strings.Contains(w, "ничего не ограничивает") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("о бессмысленном ограничителе не предупредили: %v", cfg.Warnings)
+		}
+	})
+
+	t.Run("рабочие настройки принимаются", func(t *testing.T) {
+		if _, err := Parse([]byte(`
+server:
+  write_timeout: 9s
+limits:
+  inflight: 96
+  heavy_inflight: 6
+  max_wait: 500ms
+systems:
+  anon:
+    enabled: true
+    auth: none
+    types: [all]
+`)); err != nil {
+			t.Fatalf("согласованные настройки отвергнуты: %v", err)
+		}
+	})
 }

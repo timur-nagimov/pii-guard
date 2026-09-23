@@ -74,8 +74,17 @@ func main() {
 		stopLog(boot, out)
 		os.Exit(1)
 	}
+	// Предупреждения настроек не мешают работать, но молчать о них нельзя:
+	// выключенная система снаружи выглядит как отказ в доступе без причины.
+	for _, w := range cfg.Warnings {
+		log.Warn("настройки: "+w, logging.Event(logging.EventConfigRejected))
+	}
+
 	if *checkConfig {
 		fmt.Println("настройки корректны")
+		for _, w := range cfg.Warnings {
+			fmt.Println("  предупреждение:", w)
+		}
 		stopLog(boot, out)
 		return
 	}
@@ -523,33 +532,47 @@ func watchConfig(path string, srv *api.Server, eng *engine.Engine, log *slog.Log
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	apply := func(reason string) {
+	// Возвращает признак применения: отклонённые настройки не должны
+	// двигать отметку времени, иначе следующая правка потеряется.
+	apply := func(reason string) bool {
 		cfg, err := config.Load(path)
 		if err != nil {
 			log.Warn("новые настройки отклонены",
 				logging.Event(logging.EventConfigRejected), logging.Component("config"),
 				slog.String("reason", reason), logging.Err(err))
-			return
+			return false
 		}
 		srv.SetConfig(cfg)
 		eng.ResetFilters()
 		log.Info("настройки применены",
 			logging.Event(logging.EventConfigApplied), logging.Component("config"),
 			slog.String("reason", reason), slog.Int("systems", len(cfg.Systems)))
+		return true
 	}
 
 	for {
 		select {
 		case <-sig:
-			apply("signal")
+			_ = apply("signal")
 		case <-ticker.C:
 			st, err := os.Stat(path)
 			if err != nil {
 				continue
 			}
+			// Отметка времени двигается ТОЛЬКО при удачном применении.
+			// Прежний порядок двигал её и при отказе, поэтому исправление,
+			// внесённое в ту же секунду, не подхватывалось: точность времени
+			// изменения на многих файловых системах равна секунде. Оператор
+			// правил опечатку, сервис молчал, и выглядело это так, будто
+			// настройки вообще не перечитываются.
+			//
+			// Побочное следствие: сломанный файл перечитывается каждые пять
+			// секунд, пока его не починят. Журнал от этого не пухнет, потому
+			// что одинаковые записи глушатся повторами.
 			if st.ModTime().After(lastMod) {
-				lastMod = st.ModTime()
-				apply("file_changed")
+				if apply("file_changed") {
+					lastMod = st.ModTime()
+				}
 			}
 		}
 	}

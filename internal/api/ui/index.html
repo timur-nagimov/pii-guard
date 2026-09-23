@@ -174,6 +174,17 @@ button.secondary { background: #fff; color: var(--accent); }
 .g0 { background: var(--g0); }
 
 .legend { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 12px; }
+
+/* Кому принадлежат данные. Каждый человек отдельной карточкой: так видно,
+   что карта осталась у своего, а не растеклась по всему тексту. */
+.subject {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 10px;
+}
+.subject-head { font-weight: 600; margin-bottom: 8px; }
+.subject-items { display: flex; flex-wrap: wrap; gap: 6px 8px; }
 .chip {
   display: inline-flex;
   align-items: center;
@@ -203,7 +214,69 @@ td.num { text-align: right; white-space: nowrap; }
 .verdict.bad { color: var(--bad); }
 .verdict-details { margin-top: 8px; font-size: 13px; color: var(--ink-soft); }
 
+/* Матрица покрытия: строки — типы, столбцы — системы. Таблица плотная,
+   чтобы с одного взгляда было видно дыры и выключенные системы. */
+.coverage-wrap { overflow-x: auto; }
+table.coverage { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.coverage th, table.coverage td {
+  padding: 6px 8px;
+  text-align: center;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+table.coverage th { color: var(--ink-soft); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.02em; }
+table.coverage td.type-name { text-align: left; font-weight: 600; }
+table.coverage td.type-name .src { display: block; font-weight: 400; font-size: 10.5px; color: var(--ink-soft); }
+table.coverage td.hole { background: #fdeceb; color: var(--bad); font-weight: 650; }
+table.coverage td.off { color: var(--ink-soft); }
+table.coverage td.disabled { color: #b0b6bf; text-decoration: line-through; }
+table.coverage td.preset { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+table.coverage td.demask { color: var(--ok); font-weight: 650; }
+table.coverage td.nodemask { color: var(--ink-soft); }
+table.coverage td.conf { color: var(--ink-soft); font-size: 11.5px; }
+.coverage-legend { margin-top: 10px; font-size: 12.5px; color: var(--ink-soft); }
+.coverage-legend b { color: var(--ink); }
+.coverage-legend .hole { color: var(--bad); font-weight: 650; }
+.coverage-legend .demask { color: var(--ok); font-weight: 650; }
+.coverage-legend .custom { color: var(--accent); font-weight: 650; }
+.coverage-legend .src { color: var(--ink-soft); }
+.coverage-meta { margin-top: 10px; font-size: 12.5px; color: var(--ink-soft); }
+.coverage-meta .updated { color: var(--ink-soft); }
+.coverage-meta .error { color: var(--bad); }
+/* Готовые примеры и загрузка файла: ряд кнопок под основными элементами. */
+.examples { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.examples .label { font-size: 13px; color: var(--ink-soft); margin-right: 2px; }
+button.chip-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+button.chip-btn:hover { border-color: var(--accent); color: var(--accent); filter: none; }
+input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; }
+
+/* Путь через языковую модель: четыре состояния текста подряд. */
+.model-states { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+.model-state { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fbfbfc; }
+.model-state h3 { margin: 0 0 8px; font-size: 13px; font-weight: 650; color: var(--ink-soft); }
+.model-state .textview { max-height: 220px; }
+.model-state .tag { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.tag.safe { background: #d3f9d8; color: #17703f; }
+.tag.pii { background: #ffe3e3; color: #a52020; }
+.model-prompt { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; font-size: 13.5px; font-family: inherit; }
+
+/* Сравнение двух видов маскирования бок о бок. */
+.compare-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+.compare-col { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fbfbfc; }
+.compare-col h3 { margin: 0 0 8px; font-size: 13px; font-weight: 650; color: var(--ink-soft); }
+.compare-col .textview { max-height: 220px; }
+
 @media (max-width: 720px) {
+  .model-states, .compare-cols { grid-template-columns: 1fr; }
+}
   body { padding: 16px 12px 48px; }
   .hint { margin-left: 0; width: 100%; }
 }
@@ -214,13 +287,33 @@ td.num { text-align: right; white-space: nowrap; }
 
 <header>
   <h1>PII Guard: страница проверки</h1>
-  <p>Вставьте текст, выберите вид маскирования и посмотрите, что именно нашлось, где и по какому признаку.</p>
+  <p>Вставьте текст, выберите систему и вид маскирования, посмотрите, что нашлось, где и по какому признаку, и прогоните текст через языковую модель.</p>
 </header>
+
+<section class="panel" id="panel-coverage">
+  <h2>Матрица покрытия</h2>
+  <div class="coverage-wrap">
+    <table class="coverage">
+      <thead id="coverage-head"></thead>
+      <tbody id="coverage-body"></tbody>
+    </table>
+  </div>
+  <div id="coverage-empty" class="empty" hidden>Настроек пока нет: матрица пуста.</div>
+  <div class="coverage-legend">
+    <span><b class="hole">Дыра</b> — тип из задания не маскируется ни одной включённой системой.</span>
+    <span><b class="demask">Обратное преобразование</b> — системе разрешён demask.</span>
+    <span><b class="custom">custom</b> — тип добавлен настройкой через custom_types.</span>
+    <span><b class="src">extra</b> — тип добавлен ядром сверх задания.</span>
+  </div>
+  <div class="coverage-meta" id="coverage-meta"></div>
+</section>
 
 <section class="panel">
   <h2>Исходный текст</h2>
   <textarea id="text" spellcheck="false" aria-label="Текст для разбора">Клиент Иванов Иван Иванович, дата рождения 12.03.1985, паспорт серия 4509 номер 123456 выдан ОУФМС России по г. Москве, код подразделения 770-001, адрес: 101000, г. Москва, ул. Ленина, д. 5, кв. 12, тел +7 (916) 123-45-67, почта ivanov@mail.ru, ИНН 500100732259, карта 4111 1111 1111 1111, CVV 123. Поэт Александр Пушкин родился в Москве. Отделение банка: ул. Тверская, д. 1.</textarea>
   <div class="controls">
+    <label for="system">Система</label>
+    <select id="system" aria-label="Система-потребитель"></select>
     <label for="preset">Вид маскирования</label>
     <select id="preset">
       <option value="full" selected>full: все знаки в звёздочки</option>
@@ -232,7 +325,19 @@ td.num { text-align: right; white-space: nowrap; }
     </select>
     <button id="run" type="button">Разобрать</button>
     <button id="roundtrip" class="secondary" type="button">Проверить обратное преобразование</button>
+    <button id="model" class="secondary" type="button">Прогнать через модель</button>
     <span class="hint">Разбор по Ctrl + Enter или Cmd + Enter</span>
+  </div>
+  <div class="examples">
+    <span class="label">Примеры:</span>
+    <button class="chip-btn" type="button" data-example="anketa">Анкета</button>
+    <button class="chip-btn" type="button" data-example="chat">Чат</button>
+    <button class="chip-btn" type="button" data-example="lower">Нижний регистр</button>
+    <button class="chip-btn" type="button" data-example="history">Историческое лицо</button>
+    <button class="chip-btn" type="button" data-example="latin">Латиница</button>
+    <span class="label">Файл:</span>
+    <input type="file" id="file" accept=".txt,.md,text/plain" aria-label="Загрузить текст из файла">
+    <button id="export" class="secondary" type="button">Выгрузить разбор</button>
   </div>
 </section>
 
@@ -284,10 +389,68 @@ td.num { text-align: right; white-space: nowrap; }
   <div id="skipped-empty" class="empty" hidden>Ничего не снято: все кандидаты остались под маской.</div>
 </section>
 
+<section class="panel" id="panel-subjects" hidden>
+  <h2>Кому принадлежат данные</h2>
+  <p class="hint">Фрагменты собираются по людям: соседство в предложении, общий якорь анкеты,
+  повтор значения. Через эти связи выражается правило задания «пин-код один не маскируем,
+  пин-код с картой маскируем»: оно о связи между фрагментами, а не о фрагменте.</p>
+  <div id="subjects"></div>
+  <div id="subjects-empty" class="empty" hidden></div>
+</section>
+
 <section class="panel" id="panel-roundtrip" hidden>
   <h2>Обратное преобразование</h2>
   <div id="roundtrip-verdict" class="verdict"></div>
   <div id="roundtrip-details" class="verdict-details"></div>
+</section>
+
+<section class="panel" id="panel-model" hidden>
+  <h2>Путь через языковую модель</h2>
+  <p class="hint" style="margin:0 0 10px;text-align:left">Текст маскируется плейсхолдерами, уходит модели, ответ возвращается с восстановленными значениями. Второе состояние показывает, что модель не видела персональных данных.</p>
+  <div class="controls">
+    <label for="model-prompt">Запрос модели</label>
+    <input type="text" id="model-prompt" class="model-prompt" value="Перепиши текст, сохранив все плейсхолдеры вида [ТИП_N] без изменений." aria-label="Запрос языковой модели">
+    <button id="model-run" type="button">Прогнать</button>
+  </div>
+  <div class="model-states">
+    <div class="model-state">
+      <h3>1. Исходный текст</h3>
+      <div id="model-original" class="textview"></div>
+    </div>
+    <div class="model-state">
+      <h3>2. Что ушло модели <span class="tag safe">без персональных данных</span></h3>
+      <div id="model-sent" class="textview"></div>
+    </div>
+    <div class="model-state">
+      <h3>3. Что ответила модель</h3>
+      <div id="model-reply" class="textview"></div>
+    </div>
+    <div class="model-state">
+      <h3>4. Что вернулось пользователю <span class="tag pii">значения восстановлены</span></h3>
+      <div id="model-restored" class="textview"></div>
+    </div>
+  </div>
+</section>
+
+<section class="panel" id="panel-compare" hidden>
+  <h2>Сравнение видов маскирования</h2>
+  <div class="controls">
+    <label for="compare-a">Вид A</label>
+    <select id="compare-a" aria-label="Первый вид маскирования"></select>
+    <label for="compare-b">Вид B</label>
+    <select id="compare-b" aria-label="Второй вид маскирования"></select>
+    <button id="compare-run" type="button">Сравнить на этом тексте</button>
+  </div>
+  <div class="compare-cols">
+    <div class="compare-col">
+      <h3 id="compare-a-title"></h3>
+      <div id="compare-a-text" class="textview"></div>
+    </div>
+    <div class="compare-col">
+      <h3 id="compare-b-title"></h3>
+      <div id="compare-b-text" class="textview"></div>
+    </div>
+  </div>
 </section>
 
 </div>
@@ -328,9 +491,26 @@ td.num { text-align: right; white-space: nowrap; }
 
   var nodes = {
     text: el('text'),
+    system: el('system'),
     preset: el('preset'),
     run: el('run'),
     roundtrip: el('roundtrip'),
+    model: el('model'),
+    modelRun: el('model-run'),
+    modelPrompt: el('model-prompt'),
+    modelOriginal: el('model-original'),
+    modelSent: el('model-sent'),
+    modelReply: el('model-reply'),
+    modelRestored: el('model-restored'),
+    compareA: el('compare-a'),
+    compareB: el('compare-b'),
+    compareRun: el('compare-run'),
+    compareATitle: el('compare-a-title'),
+    compareBTitle: el('compare-b-title'),
+    compareAText: el('compare-a-text'),
+    compareBText: el('compare-b-text'),
+    file: el('file'),
+    exportBtn: el('export'),
     notice: el('notice'),
     summary: el('summary'),
     highlight: el('highlight'),
@@ -341,9 +521,30 @@ td.num { text-align: right; white-space: nowrap; }
     foundEmpty: el('found-empty'),
     skipped: el('skipped'),
     skippedEmpty: el('skipped-empty'),
+    subjects: el('subjects'),
+    subjectsEmpty: el('subjects-empty'),
+    panelSubjects: el('panel-subjects'),
     rtVerdict: el('roundtrip-verdict'),
-    rtDetails: el('roundtrip-details')
+    rtDetails: el('roundtrip-details'),
+    covHead: el('coverage-head'),
+    covBody: el('coverage-body'),
+    covEmpty: el('coverage-empty'),
+    covMeta: el('coverage-meta')
   };
+
+  // Готовые примеры текста: жюри не должно придумывать текст само. Нижний
+  // регистр и историческое лицо показывают ровно то, что мы хотим показать:
+  // регистронезависимый поиск и снятие с маскирования по контексту.
+  var EXAMPLES = {
+    anketa: 'Клиент Иванов Иван Иванович, дата рождения 12.03.1985, паспорт серия 4509 номер 123456 выдан ОУФМС России по г. Москве, код подразделения 770-001, адрес: 101000, г. Москва, ул. Ленина, д. 5, кв. 12, тел +7 (916) 123-45-67, почта ivanov@mail.ru, ИНН 500100732259, карта 4111 1111 1111 1111, CVV 123.',
+    chat: 'привет, это мария петрова, мой номер +7 903 555-12-34, напиши мне на maria.petrova@yandex.ru. встретимся завтра в 18:00 у метро, ок?',
+    lower: 'клиент сергеев сергей сергеевич, телефон +7 921 000-11-22, паспорт 4510 987654, снилс 123-456-789 01, почта sergeev@bk.ru',
+    history: 'Поэт Александр Пушкин родился в Москве в 1799 году. Отделение банка находится по адресу: г. Москва, ул. Тверская, д. 1. Клиент Петров Пётр Петрович, тел +7 495 123-45-67.',
+    latin: 'Customer John Smith, born 15.08.1990, passport AB1234567, phone +1 202 555-0147, email john.smith@gmail.com, card 4111 1111 1111 1111.'
+  };
+
+  // Последний результат разбора: нужен для выгрузки файла.
+  var lastData = null;
 
   // Связь строки таблицы и подсвеченного фрагмента: по общему номеру находки.
   var marks = new Map();
@@ -511,6 +712,47 @@ td.num { text-align: right; white-space: nowrap; }
     });
   }
 
+  // Пустой список субъектов почти всегда означает не отсутствие возможности,
+  // а выключенное правило сочетаний. Молчать об этом нельзя: со стороны это
+  // выглядит как неработающая возможность.
+  function renderSubjects(subjects, spans) {
+    clear(nodes.subjects);
+    var list = subjects || [];
+    nodes.panelSubjects.hidden = false;
+    nodes.subjectsEmpty.hidden = list.length > 0;
+
+    if (list.length === 0) {
+      nodes.subjectsEmpty.textContent =
+        'Связи не строились. Это не отсутствие возможности, а выключенная настройка: ' +
+        'поставьте context_rules_enabled: true в configs/config.yaml. ' +
+        'Настройки применяются без перезапуска.';
+      return;
+    }
+
+    list.forEach(function (subj, i) {
+      var box = document.createElement('div');
+      box.className = 'subject';
+
+      var head = document.createElement('div');
+      head.className = 'subject-head';
+      head.textContent = 'Человек ' + (i + 1) + ': ' + (subj.types || []).join(', ');
+      box.appendChild(head);
+
+      var items = document.createElement('div');
+      items.className = 'subject-items';
+      (subj.fragments || []).forEach(function (idx) {
+        var sp = spans && spans[idx];
+        if (!sp) { return; }
+        var chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.textContent = sp.type + ': ' + sp.value;
+        items.appendChild(chip);
+      });
+      box.appendChild(items);
+      nodes.subjects.appendChild(box);
+    });
+  }
+
   function renderPlaceholders(map) {
     clear(nodes.placeholders);
     var keys = map ? Object.keys(map) : [];
@@ -556,6 +798,7 @@ td.num { text-align: right; white-space: nowrap; }
   function render(data) {
     data.spans = data.spans || [];
     data.skipped = data.skipped || [];
+    lastData = data;
     renderSummary(data);
     renderHighlight(nodes.text.value, data.spans);
     renderLegend(data.spans);
@@ -563,6 +806,7 @@ td.num { text-align: right; white-space: nowrap; }
     renderPlaceholders(data.placeholders);
     renderFound(data.spans);
     renderSkipped(data.skipped);
+    renderSubjects(data.subjects, data.spans);
     show('panel-highlight', true);
     show('panel-masked', true);
     show('panel-found', true);
@@ -597,6 +841,14 @@ td.num { text-align: right; white-space: nowrap; }
     var data = result.data;
     var code = data && data.error ? data.error.code : '';
 
+    if (result.status === 502 && code === 'upstream_unavailable') {
+      return 'Языковая модель недоступна. Она внешняя и может не ответить: ' +
+        'проверьте адрес и токен модели в настройках выбранной системы.';
+    }
+    if (result.status === 501 && code === 'upstream_not_configured') {
+      return 'Для выбранной системы не задан адрес языковой модели. ' +
+        'Выберите систему с настроенным upstream, например kilo.';
+    }
     if (result.status === 403 && code === 'inspect_disabled') {
       return 'Разбор текста выключен настройкой, это не ошибка сети и не сбой страницы. ' +
         'Сервис сознательно ответил отказом: параметр inspect_enabled выключен для этой системы ' +
@@ -614,6 +866,129 @@ td.num { text-align: right; white-space: nowrap; }
     return 'Сервис ответил кодом ' + result.status + '.';
   }
 
+  // Матрица покрытия. Строки — типы персональных данных, столбцы — системы.
+  // В клетке вид маски, «off» для типа, который система не маскирует, и
+  // «disabled» для выключенной системы. Дыра — тип из задания, не маскируемый
+  // ни одной включённой системой: её подсвечиваем отдельно.
+  var SOURCE_TITLE = {
+    task: 'задание',
+    task_part: 'часть адреса',
+    extra: 'сверх задания',
+    custom: 'настройкой'
+  };
+
+  function coverageCellClass(value) {
+    if (value === 'disabled') { return 'disabled'; }
+    if (value === 'off') { return 'off'; }
+    return 'preset';
+  }
+
+  function coverageCellText(value) {
+    if (value === 'disabled') { return 'выключено'; }
+    if (value === 'off') { return '—'; }
+    return value;
+  }
+
+  function renderCoverage(data) {
+    clear(nodes.covHead);
+    clear(nodes.covBody);
+
+    var systems = data.systems || [];
+    var types = data.types || [];
+    var cells = data.cells || {};
+    nodes.covEmpty.hidden = systems.length > 0 && types.length > 0;
+
+    // Шапка: пустая клетка угла, затем по столбцу на систему. Под именем
+    // системы — порог уверенности и признак обратного преобразования.
+    var headRow = document.createElement('tr');
+    var corner = document.createElement('th');
+    corner.textContent = 'Тип';
+    headRow.appendChild(corner);
+    systems.forEach(function (sys) {
+      var th = document.createElement('th');
+      var name = document.createElement('div');
+      name.textContent = sys.name;
+      th.appendChild(name);
+      var conf = document.createElement('div');
+      conf.className = 'conf';
+      conf.textContent = 'порог ' + num(sys.min_confidence, 2);
+      th.appendChild(conf);
+      var demask = document.createElement('div');
+      demask.className = sys.demask ? 'demask' : 'nodemask';
+      demask.textContent = sys.demask ? 'обратное преобразование' : 'без обратного';
+      th.appendChild(demask);
+      headRow.appendChild(th);
+    });
+    nodes.covHead.appendChild(headRow);
+
+    // Строки: тип, источник, затем по клетке на систему. Дыра считается по
+    // включённым системам: тип из задания, которому не маскируется ни одна.
+    types.forEach(function (t) {
+      var row = document.createElement('tr');
+      var nameCell = document.createElement('td');
+      nameCell.className = 'type-name';
+      nameCell.textContent = t.name;
+      var src = document.createElement('span');
+      src.className = 'src';
+      src.textContent = SOURCE_TITLE[t.source] || t.source;
+      nameCell.appendChild(src);
+      row.appendChild(nameCell);
+
+      var rowCells = cells[t.name] || {};
+      var maskedByAny = false;
+      // Дырой считается и незакрытая часть типа задания: индекс входит в
+      // требование про адрес, поэтому пропуск по нему так же важен.
+      var hole = t.source === 'task' || t.source === 'task_part';
+      systems.forEach(function (sys) {
+        var value = rowCells[sys.name] || 'off';
+        if (sys.enabled && value !== 'off' && value !== 'disabled') {
+          maskedByAny = true;
+        }
+        var td = document.createElement('td');
+        td.className = coverageCellClass(value);
+        td.textContent = coverageCellText(value);
+        row.appendChild(td);
+      });
+      if (hole && !maskedByAny) {
+        nameCell.classList.add('hole');
+        nameCell.title = 'Дыра: тип из задания не маскируется ни одной включённой системой';
+      }
+      nodes.covBody.appendChild(row);
+    });
+
+    var updated = document.createElement('span');
+    updated.className = 'updated';
+    updated.textContent = 'Обновлено ' + new Date().toLocaleTimeString() +
+      ', перечитывается раз в 5 секунд вместе с настройками.';
+    nodes.covMeta.appendChild(updated);
+  }
+
+  function renderCoverageError(message) {
+    clear(nodes.covMeta);
+    var err = document.createElement('span');
+    err.className = 'error';
+    err.textContent = 'Матрица недоступна: ' + message;
+    nodes.covMeta.appendChild(err);
+  }
+
+  async function refreshCoverage() {
+    try {
+      var resp = await fetch('/v1/coverage', { method: 'GET' });
+      var raw = await resp.text();
+      var data = null;
+      if (raw) {
+        try { data = JSON.parse(raw); } catch (err) { data = null; }
+      }
+      if (!resp.ok || !data) {
+        renderCoverageError('сервис ответил кодом ' + resp.status);
+        return;
+      }
+      renderCoverage(data);
+    } catch (err) {
+      renderCoverageError(err && err.message ? err.message : 'соединение не установлено');
+    }
+  }
+
   async function runInspect() {
     var text = nodes.text.value;
     if (text.trim() === '') {
@@ -625,7 +1000,11 @@ td.num { text-align: right; white-space: nowrap; }
     hideNote();
     nodes.run.disabled = true;
     try {
-      var result = await postJSON('/v1/inspect', { text: text, preset: nodes.preset.value });
+      var result = await postJSON('/v1/inspect', {
+        text: text,
+        preset: nodes.preset.value,
+        system: nodes.system.value
+      });
       if (!result.ok || !result.data) {
         hideResults();
         note(describeFailure(result), true);
@@ -726,9 +1105,285 @@ td.num { text-align: right; white-space: nowrap; }
     }
   });
 
+  // --- Выбор системы-потребителя -------------------------------------------
+
+  // Загрузка списка систем. Страница работает от профиля выбранной системы:
+  // вид маски, набор типов и право на обратное преобразование меняются вместе
+  // с выбором, и это нагляднее любого описания.
+  function loadSystems() {
+    fetch('/v1/systems', { method: 'GET' })
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) {
+        var list = (data && data.systems) || [];
+        clear(nodes.system);
+        list.forEach(function (sys) {
+          var opt = document.createElement('option');
+          opt.value = sys.name;
+          opt.textContent = sys.name + ' — ' + sys.preset +
+            (sys.demask ? ', демаскирование' : ', без демаскирования');
+          nodes.system.appendChild(opt);
+        });
+        if (list.length > 0) {
+          nodes.system.value = list[0].name;
+          syncPresetToSystem();
+        }
+      })
+      .catch(function () {
+        // Список систем не загрузился — страница останется на анонимной
+        // системе, которую сервер опознает по отсутствию ключа.
+      });
+  }
+
+  // При смене системы показываем её вид маскирования по умолчанию: так видно,
+  // чем профили различаются. Пользователь всё равно может выбрать другой вид.
+  function syncPresetToSystem() {
+    var name = nodes.system.value;
+    var opt = nodes.system.selectedOptions && nodes.system.selectedOptions[0];
+    if (!opt) { return; }
+    var label = opt.textContent;
+    var m = label.match(/—\s*(\w+)/);
+    if (m && m[1]) {
+      var preset = m[1];
+      var found = false;
+      for (var i = 0; i < nodes.preset.options.length; i++) {
+        if (nodes.preset.options[i].value === preset) { found = true; break; }
+      }
+      if (found) { nodes.preset.value = preset; }
+    }
+  }
+
+  // --- Готовые примеры -----------------------------------------------------
+
+  function applyExample(key) {
+    var text = EXAMPLES[key];
+    if (text === undefined) { return; }
+    nodes.text.value = text;
+    hideNote();
+    runInspect();
+  }
+
+  // --- Загрузка файла и выгрузка разбора -----------------------------------
+
+  function readFile(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      nodes.text.value = String(reader.result || '');
+      hideNote();
+      runInspect();
+    };
+    reader.onerror = function () {
+      note('Не удалось прочитать файл.', true);
+    };
+    reader.readAsText(file);
+  }
+
+  function buildExportText(data) {
+    var lines = [];
+    lines.push('PII Guard: разбор текста');
+    lines.push('Система: ' + data.system);
+    lines.push('Вид маскирования: ' + data.preset);
+    lines.push('Размер: ' + data.text_bytes + ' байт, ' + data.text_runes + ' символов');
+    lines.push('Найдено: ' + data.spans.length + ' фрагментов, снято: ' + data.skipped.length);
+    lines.push('');
+    lines.push('Текст после маскирования:');
+    lines.push(data.masked || '');
+    lines.push('');
+    lines.push('Находки:');
+    data.spans.forEach(function (sp, i) {
+      lines.push((i + 1) + '. [' + sp.type + '] "' + sp.value + '" -> "' +
+        (sp.masked || '') + '" уверенность ' + num(sp.confidence, 2) +
+        ', причина: ' + (sp.reason || 'не указана'));
+    });
+    lines.push('');
+    lines.push('Снято с маскирования:');
+    data.skipped.forEach(function (sp, i) {
+      lines.push((i + 1) + '. [' + sp.type + '] "' + sp.value +
+        '" причина: ' + (sp.reason || 'не указана'));
+    });
+    return lines.join('\n');
+  }
+
+  function exportResult() {
+    if (!lastData) {
+      note('Сначала выполните разбор: выгружать пока нечего.', true);
+      return;
+    }
+    var content = buildExportText(lastData);
+    var blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'pii-guard-inspect.txt';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // --- Путь через языковую модель ------------------------------------------
+
+  // Достаёт текст ответа модели из ответа в формате OpenAI.
+  function extractModelText(data) {
+    if (data && Array.isArray(data.choices) && data.choices.length > 0) {
+      var msg = data.choices[0].message;
+      if (msg && typeof msg.content === 'string') { return msg.content; }
+    }
+    return '';
+  }
+
+  // Возвращает в текст ответа исходные значения. Разбор терпим к искажениям:
+  // модель может изменить регистр или оформление плейсхолдера. Нераспознанный
+  // плейсхолдер остаётся как есть — выдумывать персональные данные нельзя.
+  function restorePlaceholders(text, map) {
+    var out = text;
+    Object.keys(map).forEach(function (token) {
+      var value = map[token];
+      var inner = token.replace(/^\[/, '').replace(/\]$/, '');
+      var variants = [
+        token,
+        '[' + inner.replace(/_/g, ' ') + ']',
+        '<' + inner + '>',
+        '{' + inner + '}',
+        inner
+      ];
+      variants.forEach(function (variant) {
+        out = out.split(variant).join(value);
+      });
+    });
+    return out;
+  }
+
+  async function runModel() {
+    var text = nodes.text.value;
+    if (text.trim() === '') {
+      note('Вставьте текст: прогонять через модель нечего.', true);
+      return;
+    }
+
+    hideNote();
+    nodes.model.disabled = true;
+    nodes.modelRun.disabled = true;
+    try {
+      // 1. Маскируем текст плейсхолдерами и запоминаем соответствия.
+      var masked = await postJSON('/v1/inspect', {
+        text: text,
+        preset: 'token',
+        system: nodes.system.value
+      });
+      if (!masked.ok || !masked.data) {
+        note('Не удалось подготовить текст для модели. ' + describeFailure(masked), true);
+        return;
+      }
+      var sentText = masked.data.masked || '';
+      var placeholders = masked.data.placeholders || {};
+
+      // 2. Отправляем уже замаскированный текст модели. Прокси пропускает его
+      //    без изменений: персональных данных в нём уже нет.
+      var prompt = nodes.modelPrompt.value.trim() || 'Перепиши текст, сохранив все плейсхолдеры вида [ТИП_N] без изменений.';
+      var reply = await postJSON('/v1/chat/completions', {
+        messages: [
+          { role: 'system', content: prompt },
+          { role: 'user', content: sentText }
+        ],
+        system: nodes.system.value
+      });
+      if (!reply.ok || !reply.data) {
+        note('Модель не ответила. ' + describeFailure(reply), true);
+        return;
+      }
+      var modelText = extractModelText(reply.data);
+
+      // 3. Восстанавливаем исходные значения в ответе модели.
+      var restored = restorePlaceholders(modelText, placeholders);
+
+      // 4. Показываем все четыре состояния подряд.
+      nodes.modelOriginal.textContent = text;
+      nodes.modelSent.textContent = sentText;
+      nodes.modelReply.textContent = modelText;
+      nodes.modelRestored.textContent = restored;
+      show('panel-model', true);
+    } catch (err) {
+      note('Сервис не ответил: ' + (err && err.message ? err.message : 'соединение не установлено') + '.', true);
+    } finally {
+      nodes.model.disabled = false;
+      nodes.modelRun.disabled = false;
+    }
+  }
+
+  // --- Сравнение двух видов маскирования -----------------------------------
+
+  function fillCompareSelect(select) {
+    clear(select);
+    for (var i = 0; i < nodes.preset.options.length; i++) {
+      var opt = nodes.preset.options[i];
+      var copy = document.createElement('option');
+      copy.value = opt.value;
+      copy.textContent = opt.textContent;
+      select.appendChild(copy);
+    }
+  }
+
+  async function runCompare() {
+    var text = nodes.text.value;
+    if (text.trim() === '') {
+      note('Вставьте текст: сравнивать нечего.', true);
+      return;
+    }
+    hideNote();
+    nodes.compareRun.disabled = true;
+    try {
+      var a = nodes.compareA.value;
+      var b = nodes.compareB.value;
+      var ra = await postJSON('/v1/inspect', { text: text, preset: a, system: nodes.system.value });
+      var rb = await postJSON('/v1/inspect', { text: text, preset: b, system: nodes.system.value });
+      if (!ra.ok || !ra.data || !rb.ok || !rb.data) {
+        note('Не удалось выполнить сравнение. ' +
+          describeFailure(ra.ok ? rb : ra), true);
+        return;
+      }
+      nodes.compareATitle.textContent = 'Вид A: ' + a;
+      nodes.compareBTitle.textContent = 'Вид B: ' + b;
+      nodes.compareAText.textContent = ra.data.masked || '';
+      nodes.compareBText.textContent = rb.data.masked || '';
+      show('panel-compare', true);
+    } catch (err) {
+      note('Сервис не ответил: ' + (err && err.message ? err.message : 'соединение не установлено') + '.', true);
+    } finally {
+      nodes.compareRun.disabled = false;
+    }
+  }
+
+  // --- События -------------------------------------------------------------
+
+  nodes.system.addEventListener('change', syncPresetToSystem);
+  nodes.model.addEventListener('click', runModel);
+  nodes.modelRun.addEventListener('click', runModel);
+  nodes.compareRun.addEventListener('click', runCompare);
+  nodes.exportBtn.addEventListener('click', exportResult);
+  nodes.file.addEventListener('change', function () {
+    var file = nodes.file.files && nodes.file.files[0];
+    if (file) { readFile(file); }
+    nodes.file.value = '';
+  });
+  document.querySelectorAll('.chip-btn[data-example]').forEach(function (btn) {
+    btn.addEventListener('click', function () { applyExample(btn.getAttribute('data-example')); });
+  });
+
+  fillCompareSelect(nodes.compareA);
+  fillCompareSelect(nodes.compareB);
+  nodes.compareA.value = 'full';
+  nodes.compareB.value = 'partial';
+
   // Первый разбор сразу при открытии: страницу чаще всего открывают,
   // чтобы что-то увидеть, а не чтобы нажать кнопку.
+  loadSystems();
   runInspect();
+
+  // Матрица покрытия живёт в такт с настройками: они перечитываются раз в
+  // пять секунд, и матрица обязана это отражать. Первый показ сразу, дальше
+  // по таймеру.
+  refreshCoverage();
+  setInterval(refreshCoverage, 5000);
 })();
 </script>
 </body>

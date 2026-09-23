@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"pii-guard/internal/engine"
 	"pii-guard/internal/logging"
 	"pii-guard/internal/mask"
 )
@@ -17,6 +18,10 @@ type inspectRequest struct {
 	// Preset переопределяет вид маскирования только для этого запроса.
 	// Пустое значение означает вид, заданный системе в настройках.
 	Preset string `json:"preset,omitempty"`
+	// System выбирает профиль системы-потребителя по имени. Пустое значение
+	// означает систему, опознанную по ключу доступа. Поле нужно странице
+	// проверки, которая переключает профили, не зная ключей.
+	System string `json:"system,omitempty"`
 }
 
 // inspectSpan — один найденный фрагмент со всеми подробностями решения.
@@ -52,6 +57,26 @@ type inspectSkipped struct {
 	Reason     string  `json:"reason"`
 }
 
+// inspectEdge — основание считать два фрагмента относящимися к одному человеку.
+// Индексы ссылаются на элементы массива spans ответа.
+type inspectEdge struct {
+	// A и B — индексы фрагментов в массиве spans.
+	A int `json:"a"`
+	B int `json:"b"`
+	// Basis — основание связи: sentence, anchor или repeat.
+	Basis string `json:"basis"`
+	// Confidence — уверенность связи от нуля до единицы.
+	Confidence float64 `json:"confidence"`
+}
+
+// inspectSubject — один человек: набор фрагментов, отнесённых к нему.
+type inspectSubject struct {
+	// Fragments — индексы фрагментов в массиве spans.
+	Fragments []int `json:"fragments"`
+	// Types — типы персональных данных, найденные у субъекта.
+	Types []string `json:"types"`
+}
+
 // inspectResponse — итог разбора.
 type inspectResponse struct {
 	// System — от имени какой системы выполнен разбор.
@@ -68,6 +93,12 @@ type inspectResponse struct {
 	Spans []inspectSpan `json:"spans"`
 	// Skipped — фрагменты, снятые контекстными правилами.
 	Skipped []inspectSkipped `json:"skipped"`
+	// Edges — основания считать пары фрагментов относящимися к одному человеку.
+	// По ним видно, почему фрагменты объединены в субъекта.
+	Edges []inspectEdge `json:"edges"`
+	// Subjects — разбиение фрагментов на субъектов: сколько людей в тексте и
+	// какие фрагменты к кому относятся.
+	Subjects []inspectSubject `json:"subjects"`
 	// Counts — сколько фрагментов каждого типа.
 	Counts map[string]int `json:"counts"`
 	// Placeholders — подстановки для вида с плейсхолдерами.
@@ -93,15 +124,6 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := s.Config()
-	sys, ok := s.resolveSystem(r, cfg)
-	if !ok {
-		s.writeError(w, r, http.StatusForbidden, "system_not_allowed", "система не опознана или отключена")
-		return
-	}
-	if !sys.InspectOn(cfg.Defaults) {
-		s.writeError(w, r, http.StatusForbidden, "inspect_disabled", "разбор текста для этой системы выключен настройкой")
-		return
-	}
 
 	var req inspectRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, cfg.Server.MaxBodyBytes))
@@ -111,6 +133,19 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Text == "" {
 		s.writeValidation(w, r, "missing", []string{"body", "text"}, "поле text обязательно и не может быть пустым")
+		return
+	}
+
+	// Страница проверки выбирает профиль системы по имени; ключ доступа ей не
+	// нужен. Имя задано — подменяем систему, имени нет — остаёмся на системе,
+	// опознанной по ключу.
+	sys, ok := s.resolveRequestSystem(r, cfg, req.System)
+	if !ok {
+		s.writeError(w, r, http.StatusForbidden, "system_not_allowed", "система не опознана или отключена")
+		return
+	}
+	if !sys.InspectOn(cfg.Defaults) {
+		s.writeError(w, r, http.StatusForbidden, "inspect_disabled", "разбор текста для этой системы выключен настройкой")
 		return
 	}
 
@@ -140,6 +175,8 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		TextRunes: len([]rune(req.Text)),
 		Spans:     make([]inspectSpan, 0, len(res.Spans)),
 		Skipped:   make([]inspectSkipped, 0, len(res.Skipped)),
+		Edges:     make([]inspectEdge, 0, len(res.Edges)),
+		Subjects:  make([]inspectSubject, 0, len(res.Subjects)),
 	}
 
 	maskedRunes := []rune(res.Text)
@@ -176,6 +213,15 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 			Reason:     sp.Reason,
 		})
 	}
+	for _, e := range res.Edges {
+		out.Edges = append(out.Edges, inspectEdge{
+			A:          e.A,
+			B:          e.B,
+			Basis:      string(e.Basis),
+			Confidence: e.Conf,
+		})
+	}
+	out.Subjects = inspectSubjects(res.Subjects)
 	if len(res.Placeholders) > 0 {
 		out.Placeholders = make(map[string]string, len(res.Placeholders))
 		for _, ph := range res.Placeholders {
@@ -198,6 +244,22 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// его собственные. Для службы контроля это такое же обращение к данным,
 	// как маскирование, поэтому оно идёт в аудит наравне с ним.
 	s.auditProcess(r, sys, "", "inspect", out.TextBytes, out.Counts, took, "ok")
+}
+
+// inspectSubjects переводит субъектов движка в форму ответа разбора.
+func inspectSubjects(subjects []engine.Subject) []inspectSubject {
+	out := make([]inspectSubject, 0, len(subjects))
+	for _, sub := range subjects {
+		types := make([]string, 0, len(sub.Types))
+		for _, t := range sub.Types {
+			types = append(types, string(t))
+		}
+		out = append(out, inspectSubject{
+			Fragments: sub.Fragments,
+			Types:     types,
+		})
+	}
+	return out
 }
 
 // runeOffsets строит перевод байтового смещения в номер руны для каждой

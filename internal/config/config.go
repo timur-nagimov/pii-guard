@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,6 +27,12 @@ type Config struct {
 	Logging     Logging           `yaml:"logging"`
 	Systems     map[string]System `yaml:"systems"`
 	CustomTypes []CustomType      `yaml:"custom_types"`
+
+	// Warnings — то, что не мешает работать, но человек знать обязан.
+	// Сюда попадает, например, система, выключенная из-за незаданного ключа
+	// доступа. Молча выключить систему нельзя: снаружи это выглядит как
+	// отказ в доступе без причины.
+	Warnings []string `yaml:"-"`
 }
 
 // Server — параметры сетевых слушателей.
@@ -527,6 +534,38 @@ func (c *Config) Validate() error {
 		return errors.New("не задана ни одна система-потребитель")
 	}
 	anonymous := 0
+	// Соотношения между сроками и пределами. По отдельности каждое значение
+	// выглядит разумным, а вместе они дают поведение, которое никто не
+	// закладывал. Проверяем здесь, потому что в бою это не видно: сервис
+	// работает, просто не так, как написано в документах.
+	if c.Limits.MaxWait > 0 && c.Server.WriteTimeout > 0 && c.Limits.MaxWait >= c.Server.WriteTimeout {
+		return fmt.Errorf("ожидание места в ограничителе (%s) не короче срока записи ответа (%s): "+
+			"запрос успеет получить обрыв соединения раньше, чем честный отказ с просьбой повторить",
+			c.Limits.MaxWait, c.Server.WriteTimeout)
+	}
+	if c.Limits.Inflight > 0 && c.Limits.HeavyInflight >= c.Limits.Inflight {
+		c.Warnings = append(c.Warnings, fmt.Sprintf(
+			"отдельный ограничитель для больших текстов (%d) не меньше общего (%d): он ничего не ограничивает",
+			c.Limits.HeavyInflight, c.Limits.Inflight))
+	}
+
+	// Один и тот же хеш ключа у двух систем делает выбор системы случайным:
+	// порядок обхода карты в Go не определён, и запрос опознаётся то как одна,
+	// то как другая. Снаружи это выглядит как плавающее поведение сервиса без
+	// видимой причины, а по журналу видно разную систему на одинаковых
+	// запросах. Ловим это на проверке настроек, а не в бою.
+	byHash := make(map[string]string, len(c.Systems))
+	for _, name := range sortedSystemNames(c.Systems) {
+		h := c.Systems[name].Auth.KeySHA256
+		if h == "" {
+			continue
+		}
+		if other, busy := byHash[h]; busy {
+			return fmt.Errorf("системы %q и %q делят один хеш ключа доступа: какая из них опознает запрос, будет решать случай", other, name)
+		}
+		byHash[h] = name
+	}
+
 	for name, s := range c.Systems {
 		if !s.Enabled {
 			continue
@@ -554,8 +593,26 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("система %q без ключа: пресет %q для типа %s не сохраняет длину", name, tp, t)
 			}
 		}
+		// Система без ключа доступа ВЫКЛЮЧАЕТСЯ, а не роняет запуск.
+		//
+		// Прежнее поведение отвергало настройки целиком, и свежий клон с
+		// пустым .env не стартовал вовсе: проверяющий копировал .env.example,
+		// запускал по инструкции и получал отказ. При этом анонимный профиль
+		// проверяющей системы ключа не требует, то есть контракт работал бы
+		// и без остальных.
+		//
+		// Выключение это безопасное направление: система без ключа просто
+		// недоступна. Опасным было бы обратное, включить её без проверки
+		// ключа, и этого здесь не происходит.
 		if !s.Auth.None && s.Auth.KeySHA256 == "" {
-			return fmt.Errorf("система %q: не задан хеш ключа доступа", name)
+			s.Enabled = false
+			c.Systems[name] = s
+			// Имя переменной окружения не угадываем: в настройках оно
+			// задаётся явно и не выводится из имени системы. Вместо догадки
+			// отправляем туда, где написано точно.
+			c.Warnings = append(c.Warnings,
+				fmt.Sprintf("система %q выключена: пуст key_sha256, смотрите её раздел в файле настроек", name))
+			continue
 		}
 		if s.Auth.KeySHA256 != "" && len(s.Auth.KeySHA256) != 64 {
 			return fmt.Errorf("система %q: хеш ключа должен быть 64 символа", name)
@@ -630,4 +687,15 @@ func (c *Config) validateLogging() error {
 		return errors.New("журнал: порог медленного запроса не может быть отрицательным")
 	}
 	return nil
+}
+
+// sortedSystemNames возвращает имена систем в устойчивом порядке. Нужен там,
+// где сообщение об ошибке не должно меняться от запуска к запуску.
+func sortedSystemNames(m map[string]System) []string {
+	out := make([]string, 0, len(m))
+	for name := range m {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -1,0 +1,4 @@
+go test fuzz v1
+string("Дата рождения: 26 07 1958.")
+int(0)
+int(0)

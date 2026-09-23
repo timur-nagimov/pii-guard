@@ -109,3 +109,24 @@ func sizeName(size int) string {
 		return "8kb"
 	}
 }
+
+// BenchmarkLinkSubjects меряет стоимость построения связей между фрагментами.
+// Связи строятся на каждый запрос, и по заданию они не должны стоить больше
+// пяти процентов от полного конвейера. Сравнение с BenchmarkMask показывает
+// долю: если она выше пяти процентов, связи строятся только при включённом
+// правиле сочетаний.
+func BenchmarkLinkSubjects(b *testing.B) {
+	eng := New(benchRegistry())
+	for _, size := range []int{250, 500, 2048, 8192} {
+		text := benchText(size)
+		doc := pii.NewDoc(text)
+		spans := eng.detectDoc(doc)
+		b.Run(sizeName(size), func(b *testing.B) {
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = linkSubjects(doc, spans)
+			}
+		})
+	}
+}
