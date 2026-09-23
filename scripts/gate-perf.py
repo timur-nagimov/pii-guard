@@ -38,24 +38,61 @@ def parse(path):
     return rows
 
 
+def init_baseline(path):
+    """Снимает базовую линию с вывода бенчмарка."""
+    rows = parse(path)
+    if not rows:
+        print("не разобрано ни одной строки бенчмарка", file=sys.stderr)
+        return 2
+    print(json.dumps({
+        "_комментарий": (
+            "Базовая линия скорости горячего пути, наносекунды на операцию. "
+            "Меняет только человек и только осознанно. Числа зависят от "
+            "машины, поэтому снимать надо там же, где потом сравнивать."
+        ),
+        "_допуск": DEFAULT_TOLERANCE,
+        "замеры": dict(sorted(rows.items())),
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
+def compare(want, got, tol):
+    """Сводит замер с базовой линией: что замедлилось и что ускорилось.
+
+    Пропавший замер не закрывает ворота: бенчмарк могли переименовать, и
+    ронять прогон на этом значит наказывать за правку имени, а не за скорость.
+    """
+    problems, better = [], []
+    for name, ref in sorted(want.items()):
+        if name not in got:
+            print(f"замер {name} пропал из прогона", file=sys.stderr)
+            continue
+        cur = got[name]
+        delta = (cur - ref) / ref
+        if delta > tol:
+            problems.append(
+                f"{name}: было {ref:.0f} нс, стало {cur:.0f} нс, "
+                f"медленнее на {delta*100:.0f}% при допуске {tol*100:.0f}%"
+            )
+        elif delta < -tol:
+            better.append(f"{name}: {ref:.0f} → {cur:.0f} нс ({-delta*100:.0f}% быстрее)")
+    return problems, better
+
+
+def report(title, lines):
+    """Печатает раздел отчёта, если в нём есть что показать."""
+    if not lines:
+        return
+    print(title)
+    for line in lines:
+        print(f"  {line}")
+
+
 def main():
     args = sys.argv[1:]
 
     if args and args[0] == "--init":
-        rows = parse(args[1])
-        if not rows:
-            print("не разобрано ни одной строки бенчмарка", file=sys.stderr)
-            return 2
-        print(json.dumps({
-            "_комментарий": (
-                "Базовая линия скорости горячего пути, наносекунды на операцию. "
-                "Меняет только человек и только осознанно. Числа зависят от "
-                "машины, поэтому снимать надо там же, где потом сравнивать."
-            ),
-            "_допуск": DEFAULT_TOLERANCE,
-            "замеры": dict(sorted(rows.items())),
-        }, ensure_ascii=False, indent=2))
-        return 0
+        return init_baseline(args[1])
 
     if len(args) != 2:
         print(__doc__, file=sys.stderr)
@@ -71,33 +108,10 @@ def main():
         print("бенчмарк не отработал или вывод не разобран", file=sys.stderr)
         return 2
 
-    problems, better = [], []
-    for name, ref in sorted(want.items()):
-        if name not in got:
-            print(f"замер {name} пропал из прогона", file=sys.stderr)
-            continue
-        cur = got[name]
-        delta = (cur - ref) / ref
-        if delta > tol:
-            problems.append(
-                f"{name}: было {ref:.0f} нс, стало {cur:.0f} нс, "
-                f"медленнее на {delta*100:.0f}% при допуске {tol*100:.0f}%"
-            )
-        elif delta < -tol:
-            better.append(f"{name}: {ref:.0f} → {cur:.0f} нс ({-delta*100:.0f}% быстрее)")
-
-    if better:
-        print("Стало быстрее:")
-        for line in better:
-            print(f"  {line}")
-
-    if problems:
-        print("Стало медленнее:")
-        for line in problems:
-            print(f"  {line}")
-        return 1
-
-    return 0
+    problems, better = compare(want, got, tol)
+    report("Стало быстрее:", better)
+    report("Стало медленнее:", problems)
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":

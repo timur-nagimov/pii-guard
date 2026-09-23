@@ -22,7 +22,17 @@ import { check, sleep } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import exec from 'k6/execution';
 
-const BASE_URL = (__ENV.BASE_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '');
+// trimTrailingSlashes срезает хвостовые косые черты проходом с конца.
+// Выражение /\/+$/ делает то же самое, но откатывается: на адресе из сотен
+// косых черт подряд движок отдаёт по одному символу и всякий раз заново
+// проверяет конец строки, и разбор растёт квадратом от длины адреса.
+function trimTrailingSlashes(url) {
+  let end = url.length;
+  while (end > 0 && url[end - 1] === '/') end -= 1;
+  return url.slice(0, end);
+}
+
+const BASE_URL = trimTrailingSlashes(__ENV.BASE_URL || 'http://127.0.0.1:8080');
 const RPS = Number(__ENV.RPS || 200);
 const DURATION = __ENV.DURATION || '1m';
 const PAYLOAD_SIZE = Number(__ENV.PAYLOAD_SIZE || 250);
@@ -108,16 +118,21 @@ function postProcess(payload, payloadID, step) {
 
 // resultOf достаёт поле result из ответа, не роняя прогон на чужом теле.
 function resultOf(res) {
-  if (!res || res.status !== 200) return null;
+  if (res?.status !== 200) return null;
   try {
     const parsed = res.json();
     return typeof parsed.result === 'string' ? parsed.result : null;
   } catch (err) {
+    // Тело, которое не разобралось как JSON, для замера ровно такой же промах,
+    // как чужой код ответа: проверки ниже увидят null и запишут неудачу. Дальше
+    // причину не несём намеренно — на тысяче пар в секунду печать разбора
+    // сама станет узким местом и исказит то, что мы измеряем.
     return null;
   }
 }
 
-export default function () {
+// pairIteration это одна итерация нагрузки: прямой шаг и обратный к нему.
+export default function pairIteration() {
   const seq = exec.scenario.iterationInTest;
   const payloadID = `k6-${exec.vu.idInTest}-${seq}`;
   const original = makeText(seq, PAYLOAD_SIZE);

@@ -87,32 +87,113 @@ def parse(path):
     return rows
 
 
+def init_baseline(path):
+    """Снимает базовую линию с вывода измерителя."""
+    rows = parse(path)
+    if not rows:
+        print("не разобрано ни одной строки", file=sys.stderr)
+        return 2
+    out = {
+        "_комментарий": (
+            "Базовая линия качества. Меняет только человек и только "
+            "осознанно: ворота сравнивают с этими числами. Если их "
+            "может подвинуть тот, кто правит код, ворота бесполезны."
+        ),
+        "_допуск": DEFAULT_TOLERANCE,
+        "_допуск_ложных": DEFAULT_FP_TOLERANCE,
+        "срезы": {k: v["score"] for k, v in sorted(rows.items())
+                  if not k.startswith("neg_")},
+        # Отрицательные срезы закрепляются по доле ложных срабатываний,
+        # а не по доле изменённого: у них нет размеченных фрагментов,
+        # и «изменено» равно нулю по построению.
+        "ложные": {k: v["extra"] for k, v in sorted(rows.items())
+                   if k.startswith("neg_")},
+    }
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+def check_negative(name, fp, base_fp, tolerance):
+    """Отрицательный срез: сравнивает долю ложных срабатываний с линией.
+
+    Возвращает пару «стало хуже, стало лучше»; обе половины необязательны,
+    потому что расхождение внутри допуска это не новость ни в одну сторону.
+    """
+    if name not in base_fp:
+        print(f"новый отрицательный срез {name}: ложных {fp:.2f}%, "
+              f"в базовой линии его нет", file=sys.stderr)
+        return None, None
+
+    grew = fp - base_fp[name]
+    if grew > tolerance:
+        return (f"{name}: ложных срабатываний было {base_fp[name]:.2f}%, "
+                f"стало {fp:.2f}%, рост {grew:.2f} при допуске {tolerance}"), None
+    if grew < -tolerance:
+        return None, (f"{name}: ложных {base_fp[name]:.2f}% → {fp:.2f}% "
+                      f"({-grew:.2f} меньше)")
+    return None, None
+
+
+def check_positive(name, score, base, tolerance):
+    """Положительный срез: сравнивает оценку с линией."""
+    if name not in base:
+        # Новый срез это не повод закрывать ворота, но человек должен
+        # знать, что базовая линия отстала.
+        print(f"новый срез {name}: {score:.4f}, в базовой линии его нет",
+              file=sys.stderr)
+        return None, None
+
+    delta = score - base[name]
+    if delta < -tolerance:
+        return (f"{name}: было {base[name]:.4f}, стало {score:.4f}, "
+                f"просадка {-delta:.4f} при допуске {tolerance}"), None
+    if delta > tolerance:
+        return None, f"{name}: {base[name]:.4f} → {score:.4f} (+{delta:.4f})"
+    return None, None
+
+
+def compare(rows, baseline):
+    """Сводит замер с базовой линией: что стало хуже и что стало лучше."""
+    base = baseline.get("срезы", {})
+    base_fp = baseline.get("ложные", {})
+    tolerance = float(baseline.get("_допуск", DEFAULT_TOLERANCE))
+    fp_tolerance = float(baseline.get("_допуск_ложных", DEFAULT_FP_TOLERANCE))
+
+    problems = []
+    improved = []
+
+    for name, cur in sorted(rows.items()):
+        if name.startswith("neg_"):
+            worse, better = check_negative(name, cur["extra"], base_fp, fp_tolerance)
+        else:
+            worse, better = check_positive(name, cur["score"], base, tolerance)
+        if worse:
+            problems.append(worse)
+        if better:
+            improved.append(better)
+
+    # Пропавший срез это тоже поломка: перестать мерить проще, чем починить.
+    for name in sorted(base):
+        if name not in rows:
+            problems.append(f"{name}: срез пропал из замера, был {base[name]:.4f}")
+
+    return problems, improved
+
+
+def report(title, lines):
+    """Печатает раздел отчёта, если в нём есть что показать."""
+    if not lines:
+        return
+    print(title)
+    for line in lines:
+        print(f"  {line}")
+
+
 def main():
     args = sys.argv[1:]
 
     if args and args[0] == "--init":
-        rows = parse(args[1])
-        if not rows:
-            print("не разобрано ни одной строки", file=sys.stderr)
-            return 2
-        out = {
-            "_комментарий": (
-                "Базовая линия качества. Меняет только человек и только "
-                "осознанно: ворота сравнивают с этими числами. Если их "
-                "может подвинуть тот, кто правит код, ворота бесполезны."
-            ),
-            "_допуск": DEFAULT_TOLERANCE,
-            "_допуск_ложных": DEFAULT_FP_TOLERANCE,
-            "срезы": {k: v["score"] for k, v in sorted(rows.items())
-                      if not k.startswith("neg_")},
-            # Отрицательные срезы закрепляются по доле ложных срабатываний,
-            # а не по доле изменённого: у них нет размеченных фрагментов,
-            # и «изменено» равно нулю по построению.
-            "ложные": {k: v["extra"] for k, v in sorted(rows.items())
-                       if k.startswith("neg_")},
-        }
-        print(json.dumps(out, ensure_ascii=False, indent=2))
-        return 0
+        return init_baseline(args[1])
 
     if len(args) != 2:
         print(__doc__, file=sys.stderr)
@@ -121,73 +202,16 @@ def main():
     baseline_path, score_path = args
     with open(baseline_path, encoding="utf-8") as fh:
         baseline = json.load(fh)
-    base = baseline.get("срезы", {})
-    base_fp = baseline.get("ложные", {})
-    tolerance = float(baseline.get("_допуск", DEFAULT_TOLERANCE))
-    fp_tolerance = float(baseline.get("_допуск_ложных", DEFAULT_FP_TOLERANCE))
 
     rows = parse(score_path)
     if not rows:
         print("вывод измерителя пуст или не разобран", file=sys.stderr)
         return 2
 
-    problems = []
-    improved = []
-
-    for name, cur in sorted(rows.items()):
-        score = cur["score"]
-
-        if name.startswith("neg_"):
-            fp = cur["extra"]
-            if name not in base_fp:
-                print(f"новый отрицательный срез {name}: ложных {fp:.2f}%, "
-                      f"в базовой линии его нет", file=sys.stderr)
-                continue
-            grew = fp - base_fp[name]
-            if grew > fp_tolerance:
-                problems.append(
-                    f"{name}: ложных срабатываний было {base_fp[name]:.2f}%, "
-                    f"стало {fp:.2f}%, рост {grew:.2f} при допуске {fp_tolerance}"
-                )
-            elif grew < -fp_tolerance:
-                improved.append(
-                    f"{name}: ложных {base_fp[name]:.2f}% → {fp:.2f}% "
-                    f"({-grew:.2f} меньше)"
-                )
-            continue
-
-        if name not in base:
-            # Новый срез это не повод закрывать ворота, но человек должен
-            # знать, что базовая линия отстала.
-            print(f"новый срез {name}: {score:.4f}, в базовой линии его нет",
-                  file=sys.stderr)
-            continue
-
-        delta = score - base[name]
-        if delta < -tolerance:
-            problems.append(
-                f"{name}: было {base[name]:.4f}, стало {score:.4f}, "
-                f"просадка {-delta:.4f} при допуске {tolerance}"
-            )
-        elif delta > tolerance:
-            improved.append(f"{name}: {base[name]:.4f} → {score:.4f} (+{delta:.4f})")
-
-    for name in sorted(base):
-        if name not in rows:
-            problems.append(f"{name}: срез пропал из замера, был {base[name]:.4f}")
-
-    if improved:
-        print("Стало лучше:")
-        for line in improved:
-            print(f"  {line}")
-
-    if problems:
-        print("Стало хуже:")
-        for line in problems:
-            print(f"  {line}")
-        return 1
-
-    return 0
+    problems, improved = compare(rows, baseline)
+    report("Стало лучше:", improved)
+    report("Стало хуже:", problems)
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":
