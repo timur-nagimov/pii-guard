@@ -367,7 +367,7 @@ func (s *Server) writeValidation(w http.ResponseWriter, r *http.Request, kind st
 // свободным списком каждое поле упаковывается в пустой интерфейс, и это
 // выделение памяти на каждое поле каждого запроса. LogAttrs принимает поля
 // как есть.
-func (s *Server) logProcess(r *http.Request, system, payloadID string, dir direction, size int, counts map[string]int, took time.Duration, degraded bool) {
+func (s *Server) logProcess(r *http.Request, system string, ev processEvent, degraded bool) {
 	ctx := context.Background()
 	if r != nil {
 		ctx = r.Context()
@@ -387,18 +387,18 @@ func (s *Server) logProcess(r *http.Request, system, payloadID string, dir direc
 	attrs = append(attrs,
 		logging.Event(logging.EventProcess),
 		logging.Component("api"),
-		slog.String(logging.FieldOp, string(dir)),
-		slog.String(logging.FieldPayloadID, logging.LogID(payloadID)),
-		slog.Int(logging.FieldBytes, size),
-		logging.Took(took),
+		slog.String(logging.FieldOp, string(ev.dir)),
+		slog.String(logging.FieldPayloadID, logging.LogID(ev.payloadID)),
+		slog.Int(logging.FieldBytes, ev.size),
+		logging.Took(ev.took),
 	)
 	// Имя системы передаётся всегда: обработчик журнала дописывает system из
 	// контекста только тогда, когда поля в записи нет.
 	if system != "" {
 		attrs = append(attrs, slog.String(logging.FieldSystem, system))
 	}
-	if len(counts) > 0 {
-		attrs = append(attrs, slog.Any("pii_types", counts))
+	if len(ev.counts) > 0 {
+		attrs = append(attrs, slog.Any("pii_types", ev.counts))
 	}
 	if degraded {
 		attrs = append(attrs, slog.Bool("degraded", true))

@@ -100,11 +100,14 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 			s.metrics.ObserveDegraded(sys.Name)
 			w.Header().Set("X-PII-Degraded", "1")
 			s.writeJSON(w, http.StatusOK, processResponse{Result: payload})
-			s.logProcess(r, sys.Name, id, dirMask, len(payload), nil, took, true)
+			// Счётчиков нет: разбор не дошёл до конца, и найденное считать не по
+			// чему.
+			ev := processEvent{payloadID: id, dir: dirMask, size: len(payload), took: took}
+			s.logProcess(r, sys.Name, ev, true)
 			// Текст ушёл назад неизменённым, то есть персональные данные в нём
 			// остались. Для отчётности это событие важнее удачного
 			// маскирования, поэтому в аудит оно идёт обязательно.
-			s.auditProcess(r, sys, id, dirMask, len(payload), nil, took, "degraded")
+			s.auditProcess(r, sys, ev, "degraded")
 			return
 		}
 		w.Header().Set("Retry-After", "1")
@@ -116,15 +119,18 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 		// Отказанная попытка развернуть маску это тоже обращение к
 		// персональным данным, и для службы контроля оно интереснее
 		// удавшегося: видно, кто просил чужое.
-		s.auditProcess(r, sys, id, dirDemask, len(payload), nil, time.Since(started), "forbidden")
+		s.auditProcess(r, sys, processEvent{
+			payloadID: id, dir: dirDemask, size: len(payload), took: time.Since(started),
+		}, "forbidden")
 		return
 	}
 
 	took := time.Since(started)
 	s.writeJSON(w, http.StatusOK, processResponse{Result: result.text})
 	s.metrics.ObserveProcess(sys.Name, string(dir), took, len(payload), result.counts)
-	s.logProcess(r, sys.Name, id, dir, len(payload), result.counts, took, false)
-	s.auditProcess(r, sys, id, dir, len(payload), result.counts, took, "ok")
+	ev := processEvent{payloadID: id, dir: dir, size: len(payload), counts: result.counts, took: took}
+	s.logProcess(r, sys.Name, ev, false)
+	s.auditProcess(r, sys, ev, "ok")
 	s.captureProcess(sys.Name, id, dir, payload, result.text, result.counts, took)
 }
 
@@ -155,24 +161,38 @@ func (s *Server) captureProcess(system, payloadID string, dir direction, payload
 	})
 }
 
+// processEvent — сведения об одной обработке: что за текст, в какую сторону
+// его вели, сколько нашли и сколько это заняло. Журнал и аудит описывают одно
+// и то же событие и раньше принимали эти пять значений по отдельности —
+// соседними параметрами одного типа, которые легко переставить местами и
+// ничего при этом не заметить. Собранные вместе, они ещё и считаются один раз
+// на месте вызова и уходят обоим получателям.
+type processEvent struct {
+	payloadID string
+	dir       direction
+	size      int
+	counts    map[string]int
+	took      time.Duration
+}
+
 // auditProcess записывает обращение к персональным данным в журнал аудита.
 // В записи только типы, их число и размер текста: ни исходного текста, ни
 // найденных значений, ни самого ключа доступа — от ключа остаётся отпечаток,
 // по которому видно, что ключ тот же, но не видно самого ключа.
-func (s *Server) auditProcess(r *http.Request, sys config.System, payloadID string, dir direction, size int, counts map[string]int, took time.Duration, result string) {
+func (s *Server) auditProcess(r *http.Request, sys config.System, ev processEvent, result string) {
 	if !s.audit.Enabled() {
 		return
 	}
 	ctx := r.Context()
 	s.audit.Write(ctx, logging.AuditEvent{
-		Op:        string(dir),
+		Op:        string(ev.dir),
 		System:    sys.Name,
 		Actor:     logging.ActorFromKey(r.Header.Get(sys.Auth.Header)),
-		PayloadID: payloadID,
-		Bytes:     size,
-		Types:     counts,
+		PayloadID: ev.payloadID,
+		Bytes:     ev.size,
+		Types:     ev.counts,
 		Result:    result,
-		Duration:  took,
+		Duration:  ev.took,
 	})
 }
 
