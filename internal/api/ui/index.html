@@ -604,18 +604,24 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     { cls: 'g7', title: 'Реквизиты выдачи', types: ['ISSUER', 'DEPT_CODE'] },
     { cls: 'g8', title: 'Карта', types: ['CARD'] },
     { cls: 'g9', title: 'Секретные коды', types: ['CVV', 'PIN'] },
-    { cls: 'g10', title: 'Номера учёта', types: ['INN', 'SNILS'] }
+    { cls: 'g10', title: 'Номера учёта', types: ['INN', 'SNILS'] },
   ];
 
   var TYPE_CLASS = {};
   var GROUP_TITLE = { g0: 'Прочие типы' };
   GROUPS.forEach(function (g) {
     GROUP_TITLE[g.cls] = g.title;
-    g.types.forEach(function (t) { TYPE_CLASS[t] = g.cls; });
+    g.types.forEach(function (t) {
+      TYPE_CLASS[t] = g.cls;
+    });
   });
 
-  var el = function (id) { return document.getElementById(id); };
-  var colorClass = function (type) { return TYPE_CLASS[type] || 'g0'; };
+  var el = function (id) {
+    return document.getElementById(id);
+  };
+  var colorClass = function (type) {
+    return TYPE_CLASS[type] || 'g0';
+  };
 
   var nodes = {
     text: el('text'),
@@ -657,7 +663,7 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     covHead: el('coverage-head'),
     covBody: el('coverage-body'),
     covEmpty: el('coverage-empty'),
-    covMeta: el('coverage-meta')
+    covMeta: el('coverage-meta'),
   };
 
   // Готовые примеры текста: жюри не должно придумывать текст само. Нижний
@@ -668,8 +674,18 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     chat: 'привет, это мария петрова, мой номер +7 903 555-12-34, напиши мне на maria.petrova@yandex.ru. встретимся завтра в 18:00 у метро, ок?',
     lower: 'клиент сергеев сергей сергеевич, телефон +7 921 000-11-22, паспорт 4510 987654, снилс 123-456-789 01, почта sergeev@bk.ru',
     history: 'Поэт Александр Пушкин родился в Москве в 1799 году. Отделение банка находится по адресу: г. Москва, ул. Тверская, д. 1. Клиент Петров Пётр Петрович, тел +7 495 123-45-67.',
-    latin: 'Customer John Smith, born 15.08.1990, passport AB1234567, phone +1 202 555-0147, email john.smith@gmail.com, card 4111 1111 1111 1111.'
+    latin: 'Customer John Smith, born 15.08.1990, passport AB1234567, phone +1 202 555-0147, email john.smith@gmail.com, card 4111 1111 1111 1111.',
   };
+
+  // Строки, которые страница повторяет в разных местах. Собраны в одном месте
+  // не ради экономии: разбредаясь по обработчикам, такие формулировки начинают
+  // расходиться между собой, и пользователь видит на один и тот же сбой два
+  // разных текста.
+  var INSPECT_PATH = '/v1/inspect';
+  var NO_CONNECTION = 'соединение не установлено';
+  var NO_ANSWER = 'Сервис не ответил: ';
+  var MISMATCH = 'Не совпало';
+  var NO_REASON = 'не указана';
 
   // Последний результат разбора: нужен для выгрузки файла.
   var lastData = null;
@@ -678,10 +694,20 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   var marks = new Map();
   var rows = new Map();
 
-  function show(id, on) { el(id).hidden = !on; }
+  // Вид маскирования по умолчанию у каждой системы, ключ — имя системы. Имя
+  // системы и есть значение варианта в списке, так что найти вид по выбору можно
+  // сразу. Раньше вид доставали разбором подписи варианта выражением: подпись
+  // собрана для чтения человеком, и любая её правка молча ломала бы этот разбор.
+  var systemPresets = new Map();
+
+  function show(id, on) {
+    el(id).hidden = !on;
+  }
 
   function clear(node) {
-    while (node.firstChild) { node.removeChild(node.firstChild); }
+    while (node.firstChild) {
+      node.firstChild.remove();
+    }
   }
 
   function note(message, isError) {
@@ -690,10 +716,18 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     nodes.notice.hidden = false;
   }
 
-  function hideNote() { nodes.notice.hidden = true; }
+  function hideNote() {
+    nodes.notice.hidden = true;
+  }
+
+  // Причина сбоя словами. У отказа fetch сообщения может не быть вовсе — тогда
+  // говорим про связь: пустая строка в сообщении выглядит как потерянный текст.
+  function failureText(err) {
+    return err && err.message ? err.message : NO_CONNECTION;
+  }
 
   function num(value, digits) {
-    return typeof value === 'number' && isFinite(value) ? value.toFixed(digits) : '0';
+    return Number.isFinite(value) ? value.toFixed(digits) : '0';
   }
 
   // Согласование числительного со словом: строка со сводкой читается людьми,
@@ -701,8 +735,12 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   function plural(count, one, few, many) {
     var mod10 = count % 10;
     var mod100 = count % 100;
-    if (mod10 === 1 && mod100 !== 11) { return one; }
-    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) { return few; }
+    if (mod10 === 1 && mod100 !== 11) {
+      return one;
+    }
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+      return few;
+    }
     return many;
   }
 
@@ -713,25 +751,35 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   // Превращение строки в массив кодовых точек. Сервис отдаёт границы в рунах,
   // а обычная индексация строки в браузере считает кодовые единицы, поэтому
   // разбор на кодовые точки нужен, чтобы подсветка не съезжала.
-  function toRunes(value) { return Array.from(value); }
+  function toRunes(value) {
+    return Array.from(value);
+  }
 
   function setActive(idx, on) {
     var mark = marks.get(idx);
     var row = rows.get(idx);
-    if (mark) { mark.classList.toggle('active', on); }
-    if (row) { row.classList.toggle('active', on); }
+    if (mark) {
+      mark.classList.toggle('active', on);
+    }
+    if (row) {
+      row.classList.toggle('active', on);
+    }
     if (on && mark) { mark.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
   }
 
   function bindHover(node, idx) {
-    node.addEventListener('mouseenter', function () { setActive(idx, true); });
-    node.addEventListener('mouseleave', function () { setActive(idx, false); });
+    node.addEventListener('mouseenter', function () {
+      setActive(idx, true);
+    });
+    node.addEventListener('mouseleave', function () {
+      setActive(idx, false);
+    });
   }
 
   function spanTitle(span) {
     return 'Тип: ' + span.type +
       '\nУверенность: ' + num(span.confidence, 2) +
-      '\nПричина: ' + (span.reason || 'не указана') +
+      '\nПричина: ' + (span.reason || NO_REASON) +
       '\nБайты: ' + span.start + '..' + span.end +
       ', символы: ' + span.start_rune + '..' + span.end_rune;
   }
@@ -743,7 +791,7 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     marks.clear();
 
     var runes = toRunes(text);
-    var ordered = spans.map(function (span, idx) { return { span: span, idx: idx }; });
+    var ordered = spans.map(function (span, idx) { return { span, idx }; });
     ordered.sort(function (a, b) {
       return (a.span.start_rune - b.span.start_rune) || (b.span.end_rune - a.span.end_rune);
     });
@@ -752,10 +800,18 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     ordered.forEach(function (item) {
       var from = item.span.start_rune;
       var to = item.span.end_rune;
-      if (typeof from !== 'number' || typeof to !== 'number') { return; }
-      if (from < cursor) { from = cursor; }
-      if (to > runes.length) { to = runes.length; }
-      if (to <= from) { return; }
+      if (typeof from !== 'number' || typeof to !== 'number') {
+        return;
+      }
+      if (from < cursor) {
+        from = cursor;
+      }
+      if (to > runes.length) {
+        to = runes.length;
+      }
+      if (to <= from) {
+        return;
+      }
 
       if (from > cursor) {
         nodes.highlight.appendChild(document.createTextNode(runes.slice(cursor, from).join('')));
@@ -780,7 +836,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     var seen = new Map();
     spans.forEach(function (span) {
       var cls = colorClass(span.type);
-      if (!seen.has(cls)) { seen.set(cls, new Set()); }
+      if (!seen.has(cls)) {
+        seen.set(cls, new Set());
+      }
       seen.get(cls).add(span.type);
     });
     seen.forEach(function (types, cls) {
@@ -794,7 +852,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   function cell(row, value, cssClass) {
     var td = document.createElement('td');
     td.textContent = value;
-    if (cssClass) { td.className = cssClass; }
+    if (cssClass) {
+      td.className = cssClass;
+    }
     row.appendChild(td);
     return td;
   }
@@ -870,7 +930,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
       items.className = 'subject-items';
       (subj.fragments || []).forEach(function (idx) {
         var sp = spans && spans[idx];
-        if (!sp) { return; }
+        if (!sp) {
+          return;
+        }
         var chip = document.createElement('span');
         chip.className = 'chip';
         chip.textContent = sp.type + ': ' + sp.value;
@@ -885,7 +947,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     clear(nodes.placeholders);
     var keys = map ? Object.keys(map) : [];
     nodes.placeholders.hidden = keys.length === 0;
-    if (keys.length === 0) { return; }
+    if (keys.length === 0) {
+      return;
+    }
 
     var head = document.createElement('div');
     head.textContent = 'Подстановки, по которым сервис восстанавливает ответ модели:';
@@ -910,7 +974,7 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
         counted(typesFound, 'типе', 'типах', 'типах')],
       ['Снято с маскирования', counted(data.skipped.length, 'фрагмент', 'фрагмента', 'фрагментов')],
       ['Разобрано за', num(data.took_ms, 2) + ' мс'],
-      ['Вид маскирования', data.preset + ', система ' + data.system]
+      ['Вид маскирования', data.preset + ', система ' + data.system],
     ];
     items.forEach(function (pair) {
       var box = document.createElement('span');
@@ -949,49 +1013,78 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     nodes.summary.hidden = true;
   }
 
+  // Тело ответа разбором JSON. Пустое тело и тело не в JSON — обычное дело:
+  // так отвечают отказы без подробностей и посредники на пути. Разбирать это как
+  // сбой нельзя, поэтому здесь просто нет данных, а решение принимает вызывающий
+  // по коду ответа.
+  async function readJSON(resp) {
+    var raw = await resp.text();
+    if (!raw) {
+      return null;
+    }
+    try {
+      return JSON.parse(raw);
+    } catch (err) {
+      return null;
+    }
+  }
+
   async function postJSON(path, body) {
     var resp = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
     });
-    var raw = await resp.text();
-    var data = null;
-    if (raw) {
-      try { data = JSON.parse(raw); } catch (err) { data = null; }
-    }
-    return { status: resp.status, ok: resp.ok, data: data };
+    return { status: resp.status, ok: resp.ok, data: await readJSON(resp) };
   }
 
-  // Разбор отказа сервиса. Отдельно выделен случай выключенного разбора:
-  // это настройка, а не сбой, и человеку надо сказать об этом прямо.
-  function describeFailure(result) {
-    var data = result.data;
-    var code = data && data.error ? data.error.code : '';
+  // Разобранные отказы сервиса: ключ — код ответа и код ошибки через пробел.
+  // Таблицей, а не цепочкой условий: отказов у сервиса становится больше по мере
+  // его роста, и каждый новый не должен добавлять развилку в разбор.
+  var FAILURE_BY_CODE = {
+    '502 upstream_unavailable': 'Языковая модель недоступна. Она внешняя и может не ответить: ' +
+      'проверьте адрес и токен модели в настройках выбранной системы.',
+    '501 upstream_not_configured': 'Для выбранной системы не задан адрес языковой модели. ' +
+      'Выберите систему с настроенным upstream, например kilo.',
+    '403 inspect_disabled': 'Разбор текста выключен настройкой, это не ошибка сети и не сбой страницы. ' +
+      'Сервис сознательно ответил отказом: параметр inspect_enabled выключен для этой системы ' +
+      'или в разделе defaults. Включите его в настройках сервиса и повторите разбор.',
+  };
 
-    if (result.status === 502 && code === 'upstream_unavailable') {
-      return 'Языковая модель недоступна. Она внешняя и может не ответить: ' +
-        'проверьте адрес и токен модели в настройках выбранной системы.';
-    }
-    if (result.status === 501 && code === 'upstream_not_configured') {
-      return 'Для выбранной системы не задан адрес языковой модели. ' +
-        'Выберите систему с настроенным upstream, например kilo.';
-    }
-    if (result.status === 403 && code === 'inspect_disabled') {
-      return 'Разбор текста выключен настройкой, это не ошибка сети и не сбой страницы. ' +
-        'Сервис сознательно ответил отказом: параметр inspect_enabled выключен для этой системы ' +
-        'или в разделе defaults. Включите его в настройках сервиса и повторите разбор.';
-    }
-    if (result.status === 403) {
-      return 'Сервис не опознал систему или она отключена. Проверьте раздел systems в настройках.';
-    }
+  // Отказы, где достаточно кода ответа: код ошибки у них может быть любым.
+  var FAILURE_BY_STATUS = {
+    403: 'Сервис не опознал систему или она отключена. Проверьте раздел systems в настройках.',
+  };
+
+  // Код ошибки из тела ответа. Тела может не быть вовсе — тогда судим по коду
+  // ответа, и пустая строка здесь именно это и означает.
+  function errorCode(data) {
+    return data && data.error ? data.error.code : '';
+  }
+
+  // Отказ, которого нет в таблице, объясняем тем, что прислал сам сервис:
+  // разбор запроса перечисляет непринятые поля, обычный отказ несёт одно
+  // сообщение, а в пустом ответе остаётся только код.
+  function describeUnlisted(result, code) {
+    var data = result.data;
     if (data && Array.isArray(data.detail) && data.detail.length > 0) {
-      return 'Запрос не принят: ' + data.detail.map(function (item) { return item.msg; }).join('; ');
+      return 'Запрос не принят: ' + data.detail.map(function (item) {
+        return item.msg;
+      }).join('; ');
     }
     if (data && data.error && data.error.message) {
       return 'Сервис ответил отказом (' + code + '): ' + data.error.message;
     }
     return 'Сервис ответил кодом ' + result.status + '.';
+  }
+
+  // Разбор отказа сервиса. Отдельно выделен случай выключенного разбора:
+  // это настройка, а не сбой, и человеку надо сказать об этом прямо.
+  function describeFailure(result) {
+    var code = errorCode(result.data);
+    return FAILURE_BY_CODE[result.status + ' ' + code] ||
+      FAILURE_BY_STATUS[result.status] ||
+      describeUnlisted(result, code);
   }
 
   // Матрица покрытия. Строки — типы персональных данных, столбцы — системы.
@@ -1002,90 +1095,120 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     task: 'задание',
     task_part: 'часть адреса',
     extra: 'сверх задания',
-    custom: 'настройкой'
+    custom: 'настройкой',
   };
 
   function coverageCellClass(value) {
-    if (value === 'disabled') { return 'disabled'; }
-    if (value === 'off') { return 'off'; }
+    if (value === 'disabled') {
+      return 'disabled';
+    }
+    if (value === 'off') {
+      return 'off';
+    }
     return 'preset';
   }
 
   function coverageCellText(value) {
-    if (value === 'disabled') { return 'выключено'; }
-    if (value === 'off') { return '—'; }
+    if (value === 'disabled') {
+      return 'выключено';
+    }
+    if (value === 'off') {
+      return '—';
+    }
     return value;
+  }
+
+  // Столбец системы в шапке: имя, порог уверенности и признак обратного
+  // преобразования. scope привязывает заголовок к столбцу: без него чтение с
+  // экрана не знает, какой системе принадлежит клетка, и матрица превращается
+  // в поток значений без подписей.
+  function coverageHeadCell(sys) {
+    var th = document.createElement('th');
+    th.scope = 'col';
+    var name = document.createElement('div');
+    name.textContent = sys.name;
+    th.appendChild(name);
+    var conf = document.createElement('div');
+    conf.className = 'conf';
+    conf.textContent = 'порог ' + num(sys.min_confidence, 2);
+    th.appendChild(conf);
+    var demask = document.createElement('div');
+    demask.className = sys.demask ? 'demask' : 'nodemask';
+    demask.textContent = sys.demask ? 'обратное преобразование' : 'без обратного';
+    th.appendChild(demask);
+    return th;
+  }
+
+  // Шапка: пустая клетка угла, затем по столбцу на систему.
+  function coverageHeadRow(systems) {
+    var headRow = document.createElement('tr');
+    var corner = document.createElement('th');
+    corner.scope = 'col';
+    corner.textContent = 'Тип';
+    headRow.appendChild(corner);
+    systems.forEach(function (sys) {
+      headRow.appendChild(coverageHeadCell(sys));
+    });
+    return headRow;
+  }
+
+  // Клетки строки — по одной на систему. Попутно отвечают, маскирует ли этот тип
+  // хоть одна включённая система: отдельный проход по тем же значениям ради
+  // одного признака только разошёлся бы с тем, что нарисовано в клетках.
+  function coverageRowCells(row, rowCells, systems) {
+    var maskedByAny = false;
+    systems.forEach(function (sys) {
+      var value = rowCells[sys.name] || 'off';
+      if (sys.enabled && value !== 'off' && value !== 'disabled') {
+        maskedByAny = true;
+      }
+      var td = document.createElement('td');
+      td.className = coverageCellClass(value);
+      td.textContent = coverageCellText(value);
+      row.appendChild(td);
+    });
+    return maskedByAny;
+  }
+
+  // Строка: тип, источник, затем клетки по системам. Дыра считается по
+  // включённым системам: тип из задания, который не маскирует ни одна. Дырой
+  // считается и незакрытая часть типа задания: индекс входит в требование про
+  // адрес, поэтому пропуск по нему так же важен.
+  function coverageRow(t, systems, cells) {
+    var row = document.createElement('tr');
+    var nameCell = document.createElement('td');
+    nameCell.className = 'type-name';
+    nameCell.textContent = t.name;
+    var src = document.createElement('span');
+    src.className = 'src';
+    src.textContent = SOURCE_TITLE[t.source] || t.source;
+    nameCell.appendChild(src);
+    row.appendChild(nameCell);
+
+    var maskedByAny = coverageRowCells(row, cells[t.name] || {}, systems);
+    var hole = t.source === 'task' || t.source === 'task_part';
+    if (hole && !maskedByAny) {
+      nameCell.classList.add('hole');
+      nameCell.title = 'Дыра: тип из задания не маскируется ни одной включённой системой';
+    }
+    return row;
   }
 
   function renderCoverage(data) {
     clear(nodes.covHead);
     clear(nodes.covBody);
+    // Подпись под матрицей тоже перерисовывается целиком: без очистки строка
+    // «Обновлено ...» прибавлялась бы к предыдущей каждые пять секунд.
+    clear(nodes.covMeta);
 
     var systems = data.systems || [];
     var types = data.types || [];
     var cells = data.cells || {};
     nodes.covEmpty.hidden = systems.length > 0 && types.length > 0;
 
-    // Шапка: пустая клетка угла, затем по столбцу на систему. Под именем
-    // системы — порог уверенности и признак обратного преобразования.
-    var headRow = document.createElement('tr');
-    var corner = document.createElement('th');
-    // scope привязывает заголовок к столбцу: без него чтение с экрана не знает,
-    // какой системе принадлежит клетка, и матрица превращается в поток чисел.
-    corner.scope = 'col';
-    corner.textContent = 'Тип';
-    headRow.appendChild(corner);
-    systems.forEach(function (sys) {
-      var th = document.createElement('th');
-      th.scope = 'col';
-      var name = document.createElement('div');
-      name.textContent = sys.name;
-      th.appendChild(name);
-      var conf = document.createElement('div');
-      conf.className = 'conf';
-      conf.textContent = 'порог ' + num(sys.min_confidence, 2);
-      th.appendChild(conf);
-      var demask = document.createElement('div');
-      demask.className = sys.demask ? 'demask' : 'nodemask';
-      demask.textContent = sys.demask ? 'обратное преобразование' : 'без обратного';
-      th.appendChild(demask);
-      headRow.appendChild(th);
-    });
-    nodes.covHead.appendChild(headRow);
-
-    // Строки: тип, источник, затем по клетке на систему. Дыра считается по
-    // включённым системам: тип из задания, которому не маскируется ни одна.
+    nodes.covHead.appendChild(coverageHeadRow(systems));
     types.forEach(function (t) {
-      var row = document.createElement('tr');
-      var nameCell = document.createElement('td');
-      nameCell.className = 'type-name';
-      nameCell.textContent = t.name;
-      var src = document.createElement('span');
-      src.className = 'src';
-      src.textContent = SOURCE_TITLE[t.source] || t.source;
-      nameCell.appendChild(src);
-      row.appendChild(nameCell);
-
-      var rowCells = cells[t.name] || {};
-      var maskedByAny = false;
-      // Дырой считается и незакрытая часть типа задания: индекс входит в
-      // требование про адрес, поэтому пропуск по нему так же важен.
-      var hole = t.source === 'task' || t.source === 'task_part';
-      systems.forEach(function (sys) {
-        var value = rowCells[sys.name] || 'off';
-        if (sys.enabled && value !== 'off' && value !== 'disabled') {
-          maskedByAny = true;
-        }
-        var td = document.createElement('td');
-        td.className = coverageCellClass(value);
-        td.textContent = coverageCellText(value);
-        row.appendChild(td);
-      });
-      if (hole && !maskedByAny) {
-        nameCell.classList.add('hole');
-        nameCell.title = 'Дыра: тип из задания не маскируется ни одной включённой системой';
-      }
-      nodes.covBody.appendChild(row);
+      nodes.covBody.appendChild(coverageRow(t, systems, cells));
     });
 
     var updated = document.createElement('span');
@@ -1106,18 +1229,14 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   async function refreshCoverage() {
     try {
       var resp = await fetch('/v1/coverage', { method: 'GET' });
-      var raw = await resp.text();
-      var data = null;
-      if (raw) {
-        try { data = JSON.parse(raw); } catch (err) { data = null; }
-      }
+      var data = await readJSON(resp);
       if (!resp.ok || !data) {
         renderCoverageError('сервис ответил кодом ' + resp.status);
         return;
       }
       renderCoverage(data);
     } catch (err) {
-      renderCoverageError(err && err.message ? err.message : 'соединение не установлено');
+      renderCoverageError(failureText(err));
     }
   }
 
@@ -1132,10 +1251,10 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     hideNote();
     nodes.run.disabled = true;
     try {
-      var result = await postJSON('/v1/inspect', {
-        text: text,
+      var result = await postJSON(INSPECT_PATH, {
+        text,
         preset: nodes.preset.value,
-        system: nodes.system.value
+        system: nodes.system.value,
       });
       if (!result.ok || !result.data) {
         hideResults();
@@ -1145,25 +1264,35 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
       render(result.data);
     } catch (err) {
       hideResults();
-      note('Сервис не ответил: ' + (err && err.message ? err.message : 'соединение не установлено') + '.', true);
+      note(NO_ANSWER + failureText(err) + '.', true);
     } finally {
       nodes.run.disabled = false;
     }
   }
 
+  // Идентификатор запроса связывает маскирование с обратным преобразованием: по
+  // нему сервис достаёт соответствия и возвращает в текст исходные значения. Тот,
+  // кто угадает чужой идентификатор, получит чужие персональные данные, поэтому
+  // источник здесь только криптостойкий. Math.random таким не является и для
+  // идентификатора не годится ни как основной путь, ни как запасной.
+  //
+  // crypto.randomUUID браузер отдаёт только на защищённом соединении, а страницу
+  // открывают и по обычному внутри контура; crypto.getRandomValues доступен и
+  // там, поэтому он и закрывает этот случай. Пустая строка означает, что
+  // криптостойкого источника нет вовсе, — такой ответ разбирает вызывающий.
   function newPayloadID() {
-    var crypto = window.crypto;
-    if (crypto && typeof crypto.randomUUID === 'function') {
-      return 'ui-' + crypto.randomUUID();
+    var source = window.crypto;
+    if (source && typeof source.randomUUID === 'function') {
+      return 'ui-' + source.randomUUID();
     }
-    if (crypto && typeof crypto.getRandomValues === 'function') {
+    if (source && typeof source.getRandomValues === 'function') {
       var buf = new Uint8Array(16);
-      crypto.getRandomValues(buf);
+      source.getRandomValues(buf);
       return 'ui-' + Array.from(buf).map(function (b) {
         return b.toString(16).padStart(2, '0');
       }).join('');
     }
-    return 'ui-' + Date.now().toString(16) + Math.random().toString(16).slice(2);
+    return '';
   }
 
   // Побайтовое сравнение: одинаковый вид строк на экране ещё не гарантирует
@@ -1200,14 +1329,19 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     nodes.roundtrip.disabled = true;
     try {
       var id = newPayloadID();
+      if (id === '') {
+        verdict(false, MISMATCH, 'Браузер не даёт криптостойкого источника случайности, ' +
+          'а идентификатор запроса угадывать нельзя: по нему сервис отдаёт исходные значения.');
+        return;
+      }
       var masked = await postJSON('/process', { payload: text, payload_id: id });
       if (!masked.ok || !masked.data) {
-        verdict(false, 'Не совпало', 'Маскирование не выполнено. ' + describeFailure(masked));
+        verdict(false, MISMATCH, 'Маскирование не выполнено. ' + describeFailure(masked));
         return;
       }
       var restored = await postJSON('/process', { payload: masked.data.result, payload_id: id });
       if (!restored.ok || !restored.data) {
-        verdict(false, 'Не совпало', 'Обратный вызов не выполнен. ' + describeFailure(restored));
+        verdict(false, MISMATCH, 'Обратный вызов не выполнен. ' + describeFailure(restored));
         return;
       }
 
@@ -1216,13 +1350,12 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
         verdict(true, 'Совпало', 'Восстановленный текст побайтово равен исходному, ' +
           counted(cmp.left, 'байт', 'байта', 'байт') + '. Идентификатор запроса: ' + id + '.');
       } else {
-        verdict(false, 'Не совпало', 'Первое расхождение в байте ' + cmp.at + '. Исходный текст: ' +
+        verdict(false, MISMATCH, 'Первое расхождение в байте ' + cmp.at + '. Исходный текст: ' +
           counted(cmp.left, 'байт', 'байта', 'байт') + ', восстановленный: ' +
           counted(cmp.right, 'байт', 'байта', 'байт') + '. Идентификатор запроса: ' + id + '.');
       }
     } catch (err) {
-      verdict(false, 'Не совпало', 'Сервис не ответил: ' +
-        (err && err.message ? err.message : 'соединение не установлено') + '.');
+      verdict(false, MISMATCH, NO_ANSWER + failureText(err) + '.');
     } finally {
       nodes.roundtrip.disabled = false;
     }
@@ -1244,23 +1377,23 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
 
   function rulesHeaders() {
     var h = { 'Content-Type': 'application/json' };
-    if (rulesToken !== '') { h['X-Admin-Token'] = rulesToken; }
+    if (rulesToken !== '') {
+      h['X-Admin-Token'] = rulesToken;
+    }
     return h;
   }
 
-  function ruleNote(message, isError) { note(message, isError); }
+  function ruleNote(message, isError) {
+    note(message, isError);
+  }
 
   async function sendRuleChange(body) {
     var resp = await fetch('/v1/rules', {
       method: 'POST',
       headers: rulesHeaders(),
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
     });
-    var raw = await resp.text();
-    var data = null;
-    if (raw) {
-      try { data = JSON.parse(raw); } catch (err) { data = null; }
-    }
+    var data = await readJSON(resp);
     if (!resp.ok) {
       var reason = data && data.error && data.error.message
         ? data.error.message
@@ -1333,113 +1466,148 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     });
   }
 
+  // Заголовок карточки системы: имя, переключатель «включена» и пометка о том,
+  // что выключенная система запросов не принимает.
+  function systemRuleHead(sys) {
+    var head = document.createElement('div');
+    head.className = 'head';
+    var name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = sys.name;
+    head.appendChild(name);
+
+    var onOff = document.createElement('label');
+    var onOffBox = document.createElement('input');
+    onOffBox.type = 'checkbox';
+    onOffBox.checked = sys.enabled;
+    onOffBox.disabled = !rulesState.writable;
+    onOffBox.addEventListener('change', async function () {
+      onOffBox.disabled = true;
+      await sendRuleChange({ op: 'set_system_enabled', system: sys.name, enabled: onOffBox.checked });
+    });
+    onOff.appendChild(onOffBox);
+    onOff.appendChild(document.createTextNode(' включена'));
+    head.appendChild(onOff);
+
+    if (!sys.enabled) {
+      var off = document.createElement('span');
+      off.className = 'off';
+      off.textContent = 'выключена: запросы от неё не принимаются';
+      head.appendChild(off);
+    }
+    return head;
+  }
+
+  // Галочки типов у системы. Возвращает и блок, и сами галочки: их читает кнопка
+  // сохранения, а собирать их обратно из разметки значило бы привязать сохранение
+  // к устройству разметки.
+  function systemTypeBoxes(sys, all, customNames) {
+    var types = document.createElement('div');
+    types.className = 'types';
+    var boxes = {};
+
+    var allLabel = document.createElement('label');
+    var allBox = document.createElement('input');
+    allBox.type = 'checkbox';
+    allBox.checked = sys.all_types;
+    allBox.disabled = !rulesState.writable;
+    allLabel.appendChild(allBox);
+    allLabel.appendChild(document.createTextNode(' все типы'));
+    types.appendChild(allLabel);
+
+    all.forEach(function (t) {
+      var label = document.createElement('label');
+      if (customNames.includes(t)) {
+        label.className = 'custom';
+      }
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = sys.all_types || (sys.types || []).includes(t);
+      cb.disabled = !rulesState.writable || sys.all_types;
+      boxes[t] = cb;
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(' ' + t));
+      types.appendChild(label);
+    });
+
+    // «Все типы» — не сумма галочек, а отдельное состояние настроек: при нём
+    // система маскирует и типы, добавленные позже. Поэтому остальные галочки
+    // при нём только показывают следствие и не редактируются.
+    allBox.addEventListener('change', function () {
+      all.forEach(function (t) {
+        boxes[t].disabled = allBox.checked;
+        if (allBox.checked) {
+          boxes[t].checked = true;
+        }
+      });
+    });
+
+    return { node: types, boxes, allBox };
+  }
+
+  // Что уйдёт в настройки: либо особое значение «все типы», либо перечень
+  // отмеченных галочками.
+  function chosenTypes(all, picker) {
+    if (picker.allBox.checked) {
+      return ['all'];
+    }
+    return all.filter(function (t) {
+      return picker.boxes[t].checked;
+    });
+  }
+
+  // Низ карточки: кнопка сохранения и словами то, что у системы настроено сейчас.
+  function systemRuleFoot(sys, all, picker) {
+    var foot = document.createElement('div');
+    foot.className = 'foot';
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = 'Сохранить типы';
+    save.disabled = !rulesState.writable;
+    save.addEventListener('click', async function () {
+      var chosen = chosenTypes(all, picker);
+      if (chosen.length === 0) {
+        ruleNote('Ни один тип не выбран. Пустой список в настройках означает «все типы», '
+          + 'поэтому его не принимают: чтобы система перестала работать, снимите «включена».', true);
+        return;
+      }
+      save.disabled = true;
+      await sendRuleChange({ op: 'set_system_types', system: sys.name, types: chosen });
+    });
+    foot.appendChild(save);
+
+    var state = document.createElement('span');
+    state.className = 'state';
+    state.textContent = sys.all_types
+      ? 'сейчас: все типы, включая те, что добавят позже'
+      : 'сейчас: ' + counted((sys.types || []).length, 'тип', 'типа', 'типов');
+    foot.appendChild(state);
+    return foot;
+  }
+
+  function systemRuleBox(sys, all, customNames) {
+    var box = document.createElement('div');
+    box.className = 'sys-rule';
+    box.appendChild(systemRuleHead(sys));
+    var picker = systemTypeBoxes(sys, all, customNames);
+    box.appendChild(picker.node);
+    box.appendChild(systemRuleFoot(sys, all, picker));
+    return box;
+  }
+
   function renderRuleSystems() {
     var host = el('rules-systems');
     clear(host);
 
     // Свои типы показываются вместе со встроенными: для системы разницы нет,
     // а помечаются цветом, чтобы было видно, что заведено руками.
-    var customNames = rulesState.custom.map(function (c) { return c.name; });
+    var customNames = rulesState.custom.map(function (c) {
+      return c.name;
+    });
     var all = rulesState.builtin.concat(customNames);
 
     rulesState.systems.forEach(function (sys) {
-      var box = document.createElement('div');
-      box.className = 'sys-rule';
-
-      var head = document.createElement('div');
-      head.className = 'head';
-      var name = document.createElement('span');
-      name.className = 'name';
-      name.textContent = sys.name;
-      head.appendChild(name);
-
-      var onOff = document.createElement('label');
-      var onOffBox = document.createElement('input');
-      onOffBox.type = 'checkbox';
-      onOffBox.checked = sys.enabled;
-      onOffBox.disabled = !rulesState.writable;
-      onOffBox.addEventListener('change', async function () {
-        onOffBox.disabled = true;
-        await sendRuleChange({ op: 'set_system_enabled', system: sys.name, enabled: onOffBox.checked });
-      });
-      onOff.appendChild(onOffBox);
-      onOff.appendChild(document.createTextNode(' включена'));
-      head.appendChild(onOff);
-
-      if (!sys.enabled) {
-        var off = document.createElement('span');
-        off.className = 'off';
-        off.textContent = 'выключена: запросы от неё не принимаются';
-        head.appendChild(off);
-      }
-      box.appendChild(head);
-
-      var types = document.createElement('div');
-      types.className = 'types';
-      var boxes = {};
-
-      var allLabel = document.createElement('label');
-      var allBox = document.createElement('input');
-      allBox.type = 'checkbox';
-      allBox.checked = sys.all_types;
-      allBox.disabled = !rulesState.writable;
-      allLabel.appendChild(allBox);
-      allLabel.appendChild(document.createTextNode(' все типы'));
-      types.appendChild(allLabel);
-
-      all.forEach(function (t) {
-        var label = document.createElement('label');
-        if (customNames.indexOf(t) >= 0) { label.className = 'custom'; }
-        var cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.checked = sys.all_types || (sys.types || []).indexOf(t) >= 0;
-        cb.disabled = !rulesState.writable || sys.all_types;
-        boxes[t] = cb;
-        label.appendChild(cb);
-        label.appendChild(document.createTextNode(' ' + t));
-        types.appendChild(label);
-      });
-
-      // «Все типы» — не сумма галочек, а отдельное состояние настроек: при
-      // нём система маскирует и типы, добавленные позже. Поэтому остальные
-      // галочки при нём только показывают следствие и не редактируются.
-      allBox.addEventListener('change', function () {
-        all.forEach(function (t) {
-          boxes[t].disabled = allBox.checked;
-          if (allBox.checked) { boxes[t].checked = true; }
-        });
-      });
-      box.appendChild(types);
-
-      var foot = document.createElement('div');
-      foot.className = 'foot';
-      var save = document.createElement('button');
-      save.type = 'button';
-      save.textContent = 'Сохранить типы';
-      save.disabled = !rulesState.writable;
-      save.addEventListener('click', async function () {
-        var chosen = allBox.checked
-          ? ['all']
-          : all.filter(function (t) { return boxes[t].checked; });
-        if (chosen.length === 0) {
-          ruleNote('Ни один тип не выбран. Пустой список в настройках означает «все типы», '
-            + 'поэтому его не принимают: чтобы система перестала работать, снимите «включена».', true);
-          return;
-        }
-        save.disabled = true;
-        await sendRuleChange({ op: 'set_system_types', system: sys.name, types: chosen });
-      });
-      foot.appendChild(save);
-
-      var state = document.createElement('span');
-      state.className = 'state';
-      state.textContent = sys.all_types
-        ? 'сейчас: все типы, включая те, что добавят позже'
-        : 'сейчас: ' + counted((sys.types || []).length, 'тип', 'типа', 'типов');
-      foot.appendChild(state);
-      box.appendChild(foot);
-
-      host.appendChild(box);
+      host.appendChild(systemRuleBox(sys, all, customNames));
     });
   }
 
@@ -1449,7 +1617,7 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
       writeEnabled: !!data.write_enabled,
       builtin: data.builtin_types || [],
       custom: data.custom_types || [],
-      systems: data.systems || []
+      systems: data.systems || [],
     };
     renderRulesState();
     renderCustomTypes();
@@ -1459,18 +1627,14 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   async function refreshRules() {
     try {
       var resp = await fetch('/v1/rules', { method: 'GET', headers: rulesHeaders() });
-      var raw = await resp.text();
-      var data = null;
-      if (raw) {
-        try { data = JSON.parse(raw); } catch (err) { data = null; }
-      }
+      var data = await readJSON(resp);
       if (!resp.ok || !data) {
         ruleNote('Перечень правил недоступен: сервис ответил кодом ' + resp.status, true);
         return;
       }
       renderRules(data);
     } catch (err) {
-      ruleNote('Перечень правил недоступен: ' + (err && err.message ? err.message : 'соединение не установлено'), true);
+      ruleNote('Перечень правил недоступен: ' + failureText(err), true);
     }
   }
 
@@ -1483,25 +1647,31 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     }
     var anchors = el('rule-anchors').value
       .split(',')
-      .map(function (a) { return a.trim(); })
-      .filter(function (a) { return a !== ''; });
+      .map(function (a) {
+        return a.trim();
+      })
+      .filter(function (a) {
+        return a !== '';
+      });
     var group = parseInt(el('rule-group').value, 10);
     return {
-      name: name,
-      pattern: pattern,
-      group: isNaN(group) ? 0 : group,
+      name,
+      pattern,
+      group: Number.isNaN(group) ? 0 : group,
       validator: el('rule-validator').value,
-      anchors: anchors,
-      require_anchor: el('rule-require-anchor').checked
+      anchors,
+      require_anchor: el('rule-require-anchor').checked,
     };
   }
 
   el('rule-add').addEventListener('click', async function () {
     var type = collectNewType();
-    if (type === null) { return; }
+    if (type === null) {
+      return;
+    }
     var btn = el('rule-add');
     btn.disabled = true;
-    var ok = await sendRuleChange({ op: 'add_type', type: type });
+    var ok = await sendRuleChange({ op: 'add_type', type });
     btn.disabled = false;
     if (ok) {
       el('rule-name').value = '';
@@ -1536,15 +1706,19 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   // с выбором, и это нагляднее любого описания.
   function loadSystems() {
     fetch('/v1/systems', { method: 'GET' })
-      .then(function (resp) { return resp.json(); })
+      .then(function (resp) {
+        return resp.json();
+      })
       .then(function (data) {
         var list = (data && data.systems) || [];
         clear(nodes.system);
+        systemPresets.clear();
         list.forEach(function (sys) {
           var opt = document.createElement('option');
           opt.value = sys.name;
           opt.textContent = sys.name + ' — ' + sys.preset +
             (sys.demask ? ', демаскирование' : ', без демаскирования');
+          systemPresets.set(sys.name, sys.preset);
           nodes.system.appendChild(opt);
         });
         if (list.length > 0) {
@@ -1560,19 +1734,23 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
 
   // При смене системы показываем её вид маскирования по умолчанию: так видно,
   // чем профили различаются. Пользователь всё равно может выбрать другой вид.
+  // Список видов на странице закреплён разметкой, а настройки систем живут
+  // отдельно и могут назвать вид, которого в списке нет. Записывать в выбор
+  // отсутствующее значение нельзя: браузер молча сбросит выбор на первый пункт.
+  function hasPresetOption(preset) {
+    return Array.from(nodes.preset.options).some(function (opt) {
+      return opt.value === preset;
+    });
+  }
+
   function syncPresetToSystem() {
     var name = nodes.system.value;
-    var opt = nodes.system.selectedOptions && nodes.system.selectedOptions[0];
-    if (!opt) { return; }
-    var label = opt.textContent;
-    var m = label.match(/—\s*(\w+)/);
-    if (m && m[1]) {
-      var preset = m[1];
-      var found = false;
-      for (var i = 0; i < nodes.preset.options.length; i++) {
-        if (nodes.preset.options[i].value === preset) { found = true; break; }
-      }
-      if (found) { nodes.preset.value = preset; }
+    var preset = systemPresets.get(name);
+    if (preset === undefined) {
+      return;
+    }
+    if (hasPresetOption(preset)) {
+      nodes.preset.value = preset;
     }
   }
 
@@ -1580,7 +1758,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
 
   function applyExample(key) {
     var text = EXAMPLES[key];
-    if (text === undefined) { return; }
+    if (text === undefined) {
+      return;
+    }
     nodes.text.value = text;
     hideNote();
     runInspect();
@@ -1603,26 +1783,27 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
 
   function buildExportText(data) {
     var lines = [];
-    lines.push('PII Guard: разбор текста');
-    lines.push('Система: ' + data.system);
-    lines.push('Вид маскирования: ' + data.preset);
-    lines.push('Размер: ' + data.text_bytes + ' байт, ' + data.text_runes + ' символов');
-    lines.push('Найдено: ' + data.spans.length + ' фрагментов, снято: ' + data.skipped.length);
-    lines.push('');
-    lines.push('Текст после маскирования:');
-    lines.push(data.masked || '');
-    lines.push('');
-    lines.push('Находки:');
+    lines.push(
+      'PII Guard: разбор текста',
+      'Система: ' + data.system,
+      'Вид маскирования: ' + data.preset,
+      'Размер: ' + data.text_bytes + ' байт, ' + data.text_runes + ' символов',
+      'Найдено: ' + data.spans.length + ' фрагментов, снято: ' + data.skipped.length,
+      '',
+      'Текст после маскирования:',
+      data.masked || '',
+      '',
+      'Находки:',
+    );
     data.spans.forEach(function (sp, i) {
       lines.push((i + 1) + '. [' + sp.type + '] "' + sp.value + '" -> "' +
         (sp.masked || '') + '" уверенность ' + num(sp.confidence, 2) +
-        ', причина: ' + (sp.reason || 'не указана'));
+        ', причина: ' + (sp.reason || NO_REASON));
     });
-    lines.push('');
-    lines.push('Снято с маскирования:');
+    lines.push('', 'Снято с маскирования:');
     data.skipped.forEach(function (sp, i) {
       lines.push((i + 1) + '. [' + sp.type + '] "' + sp.value +
-        '" причина: ' + (sp.reason || 'не указана'));
+        '" причина: ' + (sp.reason || NO_REASON));
     });
     return lines.join('\n');
   }
@@ -1640,7 +1821,7 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     a.download = 'pii-guard-inspect.txt';
     document.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
+    a.remove();
     URL.revokeObjectURL(url);
   }
 
@@ -1650,7 +1831,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   function extractModelText(data) {
     if (data && Array.isArray(data.choices) && data.choices.length > 0) {
       var msg = data.choices[0].message;
-      if (msg && typeof msg.content === 'string') { return msg.content; }
+      if (msg && typeof msg.content === 'string') {
+        return msg.content;
+      }
     }
     return '';
   }
@@ -1668,7 +1851,7 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
         '[' + inner.replace(/_/g, ' ') + ']',
         '<' + inner + '>',
         '{' + inner + '}',
-        inner
+        inner,
       ];
       variants.forEach(function (variant) {
         out = out.split(variant).join(value);
@@ -1689,10 +1872,10 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     nodes.modelRun.disabled = true;
     try {
       // 1. Маскируем текст плейсхолдерами и запоминаем соответствия.
-      var masked = await postJSON('/v1/inspect', {
-        text: text,
+      var masked = await postJSON(INSPECT_PATH, {
+        text,
         preset: 'token',
-        system: nodes.system.value
+        system: nodes.system.value,
       });
       if (!masked.ok || !masked.data) {
         note('Не удалось подготовить текст для модели. ' + describeFailure(masked), true);
@@ -1707,9 +1890,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
       var reply = await postJSON('/v1/chat/completions', {
         messages: [
           { role: 'system', content: prompt },
-          { role: 'user', content: sentText }
+          { role: 'user', content: sentText },
         ],
-        system: nodes.system.value
+        system: nodes.system.value,
       });
       if (!reply.ok || !reply.data) {
         note('Модель не ответила. ' + describeFailure(reply), true);
@@ -1727,7 +1910,7 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
       nodes.modelRestored.textContent = restored;
       show('panel-model', true);
     } catch (err) {
-      note('Сервис не ответил: ' + (err && err.message ? err.message : 'соединение не установлено') + '.', true);
+      note(NO_ANSWER + failureText(err) + '.', true);
     } finally {
       nodes.model.disabled = false;
       nodes.modelRun.disabled = false;
@@ -1738,8 +1921,9 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
 
   function fillCompareSelect(select) {
     clear(select);
-    for (var i = 0; i < nodes.preset.options.length; i++) {
-      var opt = nodes.preset.options[i];
+    // Перечень вариантов снимается копией: options — живой список, и обход по
+    // счётчику держался бы на том, что список не меняется под руками.
+    for (var opt of Array.from(nodes.preset.options)) {
       var copy = document.createElement('option');
       copy.value = opt.value;
       copy.textContent = opt.textContent;
@@ -1758,8 +1942,8 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
     try {
       var a = nodes.compareA.value;
       var b = nodes.compareB.value;
-      var ra = await postJSON('/v1/inspect', { text: text, preset: a, system: nodes.system.value });
-      var rb = await postJSON('/v1/inspect', { text: text, preset: b, system: nodes.system.value });
+      var ra = await postJSON(INSPECT_PATH, { text, preset: a, system: nodes.system.value });
+      var rb = await postJSON(INSPECT_PATH, { text, preset: b, system: nodes.system.value });
       if (!ra.ok || !ra.data || !rb.ok || !rb.data) {
         note('Не удалось выполнить сравнение. ' +
           describeFailure(ra.ok ? rb : ra), true);
@@ -1771,7 +1955,7 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
       nodes.compareBText.textContent = rb.data.masked || '';
       show('panel-compare', true);
     } catch (err) {
-      note('Сервис не ответил: ' + (err && err.message ? err.message : 'соединение не установлено') + '.', true);
+      note(NO_ANSWER + failureText(err) + '.', true);
     } finally {
       nodes.compareRun.disabled = false;
     }
@@ -1786,11 +1970,15 @@ input[type="file"] { font-size: 13px; color: var(--ink-soft); max-width: 260px; 
   nodes.exportBtn.addEventListener('click', exportResult);
   nodes.file.addEventListener('change', function () {
     var file = nodes.file.files && nodes.file.files[0];
-    if (file) { readFile(file); }
+    if (file) {
+      readFile(file);
+    }
     nodes.file.value = '';
   });
   document.querySelectorAll('.chip-btn[data-example]').forEach(function (btn) {
-    btn.addEventListener('click', function () { applyExample(btn.getAttribute('data-example')); });
+    btn.addEventListener('click', function () {
+      applyExample(btn.getAttribute('data-example'));
+    });
   });
 
   fillCompareSelect(nodes.compareA);
