@@ -234,8 +234,7 @@ func sentenceBounds(text string) [][2]int {
 			start = i + 1
 			continue
 		}
-		if (c == '.' || c == '!' || c == '?' || c == ';') &&
-			(i+1 >= len(text) || text[i+1] == ' ' || text[i+1] == '\n') {
+		if sentenceStop(c) && stopEndsSentence(text, i) {
 			bounds = append(bounds, [2]int{start, i + 1})
 			start = i + 1
 		}
@@ -244,6 +243,24 @@ func sentenceBounds(text string) [][2]int {
 		bounds = append(bounds, [2]int{start, len(text)})
 	}
 	return bounds
+}
+
+// sentenceStop сообщает, что знак способен закончить предложение.
+func sentenceStop(b byte) bool {
+	switch b {
+	case '.', '!', '?', ';':
+		return true
+	default:
+		return false
+	}
+}
+
+// stopEndsSentence сообщает, что знак в позиции i действительно закрыл
+// предложение: за ним идёт пробел, перевод строки или конец текста. Проверка
+// длины оставлена здесь же, рядом с обращением по i+1: порознь они дали бы
+// выход за границу строки на последнем байте текста.
+func stopEndsSentence(text string, i int) bool {
+	return i+1 >= len(text) || text[i+1] == ' ' || text[i+1] == '\n'
 }
 
 // sentenceIndex возвращает индекс предложения, в которое попадает смещение.

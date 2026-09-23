@@ -282,23 +282,92 @@ func (w *logWriter) flushEvery(d time.Duration) {
 	}()
 }
 
+// run поднимает сервис и держит его до сигнала остановки. Этапы запуска —
+// хранилище, движок, слушатели, ожидание остановки — разнесены по отдельным
+// функциям, а закрытие ресурсов оставлено здесь: отложенный вызов внутри
+// вспомогательной функции сработал бы на выходе из неё, то есть сразу после
+// запуска, а не при остановке сервиса.
 func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 	log := lg.Slog()
-	key, err := storeKey(cfg.Store.KeyEnv, log)
-	if err != nil {
-		return err
-	}
-	st, err := store.New(store.Config{
-		Key:        key,
-		TTL:        cfg.Store.TTL,
-		MaxRecords: cfg.Store.MaxRecords,
-		Redis:      cfg.Store.Redis,
-	})
+	st, err := openStore(cfg, log)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 
+	reg, err := newRegistry(cfg)
+	if err != nil {
+		return err
+	}
+	m := newMetrics(lg, log)
+	eng := newEngine(reg, m, log)
+
+	srv := api.New(cfg, st, eng, m, log)
+	srv.SetLogging(lg)
+	if capw := openCapture(cfg, srv, log); capw != nil {
+		defer func() { _ = capw.Close() }()
+	}
+	// Ручка управления правилами правит тот же файл, из которого сервис
+	// прочитал настройки, и её правка подхватывается обычным перечитыванием.
+	srv.SetConfigPath(configPath)
+	watchStoreDegradation(cfg, st, srv, m, log)
+
+	// Маршруты собираются один раз и отдаются обоим слушателям. Второй вызов
+	// Routes дал бы вторую прослойку журнала со своим счётчиком прореживания,
+	// и коэффициент на деле оказался бы вдвое мягче заданного.
+	handler := srv.Routes()
+
+	log.Info("сервис запущен",
+		logging.Event(logging.EventServiceStart),
+		slog.String("log_level", lg.LevelName()),
+		slog.Int("sample_n", cfg.Logging.SampleN),
+		slog.Bool("shared_store", st.Shared()),
+		slog.Bool("audit", lg.Audit().Enabled()))
+
+	httpSrv, httpsSrv, errCh := startListeners(cfg, handler, reg, log)
+
+	reload := make(chan os.Signal, 1)
+	signal.Notify(reload, syscall.SIGHUP)
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	applyConfig := newConfigApplier(configPath, srv, eng, reg, log)
+	// Ручка управления правилами применяет свою правку тем же кодом, что и
+	// наблюдение за файлом, только сразу, а не к ближайшему обходу.
+	srv.SetReloader(func() error { return applyConfig("rules_api") })
+	go watchConfig(configPath, applyConfig, log, reload)
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-stop:
+		log.Info("получен сигнал остановки, снимаю готовность",
+			logging.Event(logging.EventServiceStop), logging.Component("api"),
+			slog.String("drain", cfg.Server.DrainTimeout.String()))
+	}
+
+	return shutdown(cfg, srv, httpSrv, httpsSrv, stop, log)
+}
+
+// openStore читает ключ шифрования и поднимает хранилище масок. Закрывает
+// хранилище вызывающий: оно живёт ровно столько же, сколько сам сервис.
+func openStore(cfg *config.Config, log *slog.Logger) (*store.Store, error) {
+	key, err := storeKey(cfg.Store.KeyEnv, log)
+	if err != nil {
+		return nil, err
+	}
+	return store.New(store.Config{
+		Key:        key,
+		TTL:        cfg.Store.TTL,
+		MaxRecords: cfg.Store.MaxRecords,
+		Redis:      cfg.Store.Redis,
+	})
+}
+
+// newRegistry собирает набор детекторов: встроенные и типы из настроек. Сбой
+// правила из настроек не даёт сервису подняться — иначе он работал бы,
+// молча не находя заявленный тип.
+func newRegistry(cfg *config.Config) (*pii.Registry, error) {
 	reg := pii.NewRegistry()
 	reg.Register(
 		pii.NewNumericDetector(),
@@ -315,9 +384,13 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 		pii.NewExtraDetector(),
 	)
 	if err := applyCustomTypes(reg, cfg); err != nil {
-		return fmt.Errorf("правила custom_types: %w", err)
+		return nil, fmt.Errorf("правила custom_types: %w", err)
 	}
+	return reg, nil
+}
 
+// newMetrics заводит общий реестр показателей.
+func newMetrics(lg *logging.Logger, log *slog.Logger) *metrics.Metrics {
 	m := metrics.New()
 	// Показатели самого журнала в общем реестре: по ним видно, срабатывала ли
 	// защита от утечки и сколько записей съели глушитель повторов и
@@ -326,6 +399,12 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 		log.Warn("показатели журнала не зарегистрированы",
 			logging.Component("metrics"), logging.Err(rerr))
 	}
+	return m
+}
+
+// newEngine собирает движок и привязывает перехват сбоев к показателям и
+// журналу.
+func newEngine(reg *pii.Registry, m *metrics.Metrics, log *slog.Logger) *engine.Engine {
 	// Сбой отдельного детектора пропускает его тип, но не роняет ответ.
 	reg.OnPanic(func(types []pii.Type, recovered any) {
 		name := "unknown"
@@ -348,13 +427,15 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 			logging.Component("engine"),
 			slog.Int("chunk", chunk), slog.Any("panic", recovered))
 	})
-	srv := api.New(cfg, st, eng, m, log)
-	srv.SetLogging(lg)
+	return eng
+}
 
-	// Канал сохранения запросов. Выключенный канал файла не открывает, и
-	// проверять признак здесь не нужно. Ошибка открытия файла сервис не
-	// останавливает: захват — вспомогательная задача, ради неё отказывать в
-	// обслуживании нельзя, но промолчать о ней тоже нельзя.
+// openCapture открывает канал сохранения запросов и отдаёт его серверу.
+// Выключенный канал файла не открывает, и проверять признак здесь не нужно.
+// Ошибка открытия файла сервис не останавливает: захват — вспомогательная
+// задача, ради неё отказывать в обслуживании нельзя, но промолчать о ней тоже
+// нельзя. Возвращает nil только при такой ошибке; закрывает канал вызывающий.
+func openCapture(cfg *config.Config, srv *api.Server, log *slog.Logger) *capture.Writer {
 	capw, err := capture.New(capture.Config{
 		Enabled:     cfg.Capture.Enabled,
 		Path:        cfg.Capture.Path,
@@ -367,94 +448,79 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 		log.Error("захват запросов не включился",
 			logging.Event("capture_failed"), logging.Component("capture"),
 			slog.String("path", cfg.Capture.Path), slog.Any("error", err))
-	} else {
-		srv.SetCapture(capw)
-		defer func() { _ = capw.Close() }()
-		if capw.Enabled() {
-			log.Info("захват запросов включён",
-				logging.Event("capture_on"), logging.Component("capture"),
-				slog.String("path", cfg.Capture.Path),
-				slog.Bool("with_payload", capw.WithPayload()))
-		}
+		return nil
 	}
-	// Ручка управления правилами правит тот же файл, из которого сервис
-	// прочитал настройки, и её правка подхватывается обычным перечитыванием.
-	srv.SetConfigPath(configPath)
-	watchStoreDegradation(cfg, st, srv, m, log)
-
-	// Маршруты собираются один раз и отдаются обоим слушателям. Второй вызов
-	// Routes дал бы вторую прослойку журнала со своим счётчиком прореживания,
-	// и коэффициент на деле оказался бы вдвое мягче заданного.
-	handler := srv.Routes()
-	httpSrv := &http.Server{
-		Addr:              cfg.Server.HTTP,
-		Handler:           handler,
-		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
-		ReadTimeout:       cfg.Server.ReadTimeout,
-		WriteTimeout:      cfg.Server.WriteTimeout,
-		IdleTimeout:       cfg.Server.IdleTimeout,
+	srv.SetCapture(capw)
+	if capw.Enabled() {
+		log.Info("захват запросов включён",
+			logging.Event("capture_on"), logging.Component("capture"),
+			slog.String("path", cfg.Capture.Path),
+			slog.Bool("with_payload", capw.WithPayload()))
 	}
+	return capw
+}
 
-	log.Info("сервис запущен",
-		logging.Event(logging.EventServiceStart),
-		slog.String("log_level", lg.LevelName()),
-		slog.Int("sample_n", cfg.Logging.SampleN),
-		slog.Bool("shared_store", st.Shared()),
-		slog.Bool("audit", lg.Audit().Enabled()))
-
+// startListeners поднимает рабочие слушатели и возвращает их вместе с каналом
+// ошибок. Канал буферизован на оба слушателя: каждый обязан суметь доложить об
+// ошибке и завершиться, даже когда остановку вызвал не он и его никто уже не
+// слушает.
+func startListeners(cfg *config.Config, handler http.Handler, reg *pii.Registry, log *slog.Logger) (*http.Server, *http.Server, chan error) {
 	errCh := make(chan error, 2)
+	httpSrv := newHTTPServer(cfg, cfg.Server.HTTP, handler)
 	go func() {
 		log.Info("слушаю HTTP",
 			logging.Event(logging.EventListen), logging.Component("api"),
 			slog.String("addr", cfg.Server.HTTP), slog.Int("detectors", len(reg.Detectors())))
 		errCh <- httpSrv.ListenAndServe()
 	}()
+	httpsSrv := startHTTPS(cfg, handler, errCh, log)
+	return httpSrv, httpsSrv, errCh
+}
 
-	var httpsSrv *http.Server
-	if cfg.Server.HTTPS != "" {
-		cert, certErr := selfSignedCert()
-		if certErr != nil {
-			log.Warn("не удалось подготовить сертификат, HTTPS выключен",
-				logging.Component("api"), logging.Err(certErr))
-		} else {
-			httpsSrv = &http.Server{
-				Addr:              cfg.Server.HTTPS,
-				Handler:           handler,
-				ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
-				ReadTimeout:       cfg.Server.ReadTimeout,
-				WriteTimeout:      cfg.Server.WriteTimeout,
-				IdleTimeout:       cfg.Server.IdleTimeout,
-				TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
-			}
-			go func() {
-				log.Info("слушаю HTTPS",
-					logging.Event(logging.EventListen), logging.Component("api"),
-					slog.String("addr", cfg.Server.HTTPS))
-				errCh <- httpsSrv.ListenAndServeTLS("", "")
-			}()
-		}
+// newHTTPServer собирает слушатель с общими сроками из настроек. Оба
+// слушателя собираются одной функцией: разойдись их сроки, HTTPS вёл бы себя
+// под нагрузкой иначе, чем HTTP, и объяснить разницу было бы нечем.
+func newHTTPServer(cfg *config.Config, addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
+		ReadTimeout:       cfg.Server.ReadTimeout,
+		WriteTimeout:      cfg.Server.WriteTimeout,
+		IdleTimeout:       cfg.Server.IdleTimeout,
 	}
+}
 
-	reload := make(chan os.Signal, 1)
-	signal.Notify(reload, syscall.SIGHUP)
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-
-	applyConfig := newConfigApplier(configPath, srv, eng, reg, log)
-	// Ручка управления правилами применяет свою правку тем же кодом, что и
-	// наблюдение за файлом, только сразу, а не к ближайшему обходу.
-	srv.SetReloader(func() error { return applyConfig("rules_api") })
-	go watchConfig(configPath, applyConfig, log, reload)
-
-	select {
-	case err := <-errCh:
-		return err
-	case <-stop:
-		log.Info("получен сигнал остановки, снимаю готовность",
-			logging.Event(logging.EventServiceStop), logging.Component("api"),
-			slog.String("drain", cfg.Server.DrainTimeout.String()))
+// startHTTPS поднимает слушатель TLS, если его адрес задан настройками.
+// Сертификат самоподписанный и делается на месте; если подготовить его не
+// удалось, сервис остаётся на HTTP: отказ шифрованного входа не повод не
+// обслуживать никого. Пустой ответ означает, что слушателя нет.
+func startHTTPS(cfg *config.Config, handler http.Handler, errCh chan<- error, log *slog.Logger) *http.Server {
+	if cfg.Server.HTTPS == "" {
+		return nil
 	}
+	cert, err := selfSignedCert()
+	if err != nil {
+		log.Warn("не удалось подготовить сертификат, HTTPS выключен",
+			logging.Component("api"), logging.Err(err))
+		return nil
+	}
+	httpsSrv := newHTTPServer(cfg, cfg.Server.HTTPS, handler)
+	httpsSrv.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	go func() {
+		log.Info("слушаю HTTPS",
+			logging.Event(logging.EventListen), logging.Component("api"),
+			slog.String("addr", cfg.Server.HTTPS))
+		errCh <- httpsSrv.ListenAndServeTLS("", "")
+	}()
+	return httpsSrv
+}
 
+// shutdown выводит копию из обслуживания и закрывает слушатели. Порядок
+// обязателен: сначала снимается готовность и выдерживается окно вывода, и
+// только потом закрывается приём, иначе запросы, посланные балансировщиком до
+// того, как он заметил снятие готовности, попадут в закрытый слушатель.
+func shutdown(cfg *config.Config, srv *api.Server, httpSrv, httpsSrv *http.Server, stop <-chan os.Signal, log *slog.Logger) error {
 	srv.SetReady(false)
 	drain(cfg.Server.DrainTimeout, stop, log)
 
