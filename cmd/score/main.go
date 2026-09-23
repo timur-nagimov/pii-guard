@@ -25,6 +25,15 @@ import (
 	"pii-guard/internal/pii"
 )
 
+// Заголовки колонок, общие для всех таблиц замера. Вынесены в константы,
+// потому что каждая встречается в трёх разных таблицах: повторять их строкой
+// значит однажды поправить одну и разойтись с остальными.
+const (
+	colChanged   = "изменено"
+	colTouched   = "затронуто"
+	colFragments = "фрагментов"
+)
+
 // sample — элемент размеченного набора.
 type sample struct {
 	ID       string     `json:"id"`
@@ -233,7 +242,7 @@ func scoreSetSample(sc *scanner, s *sample, lower bool, acc *setStats, setName s
 func printTypeSets(byType map[string]map[string]*stat, preset mask.Preset, lower, split bool) {
 	// Заголовок: тип, набор, изменено, затронуто, фрагментов.
 	fmt.Printf("\nКачество по типам и наборам (пресет %s%s)\n", preset, lowerLabel(lower))
-	fmt.Printf("%-16s %-22s %10s %10s %10s\n", "тип", "набор", "изменено", "затронуто", "фрагментов")
+	fmt.Printf("%-16s %-22s %10s %10s %10s\n", "тип", "набор", colChanged, colTouched, colFragments)
 
 	for _, t := range sortedTypeKeys(byType) {
 		ts := byType[t]
@@ -248,7 +257,7 @@ func printTypeSets(byType map[string]map[string]*stat, preset mask.Preset, lower
 // printSetTotals печатает итог по каждому набору целиком: ради него наборы и
 // прогоняются вместе, поодиночке их не сравнить.
 func printSetTotals(bySet map[string]*stat) {
-	fmt.Printf("\nИтог по наборам\n%-22s %10s %10s %10s %10s\n", "набор", "изменено", "затронуто", "фрагментов", "ложных")
+	fmt.Printf("\nИтог по наборам\n%-22s %10s %10s %10s %10s\n", "набор", colChanged, colTouched, colFragments, "ложных")
 	for _, n := range sortedKeys(bySet) {
 		s := bySet[n]
 		fmt.Printf("%-22s %10.4f %9.1f%% %10d %9.2f%%\n",
@@ -575,7 +584,7 @@ func report(title string, m map[string]*stat, only string, split bool) {
 		return keys[i] < keys[j]
 	})
 	fmt.Printf("\n%s\n%-24s %10s %10s %10s %10s %10s %10s\n",
-		title, "срез", "изменено", "затронуто", "пропущено", "частично", "ложных", "фрагментов")
+		title, "срез", colChanged, colTouched, "пропущено", "частично", "ложных", colFragments)
 	for _, k := range keys {
 		s := m[k]
 		// Доля ложных печатается только там, где есть что делить: у среза без
