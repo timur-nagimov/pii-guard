@@ -90,7 +90,10 @@ type customDetector struct {
 func NewCustomDetector(rules []CustomRule) (Detector, error) {
 	det := customDetector{}
 	seen := make(map[Type]bool, len(rules))
-	for _, rule := range rules {
+	// Правило берётся по указателю: описание типа занимает почти сотню байт,
+	// и копировать его на каждом шаге незачем — разбор только читает поля.
+	for i := range rules {
+		rule := &rules[i]
 		compiled, err := compileCustomRule(rule)
 		if err != nil {
 			return nil, err
@@ -105,7 +108,7 @@ func NewCustomDetector(rules []CustomRule) (Detector, error) {
 }
 
 // compileCustomRule проверяет одно правило и готовит его к работе.
-func compileCustomRule(rule CustomRule) (compiledCustomRule, error) {
+func compileCustomRule(rule *CustomRule) (compiledCustomRule, error) {
 	if rule.Name == "" {
 		return compiledCustomRule{}, errors.New("в правиле custom_types не задано имя типа")
 	}
@@ -239,7 +242,7 @@ func (c customDetector) Detect(d *Doc) []Span {
 }
 
 // collect применяет одно правило, но не больше limit совпадений.
-func (r compiledCustomRule) collect(d *Doc, limit int) []Span {
+func (r *compiledCustomRule) collect(d *Doc, limit int) []Span {
 	matches := r.re.FindAllStringSubmatchIndex(d.Lower, limit)
 	out := make([]Span, 0, len(matches))
 	for _, m := range matches {
@@ -252,7 +255,7 @@ func (r compiledCustomRule) collect(d *Doc, limit int) []Span {
 
 // spanFor превращает одно совпадение в фрагмент, проверяя якорь и контрольную
 // сумму. Второй результат ложный, если совпадение отбраковано.
-func (r compiledCustomRule) spanFor(d *Doc, m []int) (Span, bool) {
+func (r *compiledCustomRule) spanFor(d *Doc, m []int) (Span, bool) {
 	start, end, ok := r.bounds(m)
 	if !ok {
 		return Span{}, false
@@ -282,8 +285,8 @@ func (r compiledCustomRule) spanFor(d *Doc, m []int) (Span, bool) {
 }
 
 // bounds возвращает границы совпадения с учётом заданной группы.
-func (r compiledCustomRule) bounds(m []int) (int, int, bool) {
-	start, end := m[0], m[1]
+func (r *compiledCustomRule) bounds(m []int) (start, end int, ok bool) {
+	start, end = m[0], m[1]
 	if r.group > 0 {
 		idx := 2 * r.group
 		if idx+1 >= len(m) || m[idx] < 0 {
@@ -300,7 +303,7 @@ func (r compiledCustomRule) bounds(m []int) (int, int, bool) {
 // Контрольная сумма только повышает уверенность и не является условием:
 // в проверочных текстах номера выдуманные и сумму не проходят, а пропуск
 // такого фрагмента стоит дороже лишнего срабатывания.
-func customConfidence(hasValidator, passed, hasAnchor bool) (float64, string) {
+func customConfidence(hasValidator, passed, hasAnchor bool) (conf float64, reason string) {
 	switch {
 	case hasValidator && passed && hasAnchor:
 		return ConfHigh, "checksum+anchor"

@@ -44,7 +44,7 @@ func FuzzDetect(f *testing.F) {
 			}
 		}
 		// Контекстные правила тоже обязаны пережить любой текст.
-		filter := NewContextFilter(ContextOptions{PublicFigures: true, OrgAddresses: true})
+		filter := NewContextFilter(&ContextOptions{PublicFigures: true, OrgAddresses: true})
 		filter.Apply(doc, spans)
 	})
 }
@@ -111,7 +111,7 @@ func FuzzWindowRunes(f *testing.F) {
 // произвольному набору фрагментов. Правила снимают фрагменты, и ошибка в
 // границах здесь роняет обработчик.
 func FuzzContextFilter(f *testing.F) {
-	filter := NewContextFilter(ContextOptions{PublicFigures: true, OrgAddresses: true})
+	filter := NewContextFilter(&ContextOptions{PublicFigures: true, OrgAddresses: true})
 	f.Fuzz(func(t *testing.T, text string, a, b, c, d int) {
 		if len(text) > 4<<20 {
 			t.Skip()
