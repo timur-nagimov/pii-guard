@@ -176,8 +176,13 @@ func isLoopback(remoteAddr string) bool {
 // withRecover перехватывает сбой обработчика. Пятисотый код недопустим:
 // пять подряд невалидных ответов останавливают прогон проверяющей системы,
 // поэтому в худшем случае отвечаем кодом временной недоступности.
+//
+// Если заголовок и тело уже ушли клиенту, дописывать ответ нельзя: это дало бы
+// второй заголовок и испорченное тело. Поэтому обёртка ответа запоминает, был
+// ли заголовок отправлен, и при сбое после отправки перехват молчит.
 func (s *Server) withRecover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sw := &statusWriter{ResponseWriter: w}
 		defer func() {
 			if rec := recover(); rec != nil {
 				s.metrics.ObservePanic("handler")
@@ -186,12 +191,40 @@ func (s *Server) withRecover(next http.Handler) http.Handler {
 					logging.Component("api"),
 					slog.String(logging.FieldPath, r.URL.Path),
 					slog.Any("panic", rec))
+				if sw.wroteHeader {
+					// Ответ уже ушёл клиенту: дописывать нечего.
+					return
+				}
 				w.Header().Set("Retry-After", "1")
 				s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "временная ошибка обработки")
 			}
 		}()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(sw, r)
 	})
+}
+
+// statusWriter запоминает, отправлен ли заголовок ответа клиенту. Нужен
+// перехвату сбоя, чтобы не писать второй ответ поверх уже отправленного.
+type statusWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+// WriteHeader запоминает отправку заголовка и не пишет его повторно.
+func (w *statusWriter) WriteHeader(code int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// Write отправляет тело, считая заголовок отправленным, если его ещё не было.
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -357,7 +390,7 @@ func (s *Server) writeValidation(w http.ResponseWriter, r *http.Request, kind st
 // свободным списком каждое поле упаковывается в пустой интерфейс, и это
 // выделение памяти на каждое поле каждого запроса. LogAttrs принимает поля
 // как есть.
-func (s *Server) logProcess(r *http.Request, system, payloadID string, dir direction, size int, counts map[string]int, took time.Duration, degraded bool) {
+func (s *Server) logProcess(r *http.Request, system, payloadID string, dir direction, size int, counts map[string]int, took time.Duration, degraded bool, failedTypes []string) {
 	ctx := context.Background()
 	if r != nil {
 		ctx = r.Context()
@@ -392,6 +425,11 @@ func (s *Server) logProcess(r *http.Request, system, payloadID string, dir direc
 	}
 	if degraded {
 		attrs = append(attrs, slog.Bool("degraded", true))
+	}
+	// Имена отказавших типов пишутся без значений: по ним видно, что именно
+	// не удалось обработать, и при этом персональные данные наружу не уходят.
+	if len(failedTypes) > 0 {
+		attrs = append(attrs, slog.Any("failed_types", failedTypes))
 	}
 	s.log.LogAttrs(ctx, slog.LevelDebug, "обработан запрос", attrs...)
 }
