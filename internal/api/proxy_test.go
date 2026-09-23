@@ -236,3 +236,38 @@ func TestUpstreamChatURL(t *testing.T) {
 		})
 	}
 }
+
+// TestProxyExplainsEmptyUpstreamError проверяет, что отказ модели с пустым
+// телом не пересылается как есть. Такой ответ приходит, например, на неверный
+// адрес ручки, и по нему причину понять невозможно: вызывающий видит пустоту
+// и код, а на странице это выглядит как «модель не ответила».
+func TestProxyExplainsEmptyUpstreamError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized) // тело пустое, как у живой модели
+	}))
+	defer upstream.Close()
+
+	ts := httptest.NewServer(newProxyServer(t, upstream.URL))
+	defer ts.Close()
+
+	body := `{"messages":[{"role":"user","content":"тел +7 916 123-45-67"}]}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-System-Key", "test-key")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("запрос не прошёл: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if len(bytes.TrimSpace(raw)) == 0 {
+		t.Fatal("пустой отказ модели переслан как есть, причину понять нельзя")
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("код ответа %d, ожидался тот же, что у модели: 401", resp.StatusCode)
+	}
+	if !strings.Contains(string(raw), "upstream_rejected") {
+		t.Errorf("в ответе нет опознаваемой причины: %s", raw)
+	}
+}

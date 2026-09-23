@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -157,6 +158,21 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.metrics.ObserveUpstream(sys.Name, itoa(resp.StatusCode), time.Since(started))
+
+	// Модель может отказать с пустым телом: так, например, выглядит ответ на
+	// неверный адрес ручки. Пересылать пустоту нельзя, по ней причину понять
+	// невозможно, а вызывающий видит только «модель не ответила». Подставляем
+	// объяснимый ответ с кодом, который она вернула.
+	if resp.StatusCode >= 400 && len(bytes.TrimSpace(respBody)) == 0 {
+		s.log.WarnContext(r.Context(), "модель отказала без объяснения",
+			logging.Event(logging.EventProxy), logging.Component("proxy"),
+			slog.Int("upstream_status", resp.StatusCode))
+		s.writeError(w, r, resp.StatusCode, "upstream_rejected",
+			"языковая модель отказала кодом "+itoa(resp.StatusCode)+" без объяснения; "+
+				"проверьте адрес и ключ доступа в разделе upstream настроек системы")
+		s.auditProcess(r, sys, "", "proxy", len(body), counts, time.Since(begin), "error")
+		return
+	}
 
 	restored := restorePlaceholders(string(respBody), back)
 
