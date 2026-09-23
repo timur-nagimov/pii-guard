@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -98,4 +99,15 @@ func (w *rotatingWriter) Close() error {
 	err := w.f.Close()
 	w.f = nil
 	return err
+}
+
+// NewRotatingWriter открывает файл с ротацией по размеру для использования
+// вне пакета. Нужен каналу захвата запросов: он пишет свой файл, живёт по
+// своим правилам хранения, но ротация у файлов одна и та же, и второй её
+// копии в коде быть не должно.
+//
+// Файл создаётся с правами только для владельца: в нём могут оказаться
+// персональные данные.
+func NewRotatingWriter(path string, max int64, keep int) (io.WriteCloser, error) {
+	return newRotatingWriter(path, max, keep)
 }

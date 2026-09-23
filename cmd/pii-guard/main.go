@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"pii-guard/internal/api"
+	"pii-guard/internal/capture"
 	"pii-guard/internal/config"
 	"pii-guard/internal/engine"
 	"pii-guard/internal/logging"
@@ -333,6 +334,33 @@ func run(cfg *config.Config, configPath string, lg *logging.Logger) error {
 	})
 	srv := api.New(cfg, st, eng, m, log)
 	srv.SetLogging(lg)
+
+	// Канал сохранения запросов. Выключенный канал файла не открывает, и
+	// проверять признак здесь не нужно. Ошибка открытия файла сервис не
+	// останавливает: захват — вспомогательная задача, ради неё отказывать в
+	// обслуживании нельзя, но промолчать о ней тоже нельзя.
+	capw, err := capture.New(capture.Config{
+		Enabled:     cfg.Capture.Enabled,
+		Path:        cfg.Capture.Path,
+		MaxBytes:    cfg.Capture.MaxBytes,
+		Keep:        cfg.Capture.Keep,
+		WithPayload: cfg.Capture.WithPayload,
+		Queue:       cfg.Capture.Queue,
+	}, logging.NewRotatingWriter)
+	if err != nil {
+		log.Error("захват запросов не включился",
+			logging.Event("capture_failed"), logging.Component("capture"),
+			slog.String("path", cfg.Capture.Path), slog.Any("error", err))
+	} else {
+		srv.SetCapture(capw)
+		defer func() { _ = capw.Close() }()
+		if capw.Enabled() {
+			log.Info("захват запросов включён",
+				logging.Event("capture_on"), logging.Component("capture"),
+				slog.String("path", cfg.Capture.Path),
+				slog.Bool("with_payload", capw.WithPayload()))
+		}
+	}
 	// Ручка управления правилами правит тот же файл, из которого сервис
 	// прочитал настройки, и её правка подхватывается обычным перечитыванием.
 	srv.SetConfigPath(configPath)
