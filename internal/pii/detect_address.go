@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"pii-guard/internal/pii/dict"
 )
@@ -1022,6 +1023,9 @@ var birthAnchors = []string{
 	"место рождения", "место рожд", "места рождения", "мест. рожд",
 	"м.р.", "м. р.", "мр", "родился в", "родилась в", "родился", "родилась",
 	"уроженец", "уроженка", "уроженцем", "уроженки", "родом из",
+	"страна и город рождения", "город рождения", "страна рождения",
+	"населённый пункт рождения", "населенный пункт рождения",
+	"нас. пункт рождения", "нп рождения",
 	"place of birth", "birth place", "born in",
 }
 
@@ -1031,6 +1035,11 @@ var birthAnchors = []string{
 var birthQualifiers = []string{
 	"по паспорту", "по документу", "по документам", "по анкете",
 	"по данным паспорта", "согласно паспорту", "в паспорте",
+	// Уточнения, чьё это место: без них слово «заявителя» само
+	// принималось за место рождения и маска накрывала его вместо города.
+	"заявителя", "заявительницы", "клиента", "клиентки", "гражданина",
+	"гражданки", "владельца", "держателя", "субъекта",
+	"ребёнка", "ребенка", "сына", "дочери", "супруга", "супруги",
 }
 
 // birthMaxRunes — наибольшая длина места рождения в рунах.
@@ -1084,31 +1093,94 @@ func (birthPlaceDetector) Types() []Type { return []Type{TypeBirthPlace} }
 // Detect обходит все вхождения якорей и забирает значение после каждого.
 func (birthPlaceDetector) Detect(d *Doc) []Span {
 	ws := addrWords(d)
+	// Сворачивание омоглифов стоит дорого: посимвольный обход вместо
+	// strings.Index, и так на каждый якорь. Проверка наличия латинских
+	// двойников делается один раз на весь текст, и чистый текст — а это
+	// почти весь поток — идёт прежним быстрым путём. Без этого разделения
+	// горячий путь замедлился на сорок процентов.
+	folded := hasASCIIHomoglyph(d.Lower)
 	out := make([]Span, 0, len(birthAnchors))
 	for _, a := range birthAnchors {
-		out = append(out, birthByAnchor(d, ws, a)...)
+		out = append(out, birthByAnchor(d, ws, a, folded)...)
 	}
 	return birthDedup(out)
 }
 
 // birthByAnchor находит все вхождения одного якоря и разбирает значение.
-func birthByAnchor(d *Doc, ws []addrWord, anchor string) []Span {
+func birthByAnchor(d *Doc, ws []addrWord, anchor string, folded bool) []Span {
 	var out []Span
-	for pos := 0; pos+len(anchor) <= len(d.Lower); {
-		idx := strings.Index(d.Lower[pos:], anchor)
-		if idx < 0 {
+	var runes []rune
+	if folded {
+		runes = []rune(anchor)
+	}
+	for pos := 0; pos < len(d.Lower); {
+		var at, end int
+		var ok bool
+		if folded {
+			at, end, ok = foldedIndex(d.Lower, pos, runes)
+		} else {
+			idx := strings.Index(d.Lower[pos:], anchor)
+			if idx >= 0 {
+				at, end, ok = pos+idx, pos+idx+len(anchor), true
+			}
+		}
+		if !ok {
 			break
 		}
-		at := pos + idx
-		pos = at + len(anchor)
-		if !birthBoundary(d.Lower, at, pos) {
+		pos = end
+		if !birthBoundary(d.Lower, at, end) {
 			continue
 		}
-		if s, ok := birthValue(d, ws, pos); ok {
+		if s, ok := birthValue(d, ws, end); ok {
 			out = append(out, s)
 		}
 	}
 	return out
+}
+
+// hasASCIIHomoglyph сообщает, что в тексте есть латинские буквы, похожие на
+// кириллические. Проверка идёт по байтам и обрывается на первой находке.
+func hasASCIIHomoglyph(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if b := s[i]; b < 128 && homoglyphASCII[b] != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// foldedIndex ищет якорь, считая латинские буквы, похожие на кириллические,
+// той же буквой: «Мeстo pождeния» с латинскими e, o и p — это тот же якорь.
+// Смещения возвращаются в координатах исходной строки, поэтому сворачивание
+// не сдвигает границы значения. Готовый FoldHomoglyphs здесь не годится: он
+// заменяет однобайтовую латиницу двухбайтовой кириллицей и все смещения после
+// первой же замены уезжают.
+//
+// Якорь передаётся рунами и сам сворачивания не требует: все якоря написаны
+// кириллицей или латиницей целиком.
+func foldedIndex(low string, from int, anchor []rune) (int, int, bool) {
+	if len(anchor) == 0 {
+		return 0, 0, false
+	}
+	for i := from; i < len(low); {
+		r, size := utf8.DecodeRuneInString(low[i:])
+		if foldRune(r) == anchor[0] {
+			j, k := i, 0
+			for k < len(anchor) && j < len(low) {
+				rr, sz := utf8.DecodeRuneInString(low[j:])
+				if foldRune(rr) != anchor[k] {
+					break
+				}
+				j += sz
+				k++
+			}
+			if k == len(anchor) {
+				return i, j, true
+			}
+		}
+		i += size
+	}
+	return 0, 0, false
 }
 
 // birthBoundary требует, чтобы якорь был отдельным словом: иначе «родился»
@@ -1200,7 +1272,11 @@ func birthLead(gap string) bool {
 		return false
 	}
 	for _, r := range gap {
-		if !strings.ContainsRune(" \t:,.-–—«\"'()", r) {
+		// Квадратная скобка и черта таблицы разделяют якорь и значение не
+		// реже двоеточия: «МР [город Братск]», «| Место рождения | Казань |».
+		// Неразрывный пробел приходит из выгрузок и на вид неотличим от
+		// обычного.
+		if !strings.ContainsRune(" \t\u00a0:,.-–—«\"'()[]|", r) {
 			return false
 		}
 	}
