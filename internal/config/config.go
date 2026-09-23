@@ -25,6 +25,7 @@ type Config struct {
 	Store       Store             `yaml:"store"`
 	Defaults    Defaults          `yaml:"defaults"`
 	Logging     Logging           `yaml:"logging"`
+	Capture     Capture           `yaml:"capture"`
 	Systems     map[string]System `yaml:"systems"`
 	CustomTypes []CustomType      `yaml:"custom_types"`
 
@@ -141,6 +142,26 @@ type LoggingAudit struct {
 	MaxBytes int64 `yaml:"max_bytes"`
 	// Keep — сколько ротированных файлов хранить.
 	Keep int `yaml:"keep"`
+}
+
+// Capture — сохранение запросов для последующей проверки качества на
+// настоящих текстах. Канал отдельный от журнала: в журнал исходные данные
+// попадать не должны, а сюда — могут, и только по явному разрешению.
+type Capture struct {
+	// Enabled включает захват. По умолчанию выключен.
+	Enabled bool `yaml:"enabled"`
+	// Path — файл, куда пишутся записи, по одной в строке.
+	Path string `yaml:"path"`
+	// MaxBytes — размер, после которого файл ротируется.
+	MaxBytes int64 `yaml:"max_bytes"`
+	// Keep — сколько ротированных файлов хранить.
+	Keep int `yaml:"keep"`
+	// WithPayload разрешает сохранять сам текст запроса и ответа. Признак
+	// отдельный намеренно: включая его, человек соглашается держать
+	// персональные данные на диске.
+	WithPayload bool `yaml:"with_payload"`
+	// Queue — глубина очереди записи.
+	Queue int `yaml:"queue"`
 }
 
 // Auth — способ опознания системы-потребителя.
@@ -527,6 +548,9 @@ func expandEnv(s string) string {
 // Validate проверяет настройки на противоречия, из-за которых сервис повёл бы
 // себя не так, как ожидает проверяющая система или жюри.
 func (c *Config) Validate() error {
+	if err := c.validateCapture(); err != nil {
+		return err
+	}
 	if err := c.validateLogging(); err != nil {
 		return err
 	}
@@ -685,6 +709,44 @@ func (c *Config) validateLogging() error {
 	}
 	if c.Logging.Slow < 0 {
 		return errors.New("журнал: порог медленного запроса не может быть отрицательным")
+	}
+	return nil
+}
+
+// validateCapture проверяет настройки захвата запросов и предупреждает о
+// сохранении персональных данных на диск.
+//
+// Включённый захват без пути — это захват в никуда: настройка выглядит
+// работающей, а файла нет. Такое молчание хуже отказа, поэтому здесь ошибка.
+func (c *Capture) validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.Path) == "" {
+		return errors.New("захват запросов: включён, но путь к файлу не задан")
+	}
+	if c.MaxBytes < 0 {
+		return errors.New("захват запросов: размер файла не может быть отрицательным")
+	}
+	if c.Keep < 0 {
+		return errors.New("захват запросов: число хранимых файлов не может быть отрицательным")
+	}
+	if c.Queue < 0 {
+		return errors.New("захват запросов: глубина очереди не может быть отрицательной")
+	}
+	return nil
+}
+
+// validateCapture проверяет раздел и добавляет предупреждение, когда на диск
+// пишутся сами тексты. Человек, включивший это, обязан знать, что делает.
+func (c *Config) validateCapture() error {
+	if err := c.Capture.validate(); err != nil {
+		return err
+	}
+	if c.Capture.Enabled && c.Capture.WithPayload {
+		c.Warnings = append(c.Warnings, fmt.Sprintf(
+			"захват запросов пишет ИСХОДНЫЕ ТЕКСТЫ в %s: это персональные данные на диске, "+
+				"держите файл под теми же правилами, что и сами данные", c.Capture.Path))
 	}
 	return nil
 }

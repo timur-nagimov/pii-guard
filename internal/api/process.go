@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"pii-guard/internal/capture"
 	"pii-guard/internal/config"
 	"pii-guard/internal/logging"
 	"pii-guard/internal/store"
@@ -124,6 +125,34 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 	s.metrics.ObserveProcess(sys.Name, string(dir), took, len(payload), result.counts)
 	s.logProcess(r, sys.Name, id, dir, len(payload), result.counts, took, false)
 	s.auditProcess(r, sys, id, dir, len(payload), result.counts, took, "ok")
+	s.captureProcess(sys.Name, id, dir, payload, result.text, result.counts, took)
+}
+
+// captureProcess сохраняет обработку в отдельный файл для последующей
+// проверки качества на настоящих текстах.
+//
+// Канал отдельный от журнала намеренно: в журнал и показатели исходные данные
+// попадать не должны, это требование задания и отдельная проверка ворот. Сюда
+// они попадают только при двух включённых признаках сразу — самом захвате и
+// разрешении сохранять текст.
+//
+// Вызов не блокирует обработчик: запись уходит в очередь, а при полной
+// очереди отбрасывается и считается.
+func (s *Server) captureProcess(system, payloadID string, dir direction, payload, result string, counts map[string]int, took time.Duration) {
+	if !s.capture.Enabled() {
+		return
+	}
+	s.capture.Write(capture.Record{
+		Time:       time.Now().UTC(),
+		System:     system,
+		PayloadID:  payloadID,
+		Direction:  string(dir),
+		PayloadLen: len(payload),
+		Counts:     counts,
+		TookMS:     float64(took.Nanoseconds()) / 1e6,
+		Payload:    payload,
+		Result:     result,
+	})
 }
 
 // auditProcess записывает обращение к персональным данным в журнал аудита.
