@@ -1,6 +1,9 @@
 package pii
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // Якорные слова для форматных типов. Все задаются в нижнем регистре:
 // поиск идёт по копии текста в нижнем регистре, поэтому регистр исходной
@@ -738,12 +741,25 @@ func hasFuzzyWord(window string, anchors []string) bool {
 // только рядом со значением, поэтому порог для них ниже.
 func hasFuzzyWordMin(window string, anchors []string, minRunes int) bool {
 	norm := FoldHomoglyphs(window)
+
+	// Якори приводятся и отсеиваются по длине ОДИН раз, а не заново для
+	// каждого слова окна. Прежний порядок давал число приведений, равное
+	// числу слов, умноженному на число якорей, и это на самом горячем пути:
+	// обработка текста из-за него подорожала вдвое.
+	folded := make([]string, 0, len(anchors))
+	for _, a := range anchors {
+		if utf8.RuneCountInString(a) < minRunes {
+			continue
+		}
+		folded = append(folded, FoldHomoglyphs(a))
+	}
+	if len(folded) == 0 {
+		return false
+	}
+
 	for _, word := range letterWords(norm) {
-		for _, a := range anchors {
-			if len([]rune(a)) < minRunes {
-				continue
-			}
-			if nearlyEqual(word, FoldHomoglyphs(a)) {
+		for _, a := range folded {
+			if nearlyEqual(word, a) {
 				return true
 			}
 		}
@@ -756,11 +772,8 @@ func hasFuzzyWordMin(window string, anchors []string, minRunes int) bool {
 		}
 		return r
 	}, norm)
-	for _, a := range anchors {
-		if len([]rune(a)) < minRunes {
-			continue
-		}
-		if strings.Contains(compact, FoldHomoglyphs(a)) {
+	for _, a := range folded {
+		if strings.Contains(compact, a) {
 			return true
 		}
 	}
