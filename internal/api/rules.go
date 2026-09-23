@@ -52,10 +52,11 @@ type customTypeView struct {
 // Ключей доступа и адресов модели здесь нет намеренно: ручка чтения открыта,
 // как и матрица покрытия, а секреты остаются на сервере.
 type ruleSystemView struct {
-	Name     string   `json:"name"`
-	Enabled  bool     `json:"enabled"`
-	AllTypes bool     `json:"all_types"`
-	Types    []string `json:"types"`
+	Name         string   `json:"name"`
+	Enabled      bool     `json:"enabled"`
+	AllTypes     bool     `json:"all_types"`
+	Types        []string `json:"types"`
+	AllowPersons []string `json:"allow_persons"`
 }
 
 // handleRules отдаёт и меняет правила.
@@ -97,10 +98,11 @@ func (s *Server) handleRulesGet(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		systems = append(systems, ruleSystemView{
-			Name:     name,
-			Enabled:  sys.Enabled,
-			AllTypes: sys.AllTypes,
-			Types:    types,
+			Name:         name,
+			Enabled:      sys.Enabled,
+			AllTypes:     sys.AllTypes,
+			Types:        types,
+			AllowPersons: sys.Exclusions.AllowPersons,
 		})
 	}
 	// Порядок в настройках не определён, а список в интерфейсе должен быть
@@ -138,6 +140,7 @@ type ruleChange struct {
 	System  string `json:"system"`
 	Enabled *bool  `json:"enabled"`
 	Types   []string
+	Persons []string
 	Type    *customTypeView `json:"type"`
 }
 
@@ -151,6 +154,7 @@ func (c *ruleChange) UnmarshalJSON(data []byte) error {
 		System  string          `json:"system"`
 		Enabled *bool           `json:"enabled"`
 		Types   *[]string       `json:"types"`
+		Persons *[]string       `json:"persons"`
 		Type    *customTypeView `json:"type"`
 	}
 	var a alias
@@ -162,6 +166,12 @@ func (c *ruleChange) UnmarshalJSON(data []byte) error {
 		c.Types = *a.Types
 		if c.Types == nil {
 			c.Types = []string{}
+		}
+	}
+	if a.Persons != nil {
+		c.Persons = *a.Persons
+		if c.Persons == nil {
+			c.Persons = []string{}
 		}
 	}
 	return nil
@@ -283,9 +293,18 @@ func (s *Server) applyRuleChange(c ruleChange) (config.EditResult, error) {
 		}
 		return config.SetSystemEnabled(path, c.System, *c.Enabled)
 
+	case "set_system_allow_persons":
+		if strings.TrimSpace(c.System) == "" {
+			return config.EditResult{}, errRule("для правки системы нужно поле system")
+		}
+		if c.Persons == nil {
+			return config.EditResult{}, errRule("для правки списка имён нужно поле persons")
+		}
+		return config.SetSystemAllowPersons(path, c.System, c.Persons)
+
 	default:
 		return config.EditResult{}, errRule("неизвестная операция " + quote(c.Op) +
-			"; доступны: add_type, remove_type, set_system_types, set_system_enabled")
+			"; доступны: add_type, remove_type, set_system_types, set_system_enabled, set_system_allow_persons")
 	}
 }
 
