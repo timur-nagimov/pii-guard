@@ -8,3 +8,11 @@
 *.mp4 export-ignore
 *.png export-ignore
 /tools export-ignore
+
+# Затравки фаззинга в архив сдачи не попадают: задание просит класть только
+# исходный код и не добавлять объёмные файлы. Четыре затравки весят по четыре
+# мегабайта — это дамп данных, а не код. В репозитории они остаются, фаззинг
+# ими пользуется.
+/internal/engine/testdata/fuzz export-ignore
+/internal/pii/testdata/fuzz export-ignore
+/night export-ignore
