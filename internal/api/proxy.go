@@ -86,6 +86,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusNotImplemented, "upstream_not_configured", "для системы не задан адрес языковой модели")
 		return
 	}
+
+	// Потоковый режим не поддерживается: плейсхолдер может разорваться между
+	// фрагментами потока, и восстановить его по частям нельзя. Вместо молчаливой
+	// подмены на одиночный ответ возвращаем понятный отказ.
+	if req.Stream {
+		s.writeError(w, r, http.StatusBadRequest, "stream_not_supported",
+			"потоковый режим не поддерживается; пришлите запрос с stream=false")
+		return
+	}
 	s.extendWriteDeadline(w, r, sys)
 
 	// Маскируем текст каждого сообщения и запоминаем подстановки.
@@ -96,27 +105,34 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	back := make(map[string]string)
 	counts := make(map[string]int)
-	masked := make([]chatMessage, len(req.Messages))
 	// Счётчик плейсхолдеров общий на весь запрос: иначе в каждом сообщении
 	// первый телефон получал бы [PHONE_1], и разные значения столкнулись бы в
 	// одной подстановке, а обратное преобразование подставило бы одно последнее.
 	shared := &mask.TokenState{}
+
+	// Многоходовой диалог: при заголовке X-Conversation-Id соответствия
+	// плейсхолдеров живут в хранилище под ключом диалога и подмешиваются к
+	// подстановкам текущего запроса. Так плейсхолдер из прошлого ответа
+	// ассистента, который клиент прислал в истории, восстанавливается и в
+	// новом ответе.
+	convID := r.Header.Get("X-Conversation-Id")
+	if convID != "" {
+		for token, value := range s.loadConversation(convID) {
+			back[token] = value
+		}
+	}
+
+	masked := make([]chatMessage, len(req.Messages))
 	for i, msg := range req.Messages {
 		text, isString := decodeContent(msg.Content)
 		if !isString {
-			masked[i] = msg
+			// content — массив частей (текст и картинки): маскируем текстовые
+			// части, остальные оставляем как есть.
+			masked[i] = chatMessage{Role: msg.Role, Content: s.maskContentParts(msg.Content, sys, cfg.Defaults, opts, back, counts, shared)}
 			continue
 		}
-		res := s.engine.Mask(text, sys, cfg.Defaults)
-		for t, n := range res.Counts {
-			counts[string(t)] += n
-		}
-		opts.Shared = shared
-		applied := mask.Apply(text, res.Spans, opts)
-		for _, ph := range applied.Placeholders {
-			back[ph.Token] = ph.Value
-		}
-		encoded, err := json.Marshal(applied.Text)
+		maskedText := s.maskText(text, sys, cfg.Defaults, opts, back, counts, shared)
+		encoded, err := json.Marshal(maskedText)
 		if err != nil {
 			s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "не удалось подготовить запрос")
 			return
@@ -124,6 +140,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		masked[i] = chatMessage{Role: msg.Role, Content: encoded}
 	}
 	raw["messages"] = masked
+
+	// Текст внутри tools[].function.description и в response_format может
+	// содержать персональные данные: маскируем текстовые поля этих структур.
+	if v, ok := raw["tools"]; ok {
+		raw["tools"] = s.maskJSONText(v, sys, cfg.Defaults, opts, back, counts, shared)
+	}
+	if v, ok := raw["response_format"]; ok {
+		raw["response_format"] = s.maskJSONText(v, sys, cfg.Defaults, opts, back, counts, shared)
+	}
+
 	// Потоковый режим у модели не запрашиваем никогда: ответ нужен целиком,
 	// чтобы вернуть в нём исходные значения. Поле задаётся явно и всегда,
 	// потому что платформа отвергает запрос без него четырёхсотым кодом
@@ -137,6 +163,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeError(w, r, http.StatusServiceUnavailable, "internal_degraded", "не удалось подготовить запрос")
 		return
+	}
+
+	// Сохраняем соответствия диалога до обращения к модели: даже если модель
+	// не ответит, история диалога не потеряется.
+	if convID != "" {
+		if err := s.saveConversation(convID, back, sys); err != nil {
+			s.log.WarnContext(r.Context(), "не удалось сохранить соответствия диалога",
+				logging.Event(logging.EventProxy), logging.Component("proxy"), logging.Err(err))
+		}
 	}
 
 	started := time.Now()
@@ -175,7 +210,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	restored := restorePlaceholders(string(respBody), back)
+	restored := restoreResponse(respBody, back)
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("X-PII-Masked", itoa(len(back)))
@@ -366,6 +401,175 @@ func decodeContent(raw json.RawMessage) (string, bool) {
 		return s, true
 	}
 	return "", false
+}
+
+// maskText маскирует один текстовый фрагмент и запоминает подстановки. Общий
+// счётчик плейсхолдеров и карта подстановок передаются по ссылке, чтобы все
+// части одного запроса нумеровались вместе.
+func (s *Server) maskText(text string, sys config.System, defs config.Defaults, opts mask.Options, back map[string]string, counts map[string]int, shared *mask.TokenState) string {
+	res := s.engine.Mask(text, sys, defs)
+	for t, n := range res.Counts {
+		counts[string(t)] += n
+	}
+	opts.Shared = shared
+	applied := mask.Apply(text, res.Spans, opts)
+	for _, ph := range applied.Placeholders {
+		back[ph.Token] = ph.Value
+	}
+	return applied.Text
+}
+
+// maskContentParts маскирует текстовые части сообщения, у которого content
+// задан массивом частей (формат OpenAI для текста и картинок). Части с типом
+// text маскируются, остальные (например, image_url) остаются как есть.
+func (s *Server) maskContentParts(raw json.RawMessage, sys config.System, defs config.Defaults, opts mask.Options, back map[string]string, counts map[string]int, shared *mask.TokenState) json.RawMessage {
+	var parts []map[string]any
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return raw
+	}
+	for i, part := range parts {
+		if part["type"] != "text" {
+			continue
+		}
+		text, ok := part["text"].(string)
+		if !ok {
+			continue
+		}
+		part["text"] = s.maskText(text, sys, defs, opts, back, counts, shared)
+		parts[i] = part
+	}
+	out, err := json.Marshal(parts)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// maskJSONText проходит по JSON-значению и маскирует строки в текстовых полях
+// (description и title), собирая подстановки. Так закрываются персональные
+// данные внутри tools[].function.description и в схеме response_format, где
+// имена и типы полей остаются нетронутыми, а человекочитаемые описания
+// маскируются.
+func (s *Server) maskJSONText(v any, sys config.System, defs config.Defaults, opts mask.Options, back map[string]string, counts map[string]int, shared *mask.TokenState) any {
+	switch val := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(val))
+		for k, item := range val {
+			if (k == "description" || k == "title") && !isJSONContainer(item) {
+				if text, ok := item.(string); ok {
+					out[k] = s.maskText(text, sys, defs, opts, back, counts, shared)
+					continue
+				}
+			}
+			out[k] = s.maskJSONText(item, sys, defs, opts, back, counts, shared)
+		}
+		return out
+	case []any:
+		out := make([]any, len(val))
+		for i, item := range val {
+			out[i] = s.maskJSONText(item, sys, defs, opts, back, counts, shared)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// isJSONContainer сообщает, что значение — вложенная структура, а не строка.
+// Нужно, чтобы не маскировать поле description, которое само является схемой.
+func isJSONContainer(v any) bool {
+	switch v.(type) {
+	case map[string]any, []any:
+		return true
+	default:
+		return false
+	}
+}
+
+// restoreResponse возвращает в текстовые поля ответа модели исходные значения.
+// Восстановление идёт только по choices[].message.content и
+// choices[].delta.content: служебные поля (id, model и прочие) не трогаются,
+// даже если в них случайно оказался текст, похожий на плейсхолдер. Если ответ
+// не разбирается как JSON, он возвращается без изменений.
+func restoreResponse(body []byte, back map[string]string) []byte {
+	if len(back) == 0 {
+		return body
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return body
+	}
+	choices, ok := resp["choices"].([]any)
+	if !ok {
+		return body
+	}
+	changed := false
+	for _, c := range choices {
+		choice, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if msg, ok := choice["message"].(map[string]any); ok {
+			if content, ok := msg["content"].(string); ok {
+				restored := restorePlaceholders(content, back)
+				if restored != content {
+					msg["content"] = restored
+					changed = true
+				}
+			}
+		}
+		if delta, ok := choice["delta"].(map[string]any); ok {
+			if content, ok := delta["content"].(string); ok {
+				restored := restorePlaceholders(content, back)
+				if restored != content {
+					delta["content"] = restored
+					changed = true
+				}
+			}
+		}
+	}
+	if !changed {
+		return body
+	}
+	out, err := json.Marshal(resp)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// conversationKeyPrefix отделяет ключи диалогов от ключей запросов в хранилище.
+const conversationKeyPrefix = "conv:"
+
+// saveConversation сохраняет соответствия плейсхолдеров диалога в хранилище.
+// Соответствия кладутся как исходный текст записи, поэтому значения лежат
+// зашифрованными, как и в обычном хранилище.
+func (s *Server) saveConversation(id string, back map[string]string, sys config.System) error {
+	data, err := json.Marshal(back)
+	if err != nil {
+		return err
+	}
+	_, err = s.store.Put(conversationKeyPrefix+id, string(data), "", sys.Name, nil)
+	return err
+}
+
+// loadConversation достаёт сохранённые соответствия плейсхолдеров диалога.
+// При отсутствии записи или ошибке возвращается пустая карта: диалог просто
+// начинается заново.
+func (s *Server) loadConversation(id string) map[string]string {
+	e, ok := s.store.Get(conversationKeyPrefix + id)
+	if !ok {
+		return nil
+	}
+	raw, err := s.store.Original(e)
+	if err != nil {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil
+	}
+	return m
 }
 
 // restorePlaceholders возвращает в текст ответа исходные значения. Разбор
