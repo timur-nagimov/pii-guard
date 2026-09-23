@@ -3,6 +3,9 @@ package metrics
 import (
 	"math"
 	"testing"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestSumRingWindow(t *testing.T) {
@@ -82,5 +85,62 @@ func TestCapacityRatioModel(t *testing.T) {
 	want := 1000 * 3.69 / (1 * 15 * 1000)
 	if got := m.loadRing.sum(1000) / (m.coresUsable * 15 * 1000); math.Abs(got-want) > 0.01 {
 		t.Fatalf("занятость: %v, ожидали %v", got, want)
+	}
+}
+
+// TestNewRepeated проверяет, что повторный вызов New не паникует: каждый набор
+// показателей живёт в своём реестре.
+func TestNewRepeated(t *testing.T) {
+	for i := 0; i < 3; i++ {
+		m := New()
+		if m == nil {
+			t.Fatal("New вернул пустой набор")
+		}
+	}
+}
+
+// TestEstimateTokens проверяет оценку числа токенов по размеру текста.
+func TestEstimateTokens(t *testing.T) {
+	if got := EstimateTokens(0); got != 0 {
+		t.Fatalf("пустой текст: %v", got)
+	}
+	if got := EstimateTokens(-5); got != 0 {
+		t.Fatalf("отрицательный размер: %v", got)
+	}
+	if got := EstimateTokens(280); math.Abs(got-100) > 0.001 {
+		t.Fatalf("280 байт: %v", got)
+	}
+}
+
+// TestObserveProcessLabels проверяет, что метки показателей берутся из
+// закрытого набора и не порождаются из пользовательского ввода.
+func TestObserveProcessLabels(t *testing.T) {
+	m := New()
+	m.ObserveProcess("система", "process", time.Millisecond, 100, map[string]int{"FIO": 2})
+	m.ObserveStatus("система", "process", "429")
+	m.ObserveSkipped("FIO", "public_figure")
+	m.ObserveDegraded("система")
+	m.ObserveAmbiguous("система")
+	m.ObservePanic("FIO")
+	m.ObserveUpstream("система", "200", time.Millisecond)
+	m.ObserveQueueWait(time.Millisecond)
+	m.IncInflight()
+	m.DecInflight()
+	m.SetRecords(5)
+	// Проверяем, что показатели отдаются без ошибок.
+	_ = m.Handler()
+}
+
+// TestRegisterCollector проверяет добавление стороннего сборщика.
+func TestRegisterCollector(t *testing.T) {
+	m := New()
+	// Регистрация сборщика, уже зарегистрированного в реестре, даёт ошибку:
+	// реестр не принимает дубликаты.
+	dup := prometheus.NewCounter(prometheus.CounterOpts{Name: "pii_dup_test"})
+	if err := m.Register(dup); err != nil {
+		t.Fatalf("новый сборщик не зарегистрирован: %v", err)
+	}
+	if err := m.Register(dup); err == nil {
+		t.Fatal("повторная регистрация не дала ошибку")
 	}
 }

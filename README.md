@@ -270,6 +270,25 @@ flowchart LR
 
 Справочник всех показателей, панель Grafana и запросы для диагностики — в [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md). Замеры — в [BENCHMARKS.md](BENCHMARKS.md).
 
+## Проверка сканером
+
+Решение проверяется сканером SonarQube. Он читает `sonar-project.properties` и отчёты, которые готовит одна команда:
+
+```bash
+make sonar-prep
+```
+
+Команда оставляет четыре файла в корне:
+
+| Файл | Что внутри | Что читает сканер |
+|---|---|---|
+| `coverage.out` | покрытие тестами по пакетам | `sonar.go.coverage.reportPaths` |
+| `test-report.json` | прогон тестов в формате JSON | `sonar.go.tests.reportPaths` |
+| `golangci-report.xml` | находки golangci-lint в формате checkstyle | `sonar.go.golangci-lint.reportPaths` |
+| `govet-report.out` | вывод `go vet` | `sonar.go.govet.reportPaths` |
+
+Отчёты в архив с исходным кодом не попадают: они перечислены в `.gitignore` узкими правилами. Из исходников сканера исключено то, что не код сервиса: документация, развёртывание, скрипты, наборы данных и генераторы набора (`cmd/gen`, `cmd/corpus`). Остальное покрывается тестами, а не исключениями.
+
 ## Реализовано сверх задания
 
 - Обращение к языковой модели через плейсхолдеры с восстановлением значений в ответе.
