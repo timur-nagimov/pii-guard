@@ -25,6 +25,7 @@ const (
 	fioRolePatronymicWeak
 	fioRoleInitial
 	fioRoleUnknownCap
+	fioRoleInitialsPair
 )
 
 // Наборы признаков, которые в правилах используются вместе.
@@ -302,6 +303,13 @@ func fioWordRoles(w fioWord) fioRole {
 		}
 		return 0
 	}
+	// Две заглавные буквы это пара инициалов: «Сорокина ВЯ» значит Сорокина
+	// Вера Яковлевна, а «Максимов ДР.» — Максимов Дмитрий Романович. Слово
+	// целиком заглавными вроде «ООО» и «ЗАО» сюда не попадает: у него три
+	// буквы, а не две. Сокращения «ул.», «пл.», «г.» инициалами не бывают.
+	if fioRuneCount(w.norm) == 2 && w.shout && !fioAddressMarkers[w.norm] {
+		return fioRoleInitialsPair
+	}
 	var roles fioRole
 	for _, part := range strings.Split(w.key, "-") {
 		roles |= fioPartRoles(part, w.capital)
@@ -417,6 +425,10 @@ func fioSurnameSuffixRole(p string) fioRole {
 // fioAdjacent сообщает, что два слова идут подряд и относятся к одному имени.
 // Между компонентами допускаются только пробелы и точки после инициалов,
 // перевод строки и запятая цепочку разрывают.
+//
+// Исключение — запятая между фамилией и именем: «Иванов, Иван Иванович» это
+// один человек, а не два. Запятая допускается только когда слева фамилия, а
+// справа имя: «Иванов, Петров» остаётся списком двух людей.
 func fioAdjacent(d *Doc, a, b fioWord) bool {
 	if b.start < a.end {
 		return false
@@ -425,11 +437,19 @@ func fioAdjacent(d *Doc, a, b fioWord) bool {
 	if fioRuneCount(gap) > fioMaxGapRunes {
 		return false
 	}
+	comma := false
 	for _, r := range gap {
 		// Неразрывный пробел встречается в тексте из офисных редакторов.
+		if r == ',' {
+			comma = true
+			continue
+		}
 		if r != ' ' && r != '\t' && r != '.' && r != '\u00a0' {
 			return false
 		}
+	}
+	if comma && !(a.has(fioRoleAnySurname) && b.has(fioRoleName)) {
+		return false
 	}
 	return true
 }
@@ -582,6 +602,9 @@ func fioPairShape(a, b fioWord) (float64, string, bool) {
 	case a.has(fioRoleName) && b.has(fioRoleAnySurname),
 		a.has(fioRoleAnySurname) && b.has(fioRoleName):
 		return ConfAnchored, "fio:surname+name", true
+	case a.has(fioRoleSurnameDict) && b.has(fioRoleInitialsPair),
+		a.has(fioRoleInitialsPair) && b.has(fioRoleSurnameDict):
+		return ConfHigh, "fio:surname+initials", true
 	}
 	return 0, "", false
 }
@@ -651,7 +674,21 @@ func fioMakeSpan(d *Doc, first, last fioWord, conf float64, reason string) (Span
 	if first.latin && last.latin {
 		reason = "fio:latin+" + strings.TrimPrefix(reason, "fio:")
 	}
-	return fioSpanRange(d, first.start, last.end, conf, reason)
+	sp, ok := fioSpanRange(d, first.start, last.end, conf, reason)
+	if !ok {
+		return Span{}, false
+	}
+	// Точка после последнего инициала входит во фрагмент: «Иванов И. И.» это
+	// одно имя, и эталон в наборе данных включает точку. Нормализация границ
+	// отрезает её, поэтому она возвращается на место.
+	if last.isInitial() && last.end < len(d.Text) && d.Text[last.end] == '.' && sp.End == last.end {
+		sp.End++
+	}
+	// То же для пары инициалов без точек: «Максимов ДР.» включает точку.
+	if last.has(fioRoleInitialsPair) && last.end < len(d.Text) && d.Text[last.end] == '.' && sp.End == last.end {
+		sp.End++
+	}
+	return sp, true
 }
 
 // fioSpanRange собирает фрагмент по границам в байтах: обрезает знаки по
