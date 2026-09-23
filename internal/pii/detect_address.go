@@ -720,7 +720,10 @@ func addrNumberTail(gap string, w addrWord) bool {
 	single := len([]rune(w.lower)) == 1
 	letter := glued && w.kind != KindDigit && single
 	corp := glued && w.kind == KindDigit
-	fraction := (gap == "/" || gap == "-") && w.kind == KindDigit
+	// Дробная часть номера дома это одна-три цифры: «12/3», «40-2». Шесть
+	// цифр после дефиса домом уже не бывают — так номер студенческого билета
+	// «Студенческий 3827-178120» принимался за улицу с домом.
+	fraction := (gap == "/" || gap == "-") && w.kind == KindDigit && len([]rune(w.lower)) <= 3
 	return letter || corp || fraction
 }
 
@@ -733,6 +736,11 @@ func addrMatchBareStreet(d *Doc, ws []addrWord, i int) (addrComp, int, bool) {
 	}
 	j := i + 1
 	if j >= len(ws) || ws[j].kind != KindDigit {
+		return addrComp{}, 0, false
+	}
+	// Номер дома в слитной записи это одна-три цифры: домов с номером 3827
+	// не бывает, а «Студенческий 3827-178120» это номер студенческого билета.
+	if len([]rune(d.Text[ws[j].start:ws[j].end])) > 3 {
 		return addrComp{}, 0, false
 	}
 	if !addrShortGap(d.Text[w.end:ws[j].start]) {

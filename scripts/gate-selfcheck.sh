@@ -108,8 +108,14 @@ done
 # Подложный журнал с настоящим значением из набора проверки.
 printf '{"msg":"обработка","payload":"Гремислав Аполлинариевич Кудринцев"}\n' > "$WORK/leaky.log"
 
+# Служебное число записи, совпавшее с коротким значением. Проверка однажды
+# покраснела на длительности ровно в 987 микросекунд, хотя никакой утечки не
+# было: короткие числа вроде кода безопасности совпадают со счётчиками.
+printf '{"msg":"обращение","stream":"audit","op":"mask","duration_us":987,"bytes":107}\n' > "$WORK/timing.log"
+
 expect "чистый журнал принимается"              0 bash scripts/gate-noleak.sh "http://127.0.0.1:$PORT" "$WORK/service.log"
 expect "утечка в журнал ловится"                1 bash scripts/gate-noleak.sh "http://127.0.0.1:$PORT" "$WORK/leaky.log"
+expect "служебное число не считается утечкой"   0 bash scripts/gate-noleak.sh "http://127.0.0.1:$PORT" "$WORK/timing.log"
 expect "отсутствие журнала не считается успехом" 2 bash scripts/gate-noleak.sh "http://127.0.0.1:$PORT" "$WORK/нет-такого-файла"
 
 printf '\n\033[1m── Контракт\033[0m\n'
