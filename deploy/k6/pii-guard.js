@@ -49,6 +49,10 @@ const VUS = Number(__ENV.VUS || Math.max(50, Math.ceil(RPS / 5)));
 const maskChanged = new Rate('pii_mask_changed');
 const demaskExact = new Rate('pii_demask_exact');
 const throttled = new Counter('pii_throttled');
+// Тело, которое не разобралось как JSON, раньше просто пропадало. Под
+// нагрузкой это важный сигнал: сервис ответил двухсотым кодом, но отдал не то,
+// что обещает контракт. Считаем такие ответы отдельно.
+const badBody = new Counter('pii_bad_body');
 const pairDuration = new Trend('pii_pair_duration', true);
 
 export const options = {
@@ -123,10 +127,11 @@ function resultOf(res) {
     const parsed = res.json();
     return typeof parsed.result === 'string' ? parsed.result : null;
   } catch (err) {
-    // Тело, которое не разобралось как JSON, для замера ровно такой же промах,
-    // как чужой код ответа: проверки ниже увидят null и запишут неудачу. Дальше
-    // причину не несём намеренно — на тысяче пар в секунду печать разбора
-    // сама станет узким местом и исказит то, что мы измеряем.
+    // Причину не печатаем намеренно: на тысяче пар в секунду вывод разбора сам
+    // станет узким местом и исказит то, что мы измеряем. Но и терять событие
+    // нельзя — считаем его, а имя ошибки кладём меткой, чтобы в показателях
+    // было видно, чем именно тело не понравилось.
+    badBody.add(1, { reason: err && err.name ? err.name : 'unknown' });
     return null;
   }
 }
