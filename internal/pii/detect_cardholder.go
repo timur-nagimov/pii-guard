@@ -718,13 +718,13 @@ func extraDocSNILSByNumeric(d *Doc, run *NumRun) bool {
 		return false
 	}
 	pattern := run.GroupsPattern()
-	if pattern != "3-3-3-2" && pattern != "11" {
+	if pattern != patternSNILS && pattern != "11" {
 		return false
 	}
 	if _, ok := d.FindAnchor(run.Start, run.End, anchorsSNILS, anchorWindow, anchorWindow/2); ok {
 		return true
 	}
-	return SNILSValid(run.Digits) && pattern == "3-3-3-2"
+	return SNILSValid(run.Digits) && pattern == patternSNILS
 }
 
 // extraDocForeign находит заграничный паспорт: две цифры серии и семь цифр
