@@ -22,11 +22,13 @@ const dwMaxStemTail = 4
 const dwShortAnchorRunes = 3
 
 // dwSeparatorRunes — знаки, которые могут стоять между якорем и значением.
-const dwSeparatorRunes = " \t\r\n:-–—«\"'№.=>|()[]"
+// Неразрывный пробел из выгрузок учитывается наравне с обычным.
+const dwSeparatorRunes = " \t\r\n\u00a0:-–—«\"'№.=>|()[]"
 
 // dwWordGapRunes — знаки, допустимые между словами одного значения. Запятая
-// сюда не входит: она разделяет разные сведения в анкете.
-const dwWordGapRunes = " \t.-"
+// сюда не входит: она разделяет разные сведения в анкете. Неразрывный пробел
+// из выгрузок не рвёт значение.
+const dwWordGapRunes = " \t\u00a0.-"
 
 // dwIsLetter сообщает, что руна — буква кириллицы или латиницы.
 func dwIsLetter(r rune) bool {
@@ -288,6 +290,38 @@ func dwNextWord(s string, from, limit int) (int, int, bool) {
 			break
 		}
 		if gaps >= 2 || !strings.ContainsRune(dwWordGapRunes, r) {
+			return 0, 0, false
+		}
+		gaps++
+		i += size
+	}
+	start := i
+	for i < limit {
+		r, size := firstRune(s[i:])
+		if size == 0 || !dwIsLetter(r) {
+			break
+		}
+		i += size
+	}
+	if start == i {
+		return 0, 0, false
+	}
+	return start, i, true
+}
+
+// dwNextWordValue находит следующее слово значения, разрешая между словами
+// перевод строки. В анкетах значение гражданства часто переносится по строкам:
+// «Республика\nБеларусь» или слово разбито внутри («Арм\nения»). Обычный
+// dwNextWord перевод строки не пропускает, поэтому для значения гражданства
+// нужен отдельный проход.
+func dwNextWordValue(s string, from, limit int) (int, int, bool) {
+	i, gaps := from, 0
+	for i < limit {
+		r, size := firstRune(s[i:])
+		if size == 0 || dwIsLetter(r) {
+			break
+		}
+		if gaps >= 2 || !strings.ContainsRune(dwWordGapRunes, r) && r != '\n' {
 			return 0, 0, false
 		}
 		gaps++
@@ -768,7 +802,8 @@ func NewCitizenshipDetector() Detector { return citizenshipDetector{} }
 func (citizenshipDetector) Types() []Type { return []Type{TypeCitizenship} }
 
 // Detect ищет значение гражданства после якоря. Маскируется только значение,
-// само слово «гражданство» остаётся в тексте.
+// само слово «гражданство» остаётся в тексте. Значение может стоять и перед
+// якорем через тире: «Россия — гражданство клиента».
 func (citizenshipDetector) Detect(d *Doc) []Span {
 	var out []Span
 	for _, tok := range d.Tokens {
@@ -783,12 +818,67 @@ func (citizenshipDetector) Detect(d *Doc) []Span {
 			continue
 		}
 		start, end, ok := citizenshipValue(d, tok.Start+anchorLen)
-		if !ok || dwOverlaps(out, start, end) {
-			continue
+		if ok && !dwOverlaps(out, start, end) {
+			out = append(out, Span{Start: start, End: end, Type: TypeCitizenship, Conf: ConfHigh, Reason: "citizenship:anchor"})
 		}
-		out = append(out, Span{Start: start, End: end, Type: TypeCitizenship, Conf: ConfHigh, Reason: "citizenship:anchor"})
+		start, end, ok = citizenshipValueBefore(d, tok.Start)
+		if ok && !dwOverlaps(out, start, end) {
+			out = append(out, Span{Start: start, End: end, Type: TypeCitizenship, Conf: ConfHigh, Reason: "citizenship:anchor-before"})
+		}
 	}
 	return out
+}
+
+// citizenshipValueBefore вычисляет границы названия страны или демонима перед
+// якорем через тире: «Россия — гражданство клиента». Значение принимается
+// только если перед ним стоит тире, иначе «Россия» в новостях без якоря
+// гражданства стала бы гражданством.
+func citizenshipValueBefore(d *Doc, from int) (int, int, bool) {
+	low := d.Lower
+	// Пропускаем пробелы и тире между якорем и значением.
+	pos := from
+	for pos > 0 {
+		r, size := decodeLastRuneBefore(low, pos)
+		if size == 0 {
+			return 0, 0, false
+		}
+		if r == ' ' || r == '\t' || r == '\u00a0' {
+			pos -= size
+			continue
+		}
+		if r == '-' || r == '–' || r == '—' {
+			pos -= size
+			break
+		}
+		return 0, 0, false
+	}
+	// Набираем слова значения назад.
+	lineLo, _ := d.LineBounds(from)
+	start, end, matched := pos, pos, false
+	for n := 0; n < citizenshipMaxWords; n++ {
+		ws, we, ok := dwPrevWord(low, lineLo, pos)
+		if !ok {
+			break
+		}
+		word := low[ws:we]
+		isStem := dwHasStem(word, citizenshipStems)
+		if !isStem && !dwInList(word, citizenshipQualifiers) {
+			break
+		}
+		matched = matched || isStem
+		if end == pos {
+			end = we
+		}
+		start, pos = ws, ws
+	}
+	if !matched {
+		return 0, 0, false
+	}
+	start, end = NormalizeSpan(d.Text, start, end)
+	if start >= end {
+		return 0, 0, false
+	}
+	return start, end, true
 }
 
 // citizenshipValue вычисляет границы названия страны или демонима после якоря.
@@ -797,11 +887,10 @@ func citizenshipValue(d *Doc, from int) (int, int, bool) {
 	if !ok {
 		return 0, 0, false
 	}
-	_, lineEnd := d.LineBounds(start)
+	// Значение гражданства в анкетах переносится по строкам, поэтому предел
+	// берётся по окну, а не по концу строки.
+	_, lineEnd := d.WindowRunes(start, start, 0, citizenshipMaxRunes)
 	start = citizenshipSkipFillers(d.Lower, start, lineEnd)
-	if _, hi := d.WindowRunes(start, start, 0, citizenshipMaxRunes); hi < lineEnd {
-		lineEnd = hi
-	}
 	end, ok := citizenshipWordsEnd(d.Lower, start, lineEnd)
 	if !ok {
 		return 0, 0, false
@@ -819,7 +908,7 @@ func citizenshipValue(d *Doc, from int) (int, int, bool) {
 func citizenshipSkipFillers(low string, start, lineEnd int) int {
 	pos := start
 	for n := 0; n < citizenshipMaxFillers; n++ {
-		ws, we, ok := dwNextWord(low, pos, lineEnd)
+		ws, we, ok := dwNextWordValue(low, pos, lineEnd)
 		if !ok || ws != pos || !dwInList(low[ws:we], citizenshipFillerWords) {
 			return pos
 		}
@@ -838,13 +927,21 @@ func citizenshipSkipFillers(low string, start, lineEnd int) int {
 func citizenshipWordsEnd(low string, start, limit int) (int, bool) {
 	pos, end, matched := start, 0, false
 	for n := 0; n < citizenshipMaxWords; n++ {
-		ws, we, ok := dwNextWord(low, pos, limit)
+		ws, we, ok := dwNextWordValue(low, pos, limit)
 		if !ok {
 			break
 		}
 		word := low[ws:we]
 		isStem := dwHasStem(word, citizenshipStems)
 		if !isStem && !dwInList(word, citizenshipQualifiers) {
+			// Слово может быть разбито переводом строки: «Арм\nения».
+			// Склеиваем его со следующим словом и проверяем основу.
+			ws2, we2, ok2 := dwNextWordValue(low, we, limit)
+			if ok2 && dwHasStem(low[ws:we]+low[ws2:we2], citizenshipStems) {
+				matched = true
+				end, pos = we2, we2
+				continue
+			}
 			break
 		}
 		matched = matched || isStem
