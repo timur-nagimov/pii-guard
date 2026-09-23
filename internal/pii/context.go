@@ -85,7 +85,15 @@ type ContextFilter struct {
 
 // NewContextFilter собирает фильтр: раскладывает словарь известных людей по
 // основам слов и нормализует списки разрешённых значений.
-func NewContextFilter(opts ContextOptions) *ContextFilter {
+//
+// Настройки принимаются по указателю: структура со списками разрешённых
+// значений тяжёлая, а копировать её при сборке фильтра незачем. Пустой
+// указатель равнозначен нулевым настройкам — все контекстные правила
+// выключены.
+func NewContextFilter(opts *ContextOptions) *ContextFilter {
+	if opts == nil {
+		opts = &ContextOptions{}
+	}
 	f := &ContextFilter{
 		publicFigures: opts.PublicFigures,
 		orgAddresses:  opts.OrgAddresses,
@@ -122,7 +130,7 @@ func (f *ContextFilter) loadFigures(entries []string) {
 
 // Apply разбирает найденные фрагменты и возвращает оставленные и снятые.
 // Исходный срез не изменяется: причина записывается в копию фрагмента.
-func (f *ContextFilter) Apply(d *Doc, spans []Span) (kept []Span, dropped []Span) {
+func (f *ContextFilter) Apply(d *Doc, spans []Span) (kept, dropped []Span) {
 	if d == nil || len(spans) == 0 {
 		return spans, nil
 	}
@@ -402,7 +410,7 @@ func ctxIsByteNumber(p string) bool {
 }
 
 // split раскладывает фрагменты на оставленные и снятые.
-func (s *ctxScan) split() (kept []Span, dropped []Span) {
+func (s *ctxScan) split() (kept, dropped []Span) {
 	kept = make([]Span, 0, len(s.spans))
 	for i, sp := range s.spans {
 		if s.reasons[i] == "" {
@@ -852,18 +860,17 @@ func ctxRuneDistance(d *Doc, aStart, aEnd, bStart, bEnd int) int {
 
 // ctxParagraphBounds возвращает границы абзаца: банковский контекст ищется
 // в пределах одного абзаца, соседние абзацы говорят о другом.
-func ctxParagraphBounds(text string, off int) (int, int) {
+func ctxParagraphBounds(text string, off int) (lo, hi int) {
 	if off < 0 {
 		off = 0
 	}
 	if off > len(text) {
 		off = len(text)
 	}
-	lo := 0
 	if idx := strings.LastIndex(text[:off], "\n\n"); idx >= 0 {
 		lo = idx + 2
 	}
-	hi := len(text)
+	hi = len(text)
 	if idx := strings.Index(text[off:], "\n\n"); idx >= 0 {
 		hi = off + idx
 	}
@@ -881,20 +888,19 @@ var ctxAbbreviations = map[string]bool{
 }
 
 // ctxSentenceBounds возвращает границы предложения вокруг смещения.
-func ctxSentenceBounds(text string, off int) (int, int) {
+func ctxSentenceBounds(text string, off int) (lo, hi int) {
 	if off < 0 {
 		off = 0
 	}
 	if off > len(text) {
 		off = len(text)
 	}
-	lo := 0
 	for i := 0; i < off; i++ {
 		if end, ok := ctxSentenceBreak(text, i); ok && end <= off {
 			lo = end
 		}
 	}
-	hi := len(text)
+	hi = len(text)
 	for i := off; i < len(text); i++ {
 		if end, ok := ctxSentenceBreak(text, i); ok && end > off {
 			hi = end
@@ -1003,30 +1009,30 @@ func ctxStem(word string) string {
 // личности. В предложении «Поэт Александр Пушкин родился в Москве» имя уже
 // снято как имя известного человека, и город рядом с ним тоже не является
 // персональными данными: он относится к тому же лицу.
-func (sc *ctxScan) markFigureBirthPlaces() {
-	for i := range sc.spans {
-		if sc.spans[i].Type != TypeBirthPlace || sc.reasons[i] != "" {
+func (s *ctxScan) markFigureBirthPlaces() {
+	for i := range s.spans {
+		if s.spans[i].Type != TypeBirthPlace || s.reasons[i] != "" {
 			continue
 		}
-		if !sc.hasFigureInSameSentence(i) {
+		if !s.hasFigureInSameSentence(i) {
 			continue
 		}
-		sc.reasons[i] = reasonPublicFigure
+		s.reasons[i] = reasonPublicFigure
 	}
 }
 
 // hasFigureInSameSentence сообщает, что в том же предложении есть имя,
 // снятое как имя известного человека.
-func (sc *ctxScan) hasFigureInSameSentence(idx int) bool {
-	lo, hi := sentenceBounds(sc.d.Text, sc.spans[idx].Start)
-	for j := range sc.spans {
-		if j == idx || sc.spans[j].Type != TypeFIO {
+func (s *ctxScan) hasFigureInSameSentence(idx int) bool {
+	lo, hi := sentenceBounds(s.d.Text, s.spans[idx].Start)
+	for j := range s.spans {
+		if j == idx || s.spans[j].Type != TypeFIO {
 			continue
 		}
-		if sc.reasons[j] != reasonPublicFigure {
+		if s.reasons[j] != reasonPublicFigure {
 			continue
 		}
-		if sc.spans[j].Start >= lo && sc.spans[j].End <= hi {
+		if s.spans[j].Start >= lo && s.spans[j].End <= hi {
 			return true
 		}
 	}
@@ -1034,21 +1040,20 @@ func (sc *ctxScan) hasFigureInSameSentence(idx int) bool {
 }
 
 // sentenceBounds возвращает границы предложения, в которое попадает смещение.
-func sentenceBounds(text string, off int) (int, int) {
+func sentenceBounds(text string, off int) (lo, hi int) {
 	if off < 0 {
 		off = 0
 	}
 	if off > len(text) {
 		off = len(text)
 	}
-	lo := 0
 	for i := off - 1; i > 0; i-- {
 		if text[i] == '.' || text[i] == '!' || text[i] == '?' || text[i] == '\n' {
 			lo = i + 1
 			break
 		}
 	}
-	hi := len(text)
+	hi = len(text)
 	for i := off; i < len(text); i++ {
 		if text[i] == '.' || text[i] == '!' || text[i] == '?' || text[i] == '\n' {
 			hi = i
