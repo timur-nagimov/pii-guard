@@ -205,9 +205,21 @@ for i, s in enumerate(subs, 1):
     | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
-rows = d.get("rows") or d.get("types") or []
+# Форма ответа взята с живой ручки, а не угадана: systems это список
+# объектов с полем name, types тоже, а cells это карта «тип → система → вид
+# маски». Пустое значение означает, что система этот тип не маскирует.
 systems = d.get("systems", [])
-print("    систем-потребителей: %d, типов в матрице: %d" % (len(systems), len(rows)))
+types = d.get("types", [])
+cells = d.get("cells", {})
+task_types = [t["name"] for t in types if t.get("source") == "task"]
+print("    систем-потребителей: %d, типов в матрице: %d, из них по заданию: %d"
+      % (len(systems), len(types), len(task_types)))
+for sy in systems:
+    name = sy["name"]
+    covered = sum(1 for tn in task_types if (cells.get(tn) or {}).get(name))
+    mark = "" if covered == len(task_types) else "  <- не все типы задания"
+    print("      %-14s маскирует типов задания: %d из %d%s"
+          % (name, covered, len(task_types), mark))
 ' 2>/dev/null || echo "    матрица недоступна"
 
   echo
