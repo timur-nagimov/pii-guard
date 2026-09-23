@@ -43,9 +43,9 @@
 обрезанного куска отдаёт последний токен с `End = i + utf8.RuneLen(RuneError)`
 = `i + 3`, что больше `len(text)`. Детекторы, которые режут
 `d.Text[t.Start:t.End]` или `d.Lower[t.Start:t.End]` без проверки границы,
-паникуют: `fioNewWord` (`detect_fio.go:189`), `addrWords`
-(`detect_address.go:280`), `DigitRuns` (`helpers.go:81`), `dateTokenText`
-(`detect_date.go:630`).
+паникуют: `fioNewWord` (`detect_fio.go:210`), `addrWords`
+(`detect_address.go:280`), `DigitRuns` (`helpers.go:74`), `dateTokenText`
+(`detect_date.go:637`).
 
 Панику ловит `recover` в `detectChunk` (строки 211–218), и **весь кусок
 молча пропускается**: `found = nil`, событие уходит в журнал, ответ строится
@@ -58,7 +58,7 @@
 срез по нему падает. Проверено отдельным прогоном.
 
 **Почему это третий дефект в ряду.** `cardHolderClampEnd`
-(`detect_cardholder.go:118`) — заплатка ровно под эту беду, но она стоит
+(`detect_cardholder.go:131`) — заплатка ровно под эту беду, но она стоит
 только в детекторе держателя карты. Остальные детекторы не защищены.
 
 **Разряд:** тихо портит результат (утечка персональных данных на длинных

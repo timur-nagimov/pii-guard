@@ -110,16 +110,24 @@ func scanDomain(text string, from int) (int, bool) {
 	if lastDot+1 >= end {
 		return 0, false
 	}
-	zone := text[lastDot+1 : end]
-	if len([]rune(zone)) < 2 {
+	if !validDomainZone(text[lastDot+1 : end]) {
 		return 0, false
+	}
+	return end, true
+}
+
+// validDomainZone проверяет доменную зону: не короче двух букв и только из
+// букв.
+func validDomainZone(zone string) bool {
+	if len([]rune(zone)) < 2 {
+		return false
 	}
 	for _, r := range zone {
 		if !unicode.IsLetter(r) {
-			return 0, false
+			return false
 		}
 	}
-	return end, true
+	return true
 }
 
 func firstRune(s string) (rune, int) {
