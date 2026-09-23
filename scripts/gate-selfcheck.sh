@@ -69,9 +69,9 @@ if neg == src:
     raise SystemExit("подделка не удалась: ни одна строка neg_ не подошла под образец")
 PY
 
-expect "настоящий замер принимается"            0 python3 "$ROOT/scripts/gate-quality.py" scripts/baseline.json "$WORK/real.txt"
-expect "просадка типа ловится"                  1 python3 "$ROOT/scripts/gate-quality.py" scripts/baseline.json "$WORK/drop.txt"
-expect "ложное срабатывание ловится"            1 python3 "$ROOT/scripts/gate-quality.py" scripts/baseline.json "$WORK/neg.txt"
+expect "настоящий замер принимается"            0 python3 "$ROOT/scripts/gate_quality.py" scripts/baseline.json "$WORK/real.txt"
+expect "просадка типа ловится"                  1 python3 "$ROOT/scripts/gate_quality.py" scripts/baseline.json "$WORK/drop.txt"
+expect "ложное срабатывание ловится"            1 python3 "$ROOT/scripts/gate_quality.py" scripts/baseline.json "$WORK/neg.txt"
 
 printf '\n\033[1m── Скорость\033[0m\n'
 
@@ -87,8 +87,8 @@ w.joinpath("perf-same.txt").write_text("\n".join(same) + "\n", encoding="utf-8")
 w.joinpath("perf-slow.txt").write_text("\n".join(slow) + "\n", encoding="utf-8")
 PY
 
-expect "прежняя скорость принимается"           0 python3 "$ROOT/scripts/gate-perf.py" scripts/perf-baseline.json "$WORK/perf-same.txt"
-expect "замедление вдвое ловится"               1 python3 "$ROOT/scripts/gate-perf.py" scripts/perf-baseline.json "$WORK/perf-slow.txt"
+expect "прежняя скорость принимается"           0 python3 "$ROOT/scripts/gate_perf.py" scripts/perf-baseline.json "$WORK/perf-same.txt"
+expect "замедление вдвое ловится"               1 python3 "$ROOT/scripts/gate_perf.py" scripts/perf-baseline.json "$WORK/perf-slow.txt"
 
 printf '\n\033[1m── Утечка персональных данных\033[0m\n'
 
@@ -122,7 +122,7 @@ printf '\n\033[1m── Контракт\033[0m\n'
 expect "рабочий сервис проходит контракт"       0 bash scripts/verify.sh "http://127.0.0.1:$PORT"
 
 printf '\n\033[1m── Ссылки и схемы\033[0m\n'
-expect "целые ссылки принимаются"               0 python3 "$ROOT/scripts/gate-links.py"
+expect "целые ссылки принимаются"               0 python3 "$ROOT/scripts/gate_links.py"
 
 printf '\n\033[1m═══ Итог ═══\033[0m\n'
 printf '  работает проверок: %d, не работает: %d\n\n' "$PASSED" "$FAILED"

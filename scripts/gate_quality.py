@@ -31,8 +31,8 @@ gate-selfcheck вписывалось в колонку «изменено», к
 минуты. Ворота ловят рост — то есть новую поломку, а не старую.
 
 Использование:
-    gate-quality.py baseline.json score-output.txt
-    gate-quality.py --init score-output.txt > baseline.json
+    gate_quality.py baseline.json score-output.txt
+    gate_quality.py --init score-output.txt > baseline.json
 """
 
 import json
@@ -124,14 +124,18 @@ def check_negative(name, fp, base_fp, tolerance):
               f"в базовой линии его нет", file=sys.stderr)
         return None, None
 
+    # Ветки взаимно исключают друг друга, поэтому вместо трёх выходов здесь
+    # одна развилка и один возврат: так видно, что за раз заполняется ровно
+    # одна половина пары.
     grew = fp - base_fp[name]
+    worse = better = None
     if grew > tolerance:
-        return (f"{name}: ложных срабатываний было {base_fp[name]:.2f}%, "
-                f"стало {fp:.2f}%, рост {grew:.2f} при допуске {tolerance}"), None
-    if grew < -tolerance:
-        return None, (f"{name}: ложных {base_fp[name]:.2f}% → {fp:.2f}% "
-                      f"({-grew:.2f} меньше)")
-    return None, None
+        worse = (f"{name}: ложных срабатываний было {base_fp[name]:.2f}%, "
+                 f"стало {fp:.2f}%, рост {grew:.2f} при допуске {tolerance}")
+    elif grew < -tolerance:
+        better = (f"{name}: ложных {base_fp[name]:.2f}% → {fp:.2f}% "
+                  f"({-grew:.2f} меньше)")
+    return worse, better
 
 
 def check_positive(name, score, base, tolerance):
@@ -143,13 +147,17 @@ def check_positive(name, score, base, tolerance):
               file=sys.stderr)
         return None, None
 
+    # Развилка вместо трёх выходов, причина та же, что и в check_negative:
+    # просадка и рост одновременно невозможны, а расхождение внутри допуска
+    # это не новость ни в одну сторону.
     delta = score - base[name]
+    worse = better = None
     if delta < -tolerance:
-        return (f"{name}: было {base[name]:.4f}, стало {score:.4f}, "
-                f"просадка {-delta:.4f} при допуске {tolerance}"), None
-    if delta > tolerance:
-        return None, f"{name}: {base[name]:.4f} → {score:.4f} (+{delta:.4f})"
-    return None, None
+        worse = (f"{name}: было {base[name]:.4f}, стало {score:.4f}, "
+                 f"просадка {-delta:.4f} при допуске {tolerance}")
+    elif delta > tolerance:
+        better = f"{name}: {base[name]:.4f} → {score:.4f} (+{delta:.4f})"
+    return worse, better
 
 
 def compare(rows, baseline):
@@ -189,17 +197,12 @@ def report(title, lines):
         print(f"  {line}")
 
 
-def main():
-    args = sys.argv[1:]
+def compare_with_baseline(baseline_path, score_path):
+    """Сводит замер качества с базовой линией и даёт код возврата.
 
-    if args and args[0] == "--init":
-        return init_baseline(args[1])
-
-    if len(args) != 2:
-        print(__doc__, file=sys.stderr)
-        return 2
-
-    baseline_path, score_path = args
+    Вынесено из main отдельно от разбора аргументов: main отвечает за режим
+    запуска, сравнение — за смысл, и держать это в одной функции незачем.
+    """
     with open(baseline_path, encoding="utf-8") as fh:
         baseline = json.load(fh)
 
@@ -212,6 +215,26 @@ def main():
     report("Стало лучше:", improved)
     report("Стало хуже:", problems)
     return 1 if problems else 0
+
+
+def main():
+    """Выбирает режим по аргументам: снять базовую линию или сравнить с ней.
+
+    Ворота смотрят на код возврата, поэтому ошибка вызова отделена от
+    настоящей просадки: двойка означает «сравнить не вышло», единица —
+    «стало хуже».
+    """
+    args = sys.argv[1:]
+
+    if args and args[0] == "--init":
+        return init_baseline(args[1])
+
+    if len(args) != 2:
+        print(__doc__, file=sys.stderr)
+        return 2
+
+    baseline_path, score_path = args
+    return compare_with_baseline(baseline_path, score_path)
 
 
 if __name__ == "__main__":

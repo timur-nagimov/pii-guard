@@ -68,7 +68,7 @@ for arg in "$@"; do
       echo "снимаю качество..."
       go run ./cmd/score -dataset "$CORPUS" >"$WORK/init.txt" 2>&1 || {
         echo "замер не отработал, подробности $WORK/init.txt"; exit 2; }
-      python3 "$ROOT/scripts/gate-quality.py" --init "$WORK/init.txt" > "$BASELINE" || exit 2
+      python3 "$ROOT/scripts/gate_quality.py" --init "$WORK/init.txt" > "$BASELINE" || exit 2
       echo "базовая линия записана: $BASELINE"
       echo "Проверьте её глазами и внесите в git отдельным коммитом."
       exit 0
@@ -78,7 +78,7 @@ for arg in "$@"; do
       go test ./internal/engine/ -run XXX -bench 'BenchmarkMask/250b|BenchmarkMask/2kb' \
         -benchtime 300ms -count=1 >"$WORK/bench-init.txt" 2>&1 || {
         echo "бенчмарк не отработал"; exit 2; }
-      python3 "$ROOT/scripts/gate-perf.py" --init "$WORK/bench-init.txt" > "$ROOT/scripts/perf-baseline.json" || exit 2
+      python3 "$ROOT/scripts/gate_perf.py" --init "$WORK/bench-init.txt" > "$ROOT/scripts/perf-baseline.json" || exit 2
       echo "базовая линия скорости записана: $ROOT/scripts/perf-baseline.json"
       echo "Числа зависят от машины: снимайте там же, где потом сравниваете."
       exit 0
@@ -196,7 +196,7 @@ else
     # Оба правила проверяет измеритель: положительные срезы с допуском,
     # отрицательные строго с нулём. Держать их в одном месте важнее, чем
     # разделять ради красивого вывода.
-    if python3 "$ROOT/scripts/gate-quality.py" "$BASELINE" "$WORK/score.txt" >"$WORK/quality.txt" 2>&1; then
+    if python3 "$ROOT/scripts/gate_quality.py" "$BASELINE" "$WORK/score.txt" >"$WORK/quality.txt" 2>&1; then
       ok "качество по типам не просело"
       ok "отрицательные срезы строго ноль"
       grep -q "Стало лучше" "$WORK/quality.txt" && sed -n '/Стало лучше/,/^$/p' "$WORK/quality.txt" | sed 's/^/        /'
@@ -228,7 +228,7 @@ elif [ ! -f "$PERF_BASE" ]; then
 else
   if go test ./internal/engine/ -run XXX -bench 'BenchmarkMask/250b|BenchmarkMask/2kb' \
        -benchtime 300ms -count=1 >"$WORK/bench.txt" 2>&1; then
-    if python3 "$ROOT/scripts/gate-perf.py" "$PERF_BASE" "$WORK/bench.txt" >"$WORK/perf.txt" 2>&1; then
+    if python3 "$ROOT/scripts/gate_perf.py" "$PERF_BASE" "$WORK/bench.txt" >"$WORK/perf.txt" 2>&1; then
       ok "скорость горячего пути не просела"
       grep -q "Стало быстрее" "$WORK/perf.txt" && sed -n '/Стало быстрее/,/^$/p' "$WORK/perf.txt" | sed 's/^/        /'
     else
@@ -377,7 +377,7 @@ else
   printf '%s\n' "$IGNORED_SRC" | head -8 | sed 's/^/        /'
 fi
 
-if python3 "$ROOT/scripts/gate-links.py" >"$WORK/links.log" 2>&1; then
+if python3 "$ROOT/scripts/gate_links.py" >"$WORK/links.log" 2>&1; then
   ok "ссылки в документах целы"
 else
   bad "битые ссылки:"

@@ -14,8 +14,8 @@
 двигает тот же, кто правит код, ничего не измеряет.
 
 Использование:
-    gate-perf.py baseline.json bench-output.txt
-    gate-perf.py --init bench-output.txt > baseline.json
+    gate_perf.py baseline.json bench-output.txt
+    gate_perf.py --init bench-output.txt > baseline.json
 """
 
 import json
@@ -29,6 +29,12 @@ DEFAULT_TOLERANCE = 0.25
 
 
 def parse(path):
+    """Достаёт из вывода go test замеры: имя бенчмарка и наносекунды.
+
+    Строки, не похожие на замер, молча пропускаются: рядом с замерами идут
+    шапка, служебные сообщения и итог, и падать на них значит требовать
+    чистоты от чужого формата.
+    """
     rows = {}
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -88,7 +94,35 @@ def report(title, lines):
         print(f"  {line}")
 
 
+def compare_with_baseline(baseline_path, bench_path):
+    """Сводит прогон бенчмарка с базовой линией и даёт код возврата.
+
+    Вынесено из main отдельно от разбора аргументов: сравнение читается
+    одним куском, а у main остаётся по одному выходу на каждый режим.
+    """
+    with open(baseline_path, encoding="utf-8") as fh:
+        base = json.load(fh)
+    want = base.get("замеры", {})
+    tol = float(base.get("_допуск", DEFAULT_TOLERANCE))
+
+    got = parse(bench_path)
+    if not got:
+        print("бенчмарк не отработал или вывод не разобран", file=sys.stderr)
+        return 2
+
+    problems, better = compare(want, got, tol)
+    report("Стало быстрее:", better)
+    report("Стало медленнее:", problems)
+    return 1 if problems else 0
+
+
 def main():
+    """Выбирает режим по аргументам: снять базовую линию или сравнить с ней.
+
+    Ворота смотрят на код возврата, поэтому ошибка вызова отделена от
+    провала замера: двойка означает «померить не вышло», единица — «стало
+    медленнее».
+    """
     args = sys.argv[1:]
 
     if args and args[0] == "--init":
@@ -98,20 +132,7 @@ def main():
         print(__doc__, file=sys.stderr)
         return 2
 
-    with open(args[0], encoding="utf-8") as fh:
-        base = json.load(fh)
-    want = base.get("замеры", {})
-    tol = float(base.get("_допуск", DEFAULT_TOLERANCE))
-
-    got = parse(args[1])
-    if not got:
-        print("бенчмарк не отработал или вывод не разобран", file=sys.stderr)
-        return 2
-
-    problems, better = compare(want, got, tol)
-    report("Стало быстрее:", better)
-    report("Стало медленнее:", problems)
-    return 1 if problems else 0
+    return compare_with_baseline(args[0], args[1])
 
 
 if __name__ == "__main__":
