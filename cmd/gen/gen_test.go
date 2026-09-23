@@ -479,7 +479,7 @@ func TestNewCategoriesPresent(t *testing.T) {
 		"neg_insurance_policy", "neg_medical_card", "neg_student_ticket",
 		"neg_employee_badge", "neg_room_number", "neg_route_number",
 		"neg_historical_figure", "neg_poet_verse", "neg_company_inn",
-		"neg_contract_number",
+		"neg_contract_number", "neg_latin_product",
 	}
 	seen := make(map[string]int)
 	for _, r := range NewGenerator(17, false).Generate(4000) {

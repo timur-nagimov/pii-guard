@@ -93,7 +93,7 @@ func TestFIODetectorSpans(t *testing.T) {
 		{"латиница с заглавной", "Держатель Ivan Ivanov", []string{"Ivan Ivanov"}},
 		{"латиница одна фамилия с якорем", "Оформлено на имя IVANOV", []string{"IVANOV"}},
 		{"латиница фамилия и инициал", "Держатель карты Ivanov I.", []string{"Ivanov I."}},
-		{"латиница без якоря и без словаря", "Best regards, John Smith", nil},
+		{"латиница два слова из словаря", "Best regards, John Smith", []string{"John Smith"}},
 
 		// Адреса и объекты маскировать нельзя.
 		{"улица сокращённо", "Адрес: ул. Пушкина, дом 5", nil},
@@ -868,5 +868,115 @@ func TestFIOInitialScript(t *testing.T) {
 				t.Fatalf("найдено %d фрагментов, ожидалось %d: %s", len(got), c.want, describeSpans(c.text, got))
 			}
 		})
+	}
+}
+
+// TestFIOJuryCriterion закрепляет строку из критерия жюри без номера карты.
+// Раньше «John Smith» находился только как CARDHOLDER рядом с картой, а без
+// карты имя уходило языковой модели открытым текстом. Теперь латинское имя
+// находится как ФИО и без карточного контекста.
+func TestFIOJuryCriterion(t *testing.T) {
+	text := "Contact John Smith, phone +7 916 123 45 67"
+	got := fioFound(text)
+	want := []string{"John Smith"}
+	if !fioEqual(got, want) {
+		t.Fatalf("текст %q: получено %q, ожидалось %q", text, got, want)
+	}
+}
+
+// TestFIOLatinPositive закрепляет положительные примеры латинских имён: пара
+// из двух слов словаря, имя с якорем, транслитерация русских имён и фамилий,
+// смешанная запись и транслитерированное отчество.
+func TestFIOLatinPositive(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want []string
+	}{
+		// Два слова из словаря в любом регистре.
+		{"имя и фамилия с заглавной", "Contact John Smith, phone +7 916 123 45 67", []string{"John Smith"}},
+		{"имя и фамилия капсом", "Cardholder JOHN SMITH", []string{"JOHN SMITH"}},
+		{"имя и фамилия строчными", "клиент john smith прислал документы", []string{"john smith"}},
+		{"имя и фамилия в русском тексте", "Клиент John Smith прислал документы", []string{"John Smith"}},
+		{"держатель латиницей", "держатель IVAN IVANOV", []string{"IVAN IVANOV"}},
+		{"имя и фамилия без якоря", "Best regards, John Smith", []string{"John Smith"}},
+
+		// Транслитерация русских имён и фамилий.
+		{"транслитерация с мягким знаком", "Client Olga Zaytsev, passport 7804", []string{"Olga Zaytsev"}},
+		{"транслитерация с ья", "FIO: TATYANA ZAYTSEV, INN 101038655314", []string{"TATYANA ZAYTSEV"}},
+		{"транслитерация капсом", "FIO: OLGA KRYLOV, INN 584104805587", []string{"OLGA KRYLOV"}},
+		{"транслитерация женской фамилии", "Client Elvira Ignatov, passport 9971", []string{"Elvira Ignatov"}},
+		{"транслитерация полного имени", "Ivanov Ivan Ivanovich", []string{"Ivanov Ivan Ivanovich"}},
+		{"транслитерация отчества", "Cardholder IVANOV IVAN IVANOVICH", []string{"IVANOV IVAN IVANOVICH"}},
+
+		// Смешанная запись и якоря.
+		{"смешанное имя", "Клиент Иванов Ivan", []string{"Иванов Ivan"}},
+		{"латинское имя с русским якорем", "Клиент John Smith", []string{"John Smith"}},
+		{"латинское имя с английским якорем", "Client John Smith", []string{"John Smith"}},
+		{"латинское имя с якорем name", "Name: John Smith", []string{"John Smith"}},
+		{"латинское имя с якорем mr", "Mr John Smith", []string{"John Smith"}},
+		{"латинское имя с якорем dear", "Dear John Smith", []string{"John Smith"}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := fioFound(c.text)
+			if !fioEqual(got, c.want) {
+				t.Fatalf("текст %q: получено %q, ожидалось %q", c.text, got, c.want)
+			}
+		})
+	}
+}
+
+// TestFIOLatinNegative закрепляет отрицательные примеры латинских слов:
+// названия компаний и продуктов, технические слова и коды не должны
+// маскироваться как имена.
+func TestFIOLatinNegative(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"платёжная система", "Оплата прошла через Apple Pay."},
+		{"платёжная система гугл", "Карта Google Pay выпущена в прошлом году."},
+		{"браузер", "Браузер Google Chrome установлен на устройстве."},
+		{"карта виза", "Карта Visa Classic выпущена в прошлом году."},
+		{"карта мастеркард", "Карта Mastercard Standard выпущена."},
+		{"приложение банка", "Приложение Sberbank Online обновлено."},
+		{"банк", "Счёт открыт в Tinkoff Bank."},
+		{"карты", "Сервис Yandex Maps недоступен."},
+		{"офисный пакет", "Microsoft Office установлен."},
+		{"мессенджер", "WhatsApp Messenger обновлён."},
+		{"технический заголовок", "Заголовок Content-Type задан в настройках."},
+		{"технический заголовок агента", "User-Agent указан в запросе."},
+		{"код ошибки", "Ошибка ERR Timeout зафиксирована в журнале."},
+		{"код ошибки http", "HTTP Error 500 зафиксирован."},
+		{"формат данных", "JSON Format используется в ответе."},
+		{"техника", "Техника Caterpillar обслуживается по договору."},
+		{"электроника", "Телевизор Samsung установлен в офисе."},
+		{"сокращение", "Client API"},
+		{"несколько сокращений", "Client API HTTP SLA JSON"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := fioFound(c.text); len(got) != 0 {
+				t.Fatalf("текст %q: найдено %q, ожидалось пусто", c.text, got)
+			}
+		})
+	}
+}
+
+// TestFIOLatinDictionariesLoaded проверяет, что латинские словари имён и
+// фамилий загрузились и содержат и английские, и транслитерированные русские
+// слова.
+func TestFIOLatinDictionariesLoaded(t *testing.T) {
+	names, surnames := dict.LatinSizes()
+	if names < 100 || surnames < 100 {
+		t.Fatalf("латинские словари загрузились не полностью: %d имён, %d фамилий", names, surnames)
+	}
+	for _, w := range []string{"john", "smith", "olga", "tatiana", "ivanov", "zaytsev"} {
+		if !dict.LookupLatinName(w) && !dict.LookupLatinSurname(w) {
+			t.Fatalf("слово %q не найдено ни в одном латинском словаре", w)
+		}
 	}
 }

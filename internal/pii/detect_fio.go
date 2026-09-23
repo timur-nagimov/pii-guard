@@ -21,6 +21,7 @@ const (
 	fioRoleSurnameStrong
 	fioRoleSurnameWeak
 	fioRoleSurnameAdjective
+	fioRoleSurnameLatin
 	fioRolePatronymic
 	fioRolePatronymicWeak
 	fioRoleInitial
@@ -30,7 +31,7 @@ const (
 
 // Наборы признаков, которые в правилах используются вместе.
 const (
-	fioRoleAnySurname    = fioRoleSurnameDict | fioRoleSurnameStrong | fioRoleSurnameAdjective | fioRoleSurnameWeak
+	fioRoleAnySurname    = fioRoleSurnameDict | fioRoleSurnameStrong | fioRoleSurnameAdjective | fioRoleSurnameWeak | fioRoleSurnameLatin
 	fioRoleAnyPatronymic = fioRolePatronymic | fioRolePatronymicWeak
 	// fioRoleNameCore — признаки, которые сами по себе опознают компонент
 	// имени. К такому компоненту разрешено приклеить незнакомое слово с
@@ -66,13 +67,17 @@ const fioMaxGapRunes = 3
 // fioWord описывает слово-кандидат в компоненты имени вместе с разобранными
 // признаками. Слово хранится в байтовых границах исходного текста.
 type fioWord struct {
-	start   int
-	end     int
-	norm    string
-	key     string
-	capital bool
-	latin   bool
-	dot     bool
+	start int
+	end   int
+	norm  string
+	key   string
+	// latinKey хранит исходную латинскую запись слова. Для латинских слов
+	// словарь проверяется и по ней: обратная транслитерация теряет мягкий
+	// знак («olga» → «олга») и путает «ья» и «я» («tatiana» → «татяна»).
+	latinKey string
+	capital  bool
+	latin    bool
+	dot      bool
 	// shout означает, что слово написано целиком заглавными: так пишут
 	// сокращения вроде ООО и ЗАО, а не имена людей.
 	shout bool
@@ -199,6 +204,7 @@ func fioNewWord(d *Doc, start, end int) fioWord {
 	w.key = w.norm
 	if w.latin {
 		w.key = dict.TranslitToCyr(w.norm)
+		w.latinKey = w.norm
 	}
 	w.roles = fioWordRoles(w)
 	if w.roles == 0 && fioUnknownCapable(w) {
@@ -314,7 +320,56 @@ func fioWordRoles(w fioWord) fioRole {
 	for _, part := range strings.Split(w.key, "-") {
 		roles |= fioPartRoles(part, w.capital)
 	}
+	// Латинская запись проверяется по латинскому словарю напрямую: обратная
+	// транслитерация теряет мягкий знак и путает «ья» и «я», поэтому русский
+	// словарь не находит «olga» и «tatiana». Английские имена и фамилии в
+	// русском словаре отсутствуют вовсе.
+	if w.latin {
+		for _, part := range strings.Split(w.latinKey, "-") {
+			roles |= fioLatinPartRoles(part)
+		}
+	}
 	return roles
+}
+
+// fioLatinPartRoles определяет признаки латинской части слова по латинскому
+// словарю и по транслитерированным окончаниям русских фамилий.
+func fioLatinPartRoles(p string) fioRole {
+	if fioRuneCount(p) < 2 {
+		return 0
+	}
+	var roles fioRole
+	if dict.LookupLatinName(p) {
+		roles |= fioRoleName
+	}
+	if dict.LookupLatinSurname(p) {
+		roles |= fioRoleSurnameDict
+	}
+	if fioLatinSurnameSuffix(p) {
+		roles |= fioRoleSurnameLatin
+	}
+	return roles
+}
+
+// fioLatinSurnameSuffix сообщает, что латинское слово похоже на фамилию по
+// транслитерированному русскому окончанию: -ov, -ova, -ev, -eva, -in, -ina,
+// -sky, -skaya, -enko, -uk. Такие слова встречаются в латинской записи
+// русских фамилий, которых нет в словаре.
+func fioLatinSurnameSuffix(p string) bool {
+	lower := strings.ToLower(p)
+	for _, suf := range fioLatinSurnameSuffixes {
+		if strings.HasSuffix(lower, suf) {
+			return true
+		}
+	}
+	return false
+}
+
+// fioLatinSurnameSuffixes — транслитерированные окончания русских фамилий.
+var fioLatinSurnameSuffixes = []string{
+	"ov", "ova", "ev", "eva", "in", "ina", "yn", "yna",
+	"sky", "skaya", "skiy", "skoy", "enko", "uk", "yuk", "chuk",
+	"shvili", "dze", "yan", "yanova",
 }
 
 // fioPartRoles определяет признаки одной части слова.

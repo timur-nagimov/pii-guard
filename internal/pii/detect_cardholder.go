@@ -50,6 +50,19 @@ var cardHolderStopWords = map[string]bool{
 	"debit": true, "bank": true, "alfa": true, "alfabank": true,
 	"sber": true, "tinkoff": true, "valid": true, "thru": true,
 	"expires": true, "secure": true, "cvv": true, "cvc": true, "pan": true,
+	// Названия компаний и продуктов латиницей: рядом с картой они похожи на
+	// имя держателя, но персональными данными не являются.
+	"apple": true, "google": true, "pay": true, "chrome": true, "maps": true,
+	"yandex": true, "microsoft": true, "adobe": true, "whatsapp": true,
+	"telegram": true, "instagram": true, "facebook": true, "youtube": true,
+	"netflix": true, "spotify": true, "airbnb": true, "uber": true,
+	"booking": true, "amazon": true, "samsung": true, "xiaomi": true,
+	"huawei": true, "lenovo": true, "dell": true, "hp": true, "intel": true,
+	"amd": true, "nvidia": true, "caterpillar": true, "bosch": true,
+	"siemens": true, "philips": true, "panasonic": true, "online": true,
+	"browser": true, "office": true, "reader": true, "messenger": true,
+	"content": true, "type": true, "user": true, "agent": true, "err": true,
+	"timeout": true, "http": true, "error": true, "json": true, "format": true,
 
 	"мир": true, "виза": true, "альфа": true, "альфабанк": true,
 	"сбер": true, "сбербанк": true, "тинькофф": true, "банк": true,
