@@ -772,33 +772,41 @@ func (citizenshipDetector) Types() []Type { return []Type{TypeCitizenship} }
 func (citizenshipDetector) Detect(d *Doc) []Span {
 	var out []Span
 	for _, tok := range d.Tokens {
-		if tok.Kind != KindCyr && tok.Kind != KindLat {
-			continue
-		}
-		if dwIsWordRune(dwRuneBefore(d.Lower, tok.Start)) {
-			continue
-		}
-		anchorLen, ok := dwMatchLongestAnchor(d.Lower, tok.Start, citizenshipAnchorSet)
+		s, ok := citizenshipAtToken(d, tok)
 		if !ok {
 			continue
 		}
-		start, end, ok := citizenshipValue(d, tok.Start+anchorLen)
-		if !ok {
-			// Якорь бывает и справа от значения: «Республика Армения —
-			// гражданская принадлежность». Смотрим назад по той же строке.
-			start, end, ok = citizenshipValueBefore(d, tok.Start)
-			if !ok || dwOverlaps(out, start, end) {
-				continue
-			}
-			out = append(out, Span{Start: start, End: end, Type: TypeCitizenship, Conf: ConfHigh, Reason: "citizenship:anchor_after"})
+		if dwOverlaps(out, s.Start, s.End) {
 			continue
 		}
-		if dwOverlaps(out, start, end) {
-			continue
-		}
-		out = append(out, Span{Start: start, End: end, Type: TypeCitizenship, Conf: ConfHigh, Reason: "citizenship:anchor"})
+		out = append(out, s)
 	}
 	return out
+}
+
+// citizenshipAtToken разбирает один токен как якорное слово и возвращает
+// значение гражданства, к которому этот якорь относится.
+func citizenshipAtToken(d *Doc, tok Token) (Span, bool) {
+	if tok.Kind != KindCyr && tok.Kind != KindLat {
+		return Span{}, false
+	}
+	if dwIsWordRune(dwRuneBefore(d.Lower, tok.Start)) {
+		return Span{}, false
+	}
+	anchorLen, ok := dwMatchLongestAnchor(d.Lower, tok.Start, citizenshipAnchorSet)
+	if !ok {
+		return Span{}, false
+	}
+	if start, end, ok := citizenshipValue(d, tok.Start+anchorLen); ok {
+		return Span{Start: start, End: end, Type: TypeCitizenship, Conf: ConfHigh, Reason: "citizenship:anchor"}, true
+	}
+	// Якорь бывает и справа от значения: «Республика Армения —
+	// гражданская принадлежность». Смотрим назад по той же строке.
+	start, end, ok := citizenshipValueBefore(d, tok.Start)
+	if !ok {
+		return Span{}, false
+	}
+	return Span{Start: start, End: end, Type: TypeCitizenship, Conf: ConfHigh, Reason: "citizenship:anchor_after"}, true
 }
 
 // citizenshipValueBefore ищет название страны слева от якоря, в пределах той

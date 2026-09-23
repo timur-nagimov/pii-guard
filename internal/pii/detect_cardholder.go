@@ -423,7 +423,9 @@ func cardHolderInnerSpace(text string) bool {
 // якорь.
 func cardHolderCardNear(d *Doc, start, end int) bool {
 	lo, hi := d.WindowRunes(start, end, cardHolderWindow, cardHolderWindow)
-	for _, run := range d.NumRuns() {
+	runs := d.NumRuns()
+	for i := range runs {
+		run := &runs[i]
 		if run.End <= lo || run.Start >= hi {
 			continue
 		}
@@ -440,7 +442,7 @@ func cardHolderCardNear(d *Doc, start, end int) bool {
 
 // cardHolderExpiry сообщает, что кандидат похож на срок действия карты вида
 // 12/25: две цифры месяца, косая черта, две цифры года.
-func cardHolderExpiry(run NumRun) bool {
+func cardHolderExpiry(run *NumRun) bool {
 	if run.GroupsPattern() != "2-2" || !strings.Contains(run.Seps, "/") {
 		return false
 	}
@@ -577,19 +579,19 @@ func (e extraDocDetector) Detect(d *Doc) []Span {
 // classify относит числового кандидата к одному из дополнительных документов.
 // Порядок проверок идёт от более строгой формы к более свободной.
 func (extraDocDetector) classify(d *Doc, runs []NumRun, i int) (Span, bool) {
-	if s, ok := extraDocSNILS(d, runs[i]); ok {
+	if s, ok := extraDocSNILS(d, &runs[i]); ok {
 		return s, true
 	}
 	if s, ok := extraDocForeign(d, runs, i); ok {
 		return s, true
 	}
-	if s, ok := extraDocBirthCert(d, runs[i]); ok {
+	if s, ok := extraDocBirthCert(d, &runs[i]); ok {
 		return s, true
 	}
 	if s, ok := extraDocMilitary(d, runs, i); ok {
 		return s, true
 	}
-	return extraDocPermit(d, runs[i])
+	return extraDocPermit(d, &runs[i])
 }
 
 // extraDocWordRune сообщает, что руна — часть слова.
@@ -695,7 +697,7 @@ func extraDocAnchorBefore(d *Doc, start int, anchors []string) bool {
 // extraDocSNILS находит страховой номер там, где числовой детектор его не
 // берёт. Самый частый случай — номер, начинающийся с семёрки или восьмёрки:
 // числовой детектор считает такие одиннадцать цифр телефоном.
-func extraDocSNILS(d *Doc, run NumRun) (Span, bool) {
+func extraDocSNILS(d *Doc, run *NumRun) (Span, bool) {
 	if len(run.Digits) != 11 {
 		return Span{}, false
 	}
@@ -711,8 +713,8 @@ func extraDocSNILS(d *Doc, run NumRun) (Span, bool) {
 // extraDocSNILSByNumeric повторяет условия числового детектора для страхового
 // номера. Если фрагмент с теми же границами он уже отдаёт, второй раз его
 // возвращать не нужно.
-func extraDocSNILSByNumeric(d *Doc, run NumRun) bool {
-	if isPhoneShape(run) {
+func extraDocSNILSByNumeric(d *Doc, run *NumRun) bool {
+	if isPhoneShape(*run) {
 		return false
 	}
 	pattern := run.GroupsPattern()
@@ -770,7 +772,7 @@ func extraDocForeignShape(d *Doc, runs []NumRun, i int) (int, bool) {
 // extraDocBirthCert находит свидетельство о рождении. Форма серии — римские
 // цифры, разделитель и две буквы; если серии нет, хватает якоря прямо перед
 // номером.
-func extraDocBirthCert(d *Doc, run NumRun) (Span, bool) {
+func extraDocBirthCert(d *Doc, run *NumRun) (Span, bool) {
 	if len(run.Digits) < 5 || len(run.Digits) > 7 {
 		return Span{}, false
 	}
@@ -792,7 +794,7 @@ func extraDocBirthCert(d *Doc, run NumRun) (Span, bool) {
 // и все группы собираются в один фрагмент. В выгрузках номер часто сливается
 // со следующей сущностью — «НА № 4819577 930956» — тогда берётся первая группа.
 func extraDocMilitary(d *Doc, runs []NumRun, i int) (Span, bool) {
-	run := runs[i]
+	run := &runs[i]
 	// Номер военного билета — первая группа цифр прогона. В выгрузке номер
 	// сливается со следующей сущностью, поэтому длину берём по первой группе,
 	// а не по всему прогону.
@@ -806,35 +808,12 @@ func extraDocMilitary(d *Doc, runs []NumRun, i int) (Span, bool) {
 	// Рядом с двухбуквенной серией длина номера допускает опечатку в одну
 	// цифру: сама пара «две буквы плюс номер» уже говорит о документе.
 	if start, ok := extraDocSeries(d, run.Start); ok && n >= 6 && n <= 8 {
-		if extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsMilitary, anchorWindow, nearAnchorWindow) {
-			return extraDocSpan(d, start, firstEnd, TypeMilitaryID, ConfHigh, "military_id:series_number")
-		}
-		// Без якоря номер берётся только для ровно семи цифр: «АН-2850498» в
-		// выгрузке. Пара «две буквы плюс семь цифр» характерна для военного
-		// билета, поэтому якорь не обязателен. Опечатки в длине номера и
-		// разбитые номера без якоря не отличить от случайных обозначений.
-		// Слово «билет» без военного якоря — это билет на поезд или самолёт,
-		// а не военный билет, поэтому такой номер без якоря не берём.
-		if n == 7 && !extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsTicket, anchorWindow, nearAnchorWindow) {
-			return extraDocSpan(d, start, firstEnd, TypeMilitaryID, ConfAnchored, "military_id:series_standard")
-		}
-		return Span{}, false
+		return extraDocMilitarySeries(d, start, firstEnd, n)
 	}
 	// Номер, разбитый на две отдельные группы: две цифры и пять цифр. Серия
 	// обязательна, иначе «41 05371» без серии не отличить от случайных чисел.
 	if n == 2 && i+1 < len(runs) {
-		next := runs[i+1]
-		if len(next.Digits) == 5 {
-			if start, ok := extraDocSeries(d, run.Start); ok {
-				gap := extraDocLowerSlice(d, run.End, next.Start)
-				if !strings.ContainsAny(gap, "\n\r") && utf8.RuneCountInString(gap) <= 16 && onlyConnectors(gap) {
-					if extraDocAnchorNear(d, start, next.End, extraDocAnchorsMilitary, anchorWindow, nearAnchorWindow) {
-						return extraDocSpan(d, start, next.End, TypeMilitaryID, ConfHigh, "military_id:series_number_split")
-					}
-				}
-			}
-		}
-		return Span{}, false
+		return extraDocMilitarySplit(d, runs, i)
 	}
 	if n != 7 || !extraDocAnchorBefore(d, run.Start, extraDocAnchorsMilitary) {
 		return Span{}, false
@@ -842,9 +821,51 @@ func extraDocMilitary(d *Doc, runs []NumRun, i int) (Span, bool) {
 	return extraDocSpan(d, run.Start, firstEnd, TypeMilitaryID, ConfAnchored, "military_id:anchor")
 }
 
+// extraDocMilitarySeries решает по номеру, перед которым уже найдена
+// двухбуквенная серия: с якорем это военный билет наверняка, без якоря
+// годится только эталонная форма номера.
+func extraDocMilitarySeries(d *Doc, start, firstEnd, n int) (Span, bool) {
+	if extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsMilitary, anchorWindow, nearAnchorWindow) {
+		return extraDocSpan(d, start, firstEnd, TypeMilitaryID, ConfHigh, "military_id:series_number")
+	}
+	// Без якоря номер берётся только для ровно семи цифр: «АН-2850498» в
+	// выгрузке. Пара «две буквы плюс семь цифр» характерна для военного
+	// билета, поэтому якорь не обязателен. Опечатки в длине номера и
+	// разбитые номера без якоря не отличить от случайных обозначений.
+	// Слово «билет» без военного якоря — это билет на поезд или самолёт,
+	// а не военный билет, поэтому такой номер без якоря не берём.
+	if n == 7 && !extraDocAnchorNear(d, start, firstEnd, extraDocAnchorsTicket, anchorWindow, nearAnchorWindow) {
+		return extraDocSpan(d, start, firstEnd, TypeMilitaryID, ConfAnchored, "military_id:series_standard")
+	}
+	return Span{}, false
+}
+
+// extraDocMilitarySplit собирает номер, разбитый на две группы — «АС-41 05371».
+// Серию и обе группы берём одним фрагментом, но только если между группами
+// нет ничего, кроме связок в пределах одной строки: иначе это два разных
+// числа, случайно оказавшихся рядом.
+func extraDocMilitarySplit(d *Doc, runs []NumRun, i int) (Span, bool) {
+	run, next := &runs[i], &runs[i+1]
+	if len(next.Digits) != 5 {
+		return Span{}, false
+	}
+	start, ok := extraDocSeries(d, run.Start)
+	if !ok {
+		return Span{}, false
+	}
+	gap := extraDocLowerSlice(d, run.End, next.Start)
+	if strings.ContainsAny(gap, "\n\r") || utf8.RuneCountInString(gap) > 16 || !onlyConnectors(gap) {
+		return Span{}, false
+	}
+	if !extraDocAnchorNear(d, start, next.End, extraDocAnchorsMilitary, anchorWindow, nearAnchorWindow) {
+		return Span{}, false
+	}
+	return extraDocSpan(d, start, next.End, TypeMilitaryID, ConfHigh, "military_id:series_number_split")
+}
+
 // extraDocPermit находит номер вида на жительство. Единой формы у него нет,
 // поэтому требуется якорь слева без других чисел между якорем и номером.
-func extraDocPermit(d *Doc, run NumRun) (Span, bool) {
+func extraDocPermit(d *Doc, run *NumRun) (Span, bool) {
 	if n := len(run.Digits); n < 6 || n > 12 {
 		return Span{}, false
 	}

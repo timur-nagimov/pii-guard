@@ -115,7 +115,7 @@ func (e *Engine) contextFilter(sys config.System) *pii.ContextFilter {
 			return f
 		}
 	}
-	f := pii.NewContextFilter(pii.ContextOptions{
+	f := pii.NewContextFilter(&pii.ContextOptions{
 		PublicFigures:  sys.Exclusions.PublicFigures,
 		OrgAddresses:   sys.Exclusions.OrgAddresses,
 		AllowPersons:   sys.Exclusions.AllowPersons,

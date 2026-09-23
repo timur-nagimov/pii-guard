@@ -72,27 +72,8 @@ func isLocalRune(r rune) bool {
 // scanDomain идёт вправо от знака собаки и требует хотя бы одну точку и
 // доменную зону из букв.
 func scanDomain(text string, from int) (int, bool) {
-	end := from
-	dots := 0
-	lastDot := -1
-	for end < len(text) {
-		r, size := firstRune(text[end:])
-		if size == 0 {
-			break
-		}
-		if r == '.' {
-			dots++
-			lastDot = end
-			end += size
-			continue
-		}
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' {
-			end += size
-			continue
-		}
-		break
-	}
-	if dots == 0 || lastDot < 0 {
+	end, dots := domainEnd(text, from)
+	if dots == 0 {
 		return 0, false
 	}
 	// Хвостовая точка в конец адреса не входит: в предложении «почта a@b.ru.»
@@ -102,24 +83,48 @@ func scanDomain(text string, from int) (int, bool) {
 	}
 	// После обрезки последняя точка домена могла оказаться за границей, тогда
 	// её нужно найти заново внутри укороченного диапазона.
-	lastDot = strings.LastIndexByte(text[from:end], '.')
+	lastDot := strings.LastIndexByte(text[from:end], '.')
 	if lastDot < 0 {
 		return 0, false
 	}
-	lastDot += from
-	if lastDot+1 >= end {
+	if !isDomainZone(text[from+lastDot+1 : end]) {
 		return 0, false
 	}
-	zone := text[lastDot+1 : end]
+	return end, true
+}
+
+// domainEnd отмечает конец доменной части: буквы, цифры, дефисы и точки.
+// Точки считаются отдельно, потому что без точки домена не бывает: запись
+// вида «user@localhost» адресом не считается.
+func domainEnd(text string, from int) (end, dots int) {
+	for end = from; end < len(text); {
+		r, size := firstRune(text[end:])
+		if size == 0 {
+			break
+		}
+		if r == '.' {
+			dots++
+		} else if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' {
+			break
+		}
+		end += size
+	}
+	return end, dots
+}
+
+// isDomainZone проверяет хвост домена после последней точки. Зоны короче двух
+// букв не бывает, и цифр в зоне не бывает тоже: без этой проверки адресом
+// считался бы любой набор чисел через точку вроде «user@1.23».
+func isDomainZone(zone string) bool {
 	if len([]rune(zone)) < 2 {
-		return 0, false
+		return false
 	}
 	for _, r := range zone {
 		if !unicode.IsLetter(r) {
-			return 0, false
+			return false
 		}
 	}
-	return end, true
+	return true
 }
 
 func firstRune(s string) (rune, int) {

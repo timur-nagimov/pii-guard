@@ -528,7 +528,7 @@ func TestContextFilterApply(t *testing.T) {
 				spans = append(spans, ctxSpanFor(t, tc.text, e.value, e.typ))
 			}
 			target := spans[0]
-			kept, dropped := NewContextFilter(tc.opts).Apply(d, spans)
+			kept, dropped := NewContextFilter(&tc.opts).Apply(d, spans)
 			got, reason := ctxLookup(target, kept, dropped)
 			if got != tc.wantDropped {
 				t.Fatalf("фрагмент %q: снят=%v, ожидалось снят=%v (причина %q)",
@@ -563,7 +563,8 @@ func TestContextFilterKeepsInputUntouched(t *testing.T) {
 	d := NewDoc(text)
 	spans := []Span{ctxSpanFor(t, text, "Александр Пушкин", TypeFIO)}
 	spans[0].Reason = "fio:anchor"
-	kept, dropped := NewContextFilter(ctxDefaultOpts()).Apply(d, spans)
+	opts := ctxDefaultOpts()
+	kept, dropped := NewContextFilter(&opts).Apply(d, spans)
 	if len(kept) != 0 || len(dropped) != 1 {
 		t.Fatalf("ожидался один снятый фрагмент, получено kept=%d dropped=%d", len(kept), len(dropped))
 	}
@@ -577,7 +578,8 @@ func TestContextFilterKeepsInputUntouched(t *testing.T) {
 
 // TestContextFilterEmptyInput проверяет вырожденные входы.
 func TestContextFilterEmptyInput(t *testing.T) {
-	f := NewContextFilter(ctxDefaultOpts())
+	opts := ctxDefaultOpts()
+	f := NewContextFilter(&opts)
 	if kept, dropped := f.Apply(nil, nil); len(kept) != 0 || len(dropped) != 0 {
 		t.Fatalf("на пустом входе фильтр вернул kept=%d dropped=%d", len(kept), len(dropped))
 	}
@@ -680,7 +682,7 @@ func TestIPNotReferenceNumber(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			d := NewDoc(c.text)
 			spans := NewExtraDetector().Detect(d)
-			kept, _ := NewContextFilter(ContextOptions{}).Apply(d, spans)
+			kept, _ := NewContextFilter(&ContextOptions{}).Apply(d, spans)
 			got := false
 			for _, s := range kept {
 				if s.Type == TypeIPAddress {
