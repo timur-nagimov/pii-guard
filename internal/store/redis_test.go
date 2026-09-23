@@ -3,6 +3,7 @@ package store
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"net"
 	"os"
 	"strconv"
@@ -186,9 +187,9 @@ func TestRedisSharedBetweenInstances(t *testing.T) {
 		t.Fatalf("запись не удалась: %v", err)
 	}
 
-	got, ok := second.Get("id-1")
-	if !ok {
-		t.Fatal("вторая копия сервиса не нашла запись первой")
+	got, err := second.Get("id-1")
+	if err != nil {
+		t.Fatalf("вторая копия сервиса не нашла запись первой: %v", err)
 	}
 	if got.Mask != maskText || got.System != "alfasonar" {
 		t.Fatalf("запись прочитана с другими полями: %+v", got)
@@ -286,8 +287,8 @@ func TestRedisWrongPassword(t *testing.T) {
 	if _, err := s.Put("id-5", "текст", "маска", "sys", nil); err != nil {
 		t.Fatalf("запись обязана пройти запасным путём, получена ошибка %v", err)
 	}
-	if _, ok := s.Get("id-5"); !ok {
-		t.Fatal("запись, ушедшая на запасной путь, не читается")
+	if _, err := s.Get("id-5"); err != nil {
+		t.Fatalf("запись, ушедшая на запасной путь, не читается: %v", err)
 	}
 	if st := s.Stats(); st.Degraded == 0 || st.Failures == 0 {
 		t.Fatalf("деградация не отмечена: %+v", st)
@@ -320,8 +321,8 @@ func TestRedisFallbackWhenDown(t *testing.T) {
 	if _, err := s.Put("id-6", original, "маска", "sys", nil); err != nil {
 		t.Fatalf("запись при недоступном Redis вернула ошибку: %v", err)
 	}
-	e, ok := s.Get("id-6")
-	if !ok {
+	e, err := s.Get("id-6")
+	if err != nil {
 		t.Fatal("запись при недоступном Redis не читается")
 	}
 	back, err := s.Original(e)
@@ -373,14 +374,15 @@ func TestRedisPauseAfterFailure(t *testing.T) {
 	}
 }
 
-// TestRedisBadValue проверяет чтение испорченного значения: запись считается
-// ненайденной, связь с Redis при этом не обрывается.
+// TestRedisBadValue проверяет чтение испорченного значения: запись не отдаётся
+// как действующая, а сообщается как повреждённая, связь с Redis при этом не
+// обрывается.
 func TestRedisBadValue(t *testing.T) {
 	f := startFakeRedis(t, "")
 	s := newRedisStore(t, f.addr(), testKey(31))
 	f.put("pii-test:id-8", []byte("мусор, который не расшифровать"))
-	if _, ok := s.Get("id-8"); ok {
-		t.Fatal("испорченное значение выдано за запись")
+	if _, err := s.Get("id-8"); !errors.Is(err, ErrCorrupted) {
+		t.Fatalf("испорченное значение дало ошибку %v, ожидалась %v", err, ErrCorrupted)
 	}
 	if !s.available() {
 		t.Fatal("испорченное значение оборвало работу с Redis, хотя он жив")
@@ -396,8 +398,8 @@ func TestRedisForeignKey(t *testing.T) {
 	if _, err := first.Put("id-9", "секрет", "маска", "sys", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := second.Get("id-9"); ok {
-		t.Fatal("чужой ключ шифрования прочитал запись")
+	if _, err := second.Get("id-9"); !errors.Is(err, ErrCorrupted) {
+		t.Fatalf("чужой ключ шифрования дал ошибку %v, ожидалась %v", err, ErrCorrupted)
 	}
 }
 
@@ -411,8 +413,8 @@ func TestRedisDelete(t *testing.T) {
 	if err := s.Delete("id-10"); err != nil {
 		t.Fatalf("удаление вернуло ошибку: %v", err)
 	}
-	if _, ok := s.Get("id-10"); ok {
-		t.Fatal("запись пережила удаление")
+	if _, err := s.Get("id-10"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("запись пережила удаление: %v", err)
 	}
 	if keys := f.keys(); len(keys) != 0 {
 		t.Fatalf("в Redis остались ключи %v", keys)
@@ -434,8 +436,8 @@ func TestRedisExpired(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	if _, ok := s.Get("id-11"); ok {
-		t.Fatal("просроченная запись отдана сервису")
+	if _, err := s.Get("id-11"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("просроченная запись отдана сервису: %v", err)
 	}
 }
 
@@ -455,9 +457,9 @@ func TestRedisConcurrent(t *testing.T) {
 					t.Errorf("запись %s не удалась: %v", id, err)
 					return
 				}
-				e, ok := s.Get(id)
-				if !ok {
-					t.Errorf("запись %s не найдена", id)
+				e, err := s.Get(id)
+				if err != nil {
+					t.Errorf("запись %s не найдена: %v", id, err)
 					return
 				}
 				if back, err := s.Original(e); err != nil || back != "текст "+id {
@@ -502,8 +504,8 @@ func TestStoreChoosesBackend(t *testing.T) {
 	if _, err := shared.Put("id", "текст", "маска", "sys", nil); err != nil {
 		t.Fatal(err)
 	}
-	e, ok := shared.Get("id")
-	if !ok {
+	e, err := shared.Get("id")
+	if err != nil {
 		t.Fatal("запись не найдена через обёртку")
 	}
 	if back, err := shared.Original(e); err != nil || back != "текст" {
@@ -565,8 +567,8 @@ func TestRedisRealServer(t *testing.T) {
 		t.Fatalf("не удалось создать вторую копию хранилища: %v", err)
 	}
 	defer other.Close()
-	e, ok := other.Get(id)
-	if !ok {
+	e, err := other.Get(id)
+	if err != nil {
 		t.Fatal("вторая копия сервиса не нашла запись в настоящем Redis")
 	}
 	if back, err := other.Original(e); err != nil || back != original {
@@ -629,7 +631,7 @@ func TestMemoryStoreHookIsNoop(t *testing.T) {
 	if _, err := s.Put("id", "текст", "маска", "sys", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := s.Get("id"); !ok {
-		t.Fatal("запись не найдена")
+	if _, err := s.Get("id"); err != nil {
+		t.Fatalf("запись не найдена: %v", err)
 	}
 }

@@ -124,19 +124,21 @@ func (s *MemoryStore) Delete(id string) {
 	s.countMu.Unlock()
 }
 
-// Get возвращает запись по идентификатору, если она не просрочена.
-func (s *MemoryStore) Get(id string) (*Entry, bool) {
+// Get возвращает запись по идентификатору, если она не просрочена. Отсутствие
+// записи и истёкший срок жизни дают ErrNotFound: для обработчика это одно и то
+// же — соответствия больше нет.
+func (s *MemoryStore) Get(id string) (*Entry, error) {
 	sh := s.shardFor(id)
 	sh.mu.RLock()
 	e, ok := sh.data[id]
 	sh.mu.RUnlock()
 	if !ok {
-		return nil, false
+		return nil, ErrNotFound
 	}
 	if time.Now().After(e.ExpiresAt) {
-		return nil, false
+		return nil, ErrNotFound
 	}
-	return e, true
+	return e, nil
 }
 
 // Original расшифровывает исходный текст записи.

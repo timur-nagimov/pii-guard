@@ -328,3 +328,35 @@ func spanOf(text, value string, t pii.Type, occurrence int) pii.Span {
 	}
 	return pii.Span{Start: from, End: from + len(value), Type: t, Conf: pii.ConfHigh}
 }
+
+// TestLooksMasked проверяет распознавание уже замаскированного текста. По нему
+// сервис решает, что делать с текстом, присланным на восстановление после
+// истечения срока хранения: маскировать его повторно нельзя.
+func TestLooksMasked(t *testing.T) {
+	cases := []struct {
+		name   string
+		text   string
+		preset Preset
+		want   bool
+	}{
+		{"пустой текст", "", PresetFull, false},
+		{"обычный текст без звёздочек", "Иванов Иван, телефон +79161234567", PresetFull, false},
+		{"полностью замаскированный", "****** ****, телефон *************", PresetFull, true},
+		{"маска с пробелами", "****** **** ********", PresetFullWS, true},
+		{"частичная маска", "Ив**** **** ******ич", PresetPartial, true},
+		{"редкая звёздочка", "пароль: ***, остальное обычный текст", PresetFull, false},
+		{"плейсхолдеры", "[FIO_1] [PHONE_1] [CARD_1]", PresetToken, true},
+		{"один плейсхолдер среди текста", "Здравствуйте, [FIO_1]", PresetToken, false},
+		{"инициалы", "И. И. И.", PresetInitials, true},
+		{"инициалы среди текста", "Иванов И. И. пришёл", PresetInitials, false},
+		{"звёздочки не считаются плейсхолдерами", "****** ****", PresetToken, false},
+		{"плейсхолдеры не считаются звёздочками", "[FIO_1] [PHONE_1]", PresetFull, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := LooksMasked(c.text, c.preset); got != c.want {
+				t.Fatalf("LooksMasked(%q, %q) = %v, ожидалось %v", c.text, c.preset, got, c.want)
+			}
+		})
+	}
+}
