@@ -303,8 +303,8 @@ func TestAllTypesUnique(t *testing.T) {
 		}
 		seen[tp] = true
 	}
-	if len(seen) != 18 {
-		t.Fatalf("обязательных типов %d, ожидалось 18", len(seen))
+	if len(seen) != 23 {
+		t.Fatalf("обязательных типов %d, ожидалось 23", len(seen))
 	}
 }
 

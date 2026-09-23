@@ -39,6 +39,18 @@ const (
 	TypeMilitaryID      Type = "MILITARY_ID"
 )
 
+// Типы, расширяющие перечень идентифицируемых персональных данных: банковские
+// реквизиты, документы и идентификаторы, которые постоянно встречаются в
+// банковских анкетах. Каждый тип добавляется детектором с якорями и формой,
+// поэтому ядро при этом не меняется.
+const (
+	TypeAccount   Type = "ACCOUNT"
+	TypeOMS       Type = "OMS"
+	TypePlate     Type = "PLATE"
+	TypeVIN       Type = "VIN"
+	TypeIPAddress Type = "IP_ADDRESS"
+)
+
 // AllTypes перечисляет обязательные типы из технического задания в порядке,
 // в котором их удобно показывать в отчётах о качестве.
 func AllTypes() []Type {
@@ -47,6 +59,7 @@ func AllTypes() []Type {
 		TypeIssuer, TypeDeptCode, TypeIssueDate, TypeDriverLicense, TypeAddress,
 		TypePostcode, TypeEmail, TypePhone, TypeINN, TypeCard, TypeCVV,
 		TypePIN, TypeCardHolder,
+		TypeAccount, TypeOMS, TypePlate, TypeVIN, TypeIPAddress,
 	}
 }
 

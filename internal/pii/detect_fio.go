@@ -578,6 +578,12 @@ func fioPairShape(a, b fioWord) (float64, string, bool) {
 
 // fioInitialsPair проверяет запись «Иванов И.» и «И. Иванов».
 func fioInitialsPair(a, b fioWord) bool {
+	// Инициал и фамилия обязаны быть одной письменности. Без этого «S. Сведения»
+	// в хвосте VIN принималось за имя: латинская буква с точкой склеивалась с
+	// обычным русским словом, и ложное имя вытесняло настоящий номер.
+	if a.latin != b.latin {
+		return false
+	}
 	if a.has(fioRoleAnySurname) && b.isInitial() {
 		return true
 	}

@@ -28,6 +28,7 @@ func knownTypes() map[string]bool {
 	for _, t := range []pii.Type{
 		pii.TypeSNILS, pii.TypeForeignPassport, pii.TypeResidencePermit,
 		pii.TypeBirthCert, pii.TypeMilitaryID,
+		pii.TypeAccount, pii.TypeOMS, pii.TypePlate, pii.TypeVIN, pii.TypeIPAddress,
 	} {
 		out[string(t)] = true
 	}
