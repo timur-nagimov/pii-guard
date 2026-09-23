@@ -98,40 +98,52 @@ var addrHouseTypes = map[string]string{
 	"str": "building",
 }
 
+// addrWordSet собирает набор слов для проверки принадлежности. Наборы ниже
+// отличаются только содержимым, поэтому строятся одной функцией: иначе каждый
+// список превращается в отдельную карту-литерал, где у каждого слова
+// повторяется «: true».
+func addrWordSet(words ...string) map[string]bool {
+	set := make(map[string]bool, len(words))
+	for _, w := range words {
+		set[w] = true
+	}
+	return set
+}
+
 // addrHouseWords — полные слова для номера дома. Только с ними одиночный
 // номер считается адресом: у сокращения «д.» слишком много значений.
-var addrHouseWords = map[string]bool{
-	"дом": true, "дома": true, "доме": true,
-	"владение": true, "владения": true, "владении": true,
-}
+var addrHouseWords = addrWordSet(
+	"дом", "дома", "доме",
+	"владение", "владения", "владении",
+)
 
 // addrStopNames — слова, которые не могут быть названием улицы или пункта.
 // Без них якорное слово из соседнего предложения попадает во фрагмент.
-var addrStopNames = map[string]bool{
-	"и": true, "или": true, "а": true, "но": true, "не": true, "что": true,
-	"это": true, "же": true, "тел": true, "телефон": true, "паспорт": true,
-	"инн": true, "снилс": true, "email": true, "почта": true, "дата": true,
-	"серия": true, "номер": true, "выдан": true, "код": true, "сумма": true,
-	"заказ": true, "договор": true, "банк": true, "отделение": true,
-	"филиал": true, "рождения": true, "рожд": true, "год": true,
-	"года": true, "году": true, "лет": true, "руб": true, "рублей": true,
-}
+var addrStopNames = addrWordSet(
+	"и", "или", "а", "но", "не", "что",
+	"это", "же", "тел", "телефон", "паспорт",
+	"инн", "снилс", "email", "почта", "дата",
+	"серия", "номер", "выдан", "код", "сумма",
+	"заказ", "договор", "банк", "отделение",
+	"филиал", "рождения", "рожд", "год",
+	"года", "году", "лет", "руб", "рублей",
+)
 
 // addrNameConnectors — служебные слова внутри названия улицы: «наб. реки
 // Фонтанки», «ул. имени Гагарина».
-var addrNameConnectors = map[string]bool{
-	"реки": true, "имени": true, "им": true, "маршала": true,
-	"генерала": true, "академика": true, "братьев": true, "the": true,
+var addrNameConnectors = addrWordSet(
+	"реки", "имени", "им", "маршала",
+	"генерала", "академика", "братьев", "the",
 	// «лет» держит числовые названия вроде «40 лет Октября»: без связки
 	// название обрывалось на числе и улица не опознавалась.
-	"лет": true,
-}
+	"лет",
+)
 
 // addrGlueWords — слова, допустимые между компонентами одного адреса:
 // «проживает в г. Москва на ул. Ленина».
-var addrGlueWords = map[string]bool{
-	"в": true, "во": true, "на": true, "по": true, "у": true, "из": true,
-}
+var addrGlueWords = addrWordSet(
+	"в", "во", "на", "по", "у", "из",
+)
 
 // addrStreetSuffixes — окончания названий улиц, записанных без типа:
 // «Тверская 12-45».
@@ -154,16 +166,16 @@ type addrWord struct {
 // «город» встречаются в обычной речи о месте («ремонт дороги затронет улица
 // Менделеева», «поехал в город Казань»), и одного такого слова для адреса
 // мало, ему по-прежнему нужен второй компонент или якорь.
-var addrSoloTypes = map[string]bool{
-	"г": true, "гор": true, "г-д": true, "г-к": true, "гп": true,
-	"с": true, "д": true, "дер": true, "п": true, "пос": true,
-	"пгт": true, "рп": true, "ст": true, "ст-ца": true, "х": true,
-	"клх": true, "к": true, "снт": true, "днп": true, "мкр": true,
-	"кв-л": true,
-	"ул":   true, "пер": true, "пр": true, "пр-т": true, "пр-кт": true,
-	"просп": true, "пл": true, "наб": true, "ш": true, "б-р": true,
-	"бул": true, "алл": true, "туп": true,
-}
+var addrSoloTypes = addrWordSet(
+	"г", "гор", "г-д", "г-к", "гп",
+	"с", "д", "дер", "п", "пос",
+	"пгт", "рп", "ст", "ст-ца", "х",
+	"клх", "к", "снт", "днп", "мкр",
+	"кв-л",
+	"ул", "пер", "пр", "пр-т", "пр-кт",
+	"просп", "пл", "наб", "ш", "б-р",
+	"бул", "алл", "туп",
+)
 
 // addrComp — найденный компонент адреса вместе с его признаками. Один
 // компонент может нести два признака сразу: «Тверская 12» это улица и дом.
@@ -243,7 +255,7 @@ func addrLatinCityBefore(d *Doc, ws []addrWord, c addrComp) (int, bool) {
 // компонента фрагмент вообще не находится.
 func addrWithPostcodes(d *Doc, comps []addrComp) []addrComp {
 	for _, run := range d.NumRuns() {
-		if run.GroupsPattern() != "6" || addrForeignNumber(d, run) {
+		if run.GroupsPattern() != "6" || addrForeignNumber(d, &run) {
 			continue
 		}
 		if _, ok := d.AnchorBefore(run.Start, addrAnchors, addrAnchorWindow); !ok {
@@ -988,7 +1000,7 @@ func addrCount(group []addrComp) int {
 // заказными якорями не берётся: там шесть цифр значат другое.
 func addrAttachPostcode(d *Doc, start, end int) (int, int, bool) {
 	for _, run := range d.NumRuns() {
-		if run.GroupsPattern() != "6" || addrForeignNumber(d, run) {
+		if run.GroupsPattern() != "6" || addrForeignNumber(d, &run) {
 			continue
 		}
 		if run.End <= start && addrPunctGap(d.Text[run.End:start]) {
@@ -1002,8 +1014,10 @@ func addrAttachPostcode(d *Doc, start, end int) (int, int, bool) {
 }
 
 // addrForeignNumber сообщает, что шесть цифр принадлежат другой сущности:
-// номеру паспорта, заказа или договора.
-func addrForeignNumber(d *Doc, run NumRun) bool {
+// номеру паспорта, заказа или договора. Последовательность передаётся
+// указателем: проверка идёт в цикле по всем числам документа, а сама
+// структура тяжёлая и копировать её на каждом шаге незачем.
+func addrForeignNumber(d *Doc, run *NumRun) bool {
 	if _, ok := d.AnchorBefore(run.Start, anchorsPassport, nearAnchorWindow); ok {
 		return true
 	}
