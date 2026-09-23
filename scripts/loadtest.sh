@@ -299,7 +299,7 @@ unique_dataset() {
     printf '%s' "$src"
     return
   fi
-  if ! python3 scripts/loadtest-ids.py "$src" "$dst" "$RUNID" 2>/dev/null; then
+  if ! python3 scripts/loadtest_ids.py "$src" "$dst" "$RUNID" 2>/dev/null; then
     note "набор $src не переписан под прогон, беру его как есть"
     printf '%s' "$src"
     return
