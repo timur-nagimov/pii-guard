@@ -771,3 +771,27 @@ func TestFIOInitialScript(t *testing.T) {
 		})
 	}
 }
+
+// TestFIOOrgAndFigures закрепляет два случая, где имя в тексте человека не
+// обозначает: фамилия в наименовании юридического лица и исторический деятель.
+func TestFIOOrgAndFigures(t *testing.T) {
+	det := NewFIODetector()
+	cases := []struct {
+		name string
+		text string
+		want int
+	}{
+		{"фамилия в названии фирмы", "Договор заключён с ООО «Новиков Трейд» на поставку оборудования.", 0},
+		{"фамилия в названии общества", "Аудит провела АО «Лебедев Девелопмент» по заказу банка.", 0},
+		{"индивидуальный предприниматель это человек", "Оплату принял ИП Новиков Сергей Петрович.", 1},
+		{"обычное имя в кавычках находится", "В заявке указан «Новиков Сергей Петрович».", 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := det.Detect(NewDoc(c.text))
+			if len(got) != c.want {
+				t.Fatalf("найдено %d фрагментов, ожидалось %d: %s", len(got), c.want, describeSpans(c.text, got))
+			}
+		})
+	}
+}

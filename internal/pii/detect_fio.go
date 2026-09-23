@@ -636,6 +636,9 @@ func fioSpanRange(d *Doc, from, to int, conf float64, reason string) (Span, bool
 	if fioStreetBefore(d, from) {
 		return Span{}, false
 	}
+	if fioOrgFormBefore(d, from) {
+		return Span{}, false
+	}
 	// Границы нормализуются на самом фрагменте, а не на всём тексте: разбор
 	// текста целиком ради обрезки нескольких знаков стоит слишком дорого.
 	lead, tail := NormalizeSpan(d.Text[from:to], 0, to-from)
@@ -1166,6 +1169,36 @@ func fioStreetBefore(d *Doc, start int) bool {
 	person, ok := fioMarkerBefore(d, start, fioAnchors)
 	return !ok || len(person) <= len(street)
 }
+
+// fioOrgFormBefore сообщает, что слева от фрагмента стоит правовая форма и
+// открывающая кавычка: «ООО «Новиков Трейд»». Фамилия в наименовании
+// юридического лица человека не обозначает, и маскировать её нельзя — иначе
+// из договора исчезает название контрагента.
+//
+// Форма «ИП» сюда не входит намеренно: за ней стоит имя живого человека.
+func fioOrgFormBefore(d *Doc, start int) bool {
+	head := d.Lower[:start]
+	// Кавычка обязательна. Без неё «ООО Иванов и партнеры» — обычное
+	// перечисление, где фамилия принадлежит человеку и маскироваться должна;
+	// кавычки же обрамляют именно наименование: ООО «Новиков Трейд».
+	quoted := strings.TrimRight(head, " \t\u00a0")
+	if quoted == "" {
+		return false
+	}
+	trimmed := strings.TrimRight(quoted, "«\"'")
+	if len(trimmed) == len(quoted) {
+		return false
+	}
+	trimmed = strings.TrimRight(trimmed, " \t\u00a0")
+	i := strings.LastIndexAny(trimmed, " \t\n\r(.,;:")
+	return fioOrgForms[dict.Normalize(trimmed[i+1:])]
+}
+
+// fioOrgForms — правовые формы юридического лица.
+var fioOrgForms = fioWordSet(
+	"ооо", "оао", "зао", "пао", "ао", "нко", "тд", "нпо", "гуп", "муп",
+	"фгуп", "ано", "фонд", "корпорация", "холдинг",
+)
 
 // fioWordSet собирает набор слов для быстрой проверки по одному слову.
 func fioWordSet(words ...string) map[string]bool {

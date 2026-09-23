@@ -323,3 +323,16 @@ func TestBirthPlaceBeatsAddress(t *testing.T) {
 		}
 	}
 }
+
+// TestAddressHouseNumberPlausible закрепляет предел на номер дома в слитной
+// записи. Без него «Студенческий 3827-178120» — номер студенческого билета —
+// принимался за улицу с домом и маскировался целиком.
+func TestAddressHouseNumberPlausible(t *testing.T) {
+	cases := []addrCase{
+		{"обычная слитная запись", "Тверская 12-45", "Тверская 12-45", ConfHigh},
+		{"трёхзначный дом", "Ленинский 145", "Ленинский 145", ConfHigh},
+		{"номер билета домом не становится", "Студенческий 3827-178120 продлён", "", 0},
+		{"длинная дробь домом не становится", "Тверская 12-178120", "Тверская 12", ConfHigh},
+	}
+	addrRunCases(t, NewAddressDetector(), TypeAddress, cases)
+}
