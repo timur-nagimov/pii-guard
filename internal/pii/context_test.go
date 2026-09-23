@@ -659,3 +659,39 @@ func TestCtxStem(t *testing.T) {
 		}
 	}
 }
+
+// TestIPNotReferenceNumber закрепляет разделение признаков для адреса в сети.
+// Слова «ip» и «ip-адрес» попали в список служебных признаков, когда адрес ещё
+// не был отдельным типом: они защищали другие номера. После появления типа его
+// собственный якорь одновременно значил «это не персональные данные», и адрес
+// снимался фильтром сразу после обнаружения.
+func TestIPNotReferenceNumber(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want bool // должен ли адрес остаться
+	}{
+		{"адрес сессии остаётся", "IP — 98.161.30.63. Ответ направим.", true},
+		{"вход с адреса остаётся", "В журнале зафиксирован вход с 98.161.30.63.", true},
+		{"адрес сервера снимается", "Сервер приложения доступен по 98.161.30.63:8080.", false},
+		{"узел балансировщика снимается", "Балансировщик перенаправил трафик на узел 98.161.30.63.", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := NewDoc(c.text)
+			spans := NewExtraDetector().Detect(d)
+			kept, _ := NewContextFilter(ContextOptions{}).Apply(d, spans)
+			got := false
+			for _, s := range kept {
+				if s.Type == TypeIPAddress {
+					got = true
+				}
+			}
+			if got != c.want {
+				t.Fatalf("адрес %s, ожидалось %s",
+					map[bool]string{true: "остался", false: "снят"}[got],
+					map[bool]string{true: "остался", false: "снят"}[c.want])
+			}
+		})
+	}
+}
