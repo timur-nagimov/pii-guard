@@ -257,7 +257,6 @@ else
   # берутся от заведомо известной строки, чтобы при надобности можно было
   # постучаться в службу и ключом тоже.
   GATE_KEY="${GATE_SYSTEM_KEY:-gate-probe-key}"
-  GATE_HASH="$(printf '%s' "$GATE_KEY" | shasum -a 256 | cut -d' ' -f1)"
   export GATE_SYSTEM_KEY="$GATE_KEY"
 
   # Имена переменных берём из самих настроек, а не списком: список устарел бы
@@ -269,7 +268,11 @@ else
   )
   for name in $(grep -oE '\$\{[A-Z_][A-Z0-9_]*\}' configs/config.yaml | tr -d '${}' | sort -u); do
     case "$name" in
-      *_SHA256) GATE_ENV+=("$name=$GATE_HASH") ;;
+      # Каждой системе свой ключ. Один хеш на всех делает выбор системы
+      # случайным, и настройки такое больше не принимают: порядок обхода
+      # карты в Go не определён, запрос опознавался бы то как одна система,
+      # то как другая.
+      *_SHA256) GATE_ENV+=("$name=$(printf '%s' "$GATE_KEY-$name" | shasum -a 256 | cut -d' ' -f1)") ;;
       PII_STORE_KEY|ALFAGEN_URL|ALFAGEN_TOKEN) ;;
       *) GATE_ENV+=("$name=$GATE_KEY") ;;
     esac
