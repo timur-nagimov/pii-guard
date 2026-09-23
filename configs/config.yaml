@@ -217,10 +217,7 @@ systems:
       key_sha256: "${JURY_KEY_SHA256}"
     types: [all]
     demask: true
-    preset: partial
-    per_type:
-      FIO: initials
-      CARDHOLDER: initials
+    preset: full
     exclusions:
       # Исторические лица и адреса организаций персональными данными не являются.
       public_figures: true
@@ -235,7 +232,7 @@ systems:
       key_sha256: "${JURY2_KEY_SHA256}"
     types: [all]
     demask: false
-    preset: partial
+    preset: full
     exclusions:
       # Исторические лица и адреса организаций персональными данными не являются.
       public_figures: true
