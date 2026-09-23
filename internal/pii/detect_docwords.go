@@ -783,12 +783,74 @@ func (citizenshipDetector) Detect(d *Doc) []Span {
 			continue
 		}
 		start, end, ok := citizenshipValue(d, tok.Start+anchorLen)
-		if !ok || dwOverlaps(out, start, end) {
+		if !ok {
+			// Якорь бывает и справа от значения: «Республика Армения —
+			// гражданская принадлежность». Смотрим назад по той же строке.
+			start, end, ok = citizenshipValueBefore(d, tok.Start)
+			if !ok || dwOverlaps(out, start, end) {
+				continue
+			}
+			out = append(out, Span{Start: start, End: end, Type: TypeCitizenship, Conf: ConfHigh, Reason: "citizenship:anchor_after"})
+			continue
+		}
+		if dwOverlaps(out, start, end) {
 			continue
 		}
 		out = append(out, Span{Start: start, End: end, Type: TypeCitizenship, Conf: ConfHigh, Reason: "citizenship:anchor"})
 	}
 	return out
+}
+
+// citizenshipValueBefore ищет название страны слева от якоря, в пределах той
+// же строки. Между значением и якорем допускаются только знаки и пробелы:
+// слово между ними означает, что якорь относится не к этому значению.
+func citizenshipValueBefore(d *Doc, anchorStart int) (int, int, bool) {
+	lineLo, _ := d.LineBounds(anchorStart)
+	// Отступаем через разделители влево.
+	pos := anchorStart
+	for pos > lineLo {
+		r, size := utf8.DecodeLastRuneInString(d.Lower[lineLo:pos])
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			break
+		}
+		pos -= size
+	}
+	if pos == anchorStart || pos <= lineLo {
+		return 0, 0, false
+	}
+	// Собираем до citizenshipMaxWords слов влево и берём самую длинную
+	// запись, которую разбор признаёт страной: «Республика Армения» целиком,
+	// а не одно слово «Армения».
+	best := -1
+	wordStart := pos
+	for n := 0; n < citizenshipMaxWords; n++ {
+		ws, ok := dwPrevWordStart(d.Lower, lineLo, wordStart)
+		if !ok {
+			break
+		}
+		if end, ok := citizenshipWordsEnd(d.Lower, ws, pos); ok && end == pos {
+			best = ws
+		}
+		wordStart = ws
+	}
+	if best < 0 {
+		return 0, 0, false
+	}
+	start, end := NormalizeSpan(d.Text, best, pos)
+	if start >= end {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+// dwPrevWordStart возвращает начало слова, стоящего непосредственно перед
+// позицией, пропуская разделители.
+func dwPrevWordStart(low string, lineLo, pos int) (int, bool) {
+	ws, _, ok := dwPrevWord(low, lineLo, pos)
+	if !ok {
+		return 0, false
+	}
+	return ws, true
 }
 
 // citizenshipValue вычисляет границы названия страны или демонима после якоря.
