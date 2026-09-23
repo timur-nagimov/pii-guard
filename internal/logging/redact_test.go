@@ -135,6 +135,8 @@ func checkPayloadIDRecord(t *testing.T, i int, rec map[string]any, id string, li
 		t.Errorf("запись %d: идентификатор попал в журнал дословно: %q", i, got)
 	case !literal && !strings.HasPrefix(got, idHashPrefix):
 		t.Errorf("запись %d: идентификатор записан не отпечатком: %q", i, got)
+	default:
+		// Запись политике соответствует — жаловаться не на что.
 	}
 }
 

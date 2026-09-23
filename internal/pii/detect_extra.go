@@ -366,6 +366,9 @@ func vinCharsOK(s string) bool {
 			if vinForbidden[unicode.ToLower(r)] {
 				return false
 			}
+		default:
+			// Прочие знаки на решение не влияют: считаются только цифры, а
+			// запрет проверяется только у букв.
 		}
 	}
 	return digits > 0
@@ -510,6 +513,9 @@ func isServiceIPv4(s string) bool {
 		return true
 	case a == 0 && b == 0:
 		return true
+	default:
+		// Остальные адреса указывают на конкретный узел сети, а через него
+		// и на человека, поэтому служебными их считать нельзя.
 	}
 	return false
 }

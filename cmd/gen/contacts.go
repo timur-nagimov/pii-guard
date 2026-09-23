@@ -103,6 +103,9 @@ func (g *Generator) streetPart() string {
 		house = fmt.Sprintf("д. %dк%d", 1+g.r.IntN(60), 1+g.r.IntN(5))
 	case 2:
 		house = fmt.Sprintf("д. %d, стр. %d", 1+g.r.IntN(60), 1+g.r.IntN(4))
+	default:
+		// Четвёртый бросок оставляет короткую запись «д. N», она уже собрана
+		// выше и переписывать её нечем.
 	}
 	return street + ", " + house
 }

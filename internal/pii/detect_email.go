@@ -102,10 +102,13 @@ func domainEnd(text string, from int) (end, dots int) {
 		if size == 0 {
 			break
 		}
+		// Домен состоит из букв, цифр, дефисов и точек, всё остальное его
+		// заканчивает. Точка при этом считается отдельно.
+		if r != '.' && !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' {
+			break
+		}
 		if r == '.' {
 			dots++
-		} else if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' {
-			break
 		}
 		end += size
 	}

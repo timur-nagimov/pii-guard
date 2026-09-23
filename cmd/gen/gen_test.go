@@ -111,6 +111,9 @@ func checkRecordSpan(t *testing.T, r Record, i int, s Span, prevEnd int, types m
 		t.Fatalf("%s: фрагмент %d пересекается с предыдущим", r.ID, i)
 	case !types[s.Type]:
 		t.Fatalf("%s: неизвестный тип %q", r.ID, s.Type)
+	default:
+		// Границы, порядок и тип фрагмента в порядке — дальше проверяется
+		// само содержимое среза.
 	}
 	got := r.Text[s.Start:s.End]
 	if !utf8.ValidString(got) {
