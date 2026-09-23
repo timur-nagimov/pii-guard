@@ -117,6 +117,20 @@ const fuzzyMinRunes = 7
 // цифры контрольного числа.
 const patternSNILS = "3-3-3-2"
 
+// patternSplitSeries — запись, в которой первые четыре цифры разбиты на две
+// пары: «27-12 564508». В такой форме пишут и паспорт с разбитой серией, и
+// водительское удостоверение, где отдельно стоят код региона и серия.
+const patternSplitSeries = "2-2-6"
+
+// patternPassport — привычная запись паспорта: четыре цифры серии и шесть
+// цифр номера.
+const patternPassport = "4-6"
+
+// patternSolidTen — те же десять цифр, написанные подряд. Отдельная форма,
+// потому что без разделителей она слабее: так пишут и паспорт, и служебный
+// номер организации.
+const patternSolidTen = "10"
+
 // maxDottedDigits — сколько цифр может быть в сетевом адресе вида
 // 192.168.0.1. Более длинная цепочка точек к сетевому адресу отношения
 // не имеет и разбирается обычными правилами.
@@ -148,51 +162,67 @@ func (n numericDetector) Detect(d *Doc) []Span {
 	var out []Span
 	used := make([]bool, len(runs))
 
-	for i, run := range runs {
+	for i := range runs {
 		if used[i] {
 			continue
 		}
-		// Паспорт, записанный с разделяющими словами: «серия 4509 номер 123456».
-		// Серия бывает разбита на части, поэтому первый кандидат не обязан
-		// содержать все четыре цифры: «27-12 564508».
-		if len(run.Digits) >= 2 && len(run.Digits) <= 4 {
-			if j, ok := joinPassportParts(d, runs, i); ok {
-				start, end := NormalizeSpan(d.Text, run.Start, runs[j].End)
-				out = append(out, Span{Start: start, End: end, Type: TypePassport, Conf: ConfHigh, Reason: "passport:series_number_words"})
-				// Помечаются все вошедшие кандидаты, а не только крайние:
-				// иначе середина разбитого номера осталась бы свободной и
-				// получила бы свой, посторонний тип.
-				for k := i; k <= j; k++ {
-					used[k] = true
-				}
-				continue
-			}
-		}
-
-		// Паспорт, приклеившийся к дате: «Белова К.А. 1977-12-17 75 52 040112».
-		if parts, ok := splitDatePassport(d, run); ok {
-			out = append(out, parts...)
-			used[i] = true
+		next, last, ok := n.appendRunSpans(out, d, runs, i)
+		if !ok {
 			continue
 		}
-
-		if s, ok := n.classify(d, run); ok {
-			out = append(out, s)
-			used[i] = true
-			// Пин-код, разбитый на две пары цифр: «PIN-code: 07 26». Первая
-			// пара ловится якорем, вторая — соседняя двухзначная пара, между
-			// которой и якорем уже стоят цифры первой пары. Помечаем её тем же
-			// типом, чтобы обе половины пина были замаскированы.
-			if s.Type == TypePIN && len(run.Digits) == 2 {
-				if j, ok := joinSplitPIN(d, runs, i); ok {
-					start, end := NormalizeSpan(d.Text, runs[j].Start, runs[j].End)
-					out = append(out, Span{Start: start, End: end, Type: TypePIN, Conf: ConfHigh, Reason: "pin:split_pair"})
-					used[j] = true
-				}
-			}
+		out = next
+		// Помечаются все вошедшие кандидаты, а не только крайние: иначе
+		// середина разбитого номера осталась бы свободной и получила бы
+		// свой, посторонний тип.
+		for k := i; k <= last; k++ {
+			used[k] = true
 		}
 	}
 	return out
+}
+
+// appendRunSpans разбирает один числовой кандидат и дописывает найденные
+// фрагменты к out. Кандидат проверяется тремя независимыми правилами, и
+// разбор вынесен из Detect: самому циклу важно только одно — какие кандидаты
+// оказались заняты. Вторым значением возвращается индекс последнего занятого
+// кандидата: разбитый номер занимает сразу несколько.
+//
+// Срез передаётся и возвращается, а не собирается заново на каждый кандидат:
+// Detect зовётся на каждом запросе, и лишний срез на кандидат стоит дороже
+// возврата трёх значений.
+func (n numericDetector) appendRunSpans(out []Span, d *Doc, runs []NumRun, i int) ([]Span, int, bool) {
+	run := &runs[i]
+	// Паспорт, записанный с разделяющими словами: «серия 4509 номер 123456».
+	// Серия бывает разбита на части, поэтому первый кандидат не обязан
+	// содержать все четыре цифры: «27-12 564508».
+	if len(run.Digits) >= 2 && len(run.Digits) <= 4 {
+		if j, ok := joinPassportParts(d, runs, i); ok {
+			start, end := NormalizeSpan(d.Text, run.Start, runs[j].End)
+			return append(out, Span{Start: start, End: end, Type: TypePassport, Conf: ConfHigh, Reason: "passport:series_number_words"}), j, true
+		}
+	}
+
+	// Паспорт, приклеившийся к дате: «Белова К.А. 1977-12-17 75 52 040112».
+	if parts, ok := splitDatePassport(d, run); ok {
+		return append(out, parts...), i, true
+	}
+
+	s, ok := n.classify(d, run)
+	if !ok {
+		return out, i, false
+	}
+	out = append(out, s)
+	// Пин-код, разбитый на две пары цифр: «PIN-code: 07 26». Первая пара
+	// ловится якорем, вторая — соседняя двухзначная пара, между которой и
+	// якорем уже стоят цифры первой пары. Помечаем её тем же типом, чтобы
+	// обе половины пина были замаскированы.
+	if s.Type == TypePIN && len(run.Digits) == 2 {
+		if j, ok := joinSplitPIN(d, runs, i); ok {
+			start, end := NormalizeSpan(d.Text, runs[j].Start, runs[j].End)
+			return append(out, Span{Start: start, End: end, Type: TypePIN, Conf: ConfHigh, Reason: "pin:split_pair"}), j, true
+		}
+	}
+	return out, i, true
 }
 
 // datePrefixGroups — длины групп цифр, с которых начинается дата. Вариант из
@@ -208,7 +238,7 @@ var passportTailGroups = [][]int{{4, 6}, {2, 2, 6}, {10}}
 // 275956». Дату и паспорт разделяет пробел, то есть допустимый разделитель
 // групп, поэтому кандидат получается один. Дата остаётся детектору дат, а
 // паспортный хвост возвращается отдельным фрагментом.
-func splitDatePassport(d *Doc, run NumRun) ([]Span, bool) {
+func splitDatePassport(d *Doc, run *NumRun) ([]Span, bool) {
 	if len(run.Groups) < 3 {
 		return nil, false
 	}
@@ -291,7 +321,7 @@ func groupsEqual(a, b []int) bool {
 }
 
 // digitGroups возвращает байтовые границы каждой группы цифр кандидата.
-func digitGroups(d *Doc, run NumRun) [][2]int {
+func digitGroups(d *Doc, run *NumRun) [][2]int {
 	out := make([][2]int, 0, len(run.Groups))
 	start, inGroup := 0, false
 	for i := run.Start; i < run.End; i++ {
@@ -329,7 +359,7 @@ var numRules = []numRule{
 }
 
 // classify относит один числовой кандидат к типу персональных данных.
-func (numericDetector) classify(d *Doc, run NumRun) (Span, bool) {
+func (numericDetector) classify(d *Doc, run *NumRun) (Span, bool) {
 	if isDottedGroups(run) {
 		return Span{}, false
 	}
@@ -347,9 +377,13 @@ func (numericDetector) classify(d *Doc, run NumRun) (Span, bool) {
 
 // numContext — числовой кандидат вместе с документом. Даёт правилам
 // одинаковый набор проверок окружения и не хранит изменяемого состояния.
+//
+// Кандидат хранится ссылкой: сам NumRun весит восемьдесят байт, контекст
+// копируется в каждое правило на каждом кандидате, и копия номера на этом
+// пути обходится дороже разыменования.
 type numContext struct {
 	d       *Doc
-	run     NumRun
+	run     *NumRun
 	digits  string
 	pattern string
 }
@@ -520,7 +554,7 @@ func lastAnchorEnd(head string, words []string) int {
 
 // matchPhone: код страны и десять значащих цифр в любой группировке.
 func matchPhone(c numContext) (numMatch, bool) {
-	if !isPhoneShape(c.run) {
+	if !isPhoneShape(*c.run) {
 		return numMatch{}, false
 	}
 	// Бесплатные номера 800, 803 и 804 выдаются организациям и человеку
@@ -609,7 +643,7 @@ func matchINN(c numContext) (numMatch, bool) {
 	// числа, поэтому без этой оговорки «27-12 564508» рядом со словами
 	// «удостоверение личности» становилось ИНН и паспорт оставался открытым.
 	// Сплошные десять цифр сюда не попадают намеренно: это как раз форма ИНН.
-	if (c.pattern == "4-6" || c.pattern == "2-2-6") && c.anchorAt(anchorsPassport) {
+	if (c.pattern == patternPassport || c.pattern == patternSplitSeries) && c.anchorAt(anchorsPassport) {
 		return numMatch{}, false
 	}
 	if INNValid(c.digits) && !c.money() && !c.service() {
@@ -660,13 +694,13 @@ func matchPassportShape(c numContext) (numMatch, bool) {
 	if passportNegContext(c.d, c.run.Start) {
 		return numMatch{}, false
 	}
-	if c.pattern == "4-6" || c.pattern == "2-2-6" {
+	if c.pattern == patternPassport || c.pattern == patternSplitSeries {
 		return numMatch{TypePassport, ConfAnchored, "passport:shape"}, true
 	}
 	// Десять цифр подряд — форма слабее: так пишут и паспорт, и служебный
 	// номер. Нужен хотя бы намёк на текст вокруг: голое число без единого
 	// слова рядом персональными данными не считаем.
-	if c.pattern == "10" && !c.money() && c.hasWordAround() {
+	if c.pattern == patternSolidTen && !c.money() && c.hasWordAround() {
 		return numMatch{TypePassport, ConfAnchored, "passport:shape_solid"}, true
 	}
 	return numMatch{}, false
@@ -674,7 +708,7 @@ func matchPassportShape(c numContext) (numMatch, bool) {
 
 // matchDriver: две цифры региона, две цифры серии и номер.
 func matchDriver(c numContext) (numMatch, bool) {
-	if c.pattern != "2-2-6" && c.pattern != "10" {
+	if c.pattern != patternSplitSeries && c.pattern != patternSolidTen {
 		return numMatch{}, false
 	}
 	if c.anchorAt(anchorsDriver) {
@@ -790,7 +824,7 @@ func inAddressTail(c numContext) bool {
 // isDottedGroups сообщает, что перед нами сетевой адрес вида 192.168.0.1:
 // четыре и более групп цифр, разделённых только точками. Такое число не
 // является ни датой, ни номером документа.
-func isDottedGroups(run NumRun) bool {
+func isDottedGroups(run *NumRun) bool {
 	return len(run.Groups) >= 4 && run.Seps == "." && len(run.Digits) <= maxDottedDigits
 }
 
@@ -821,7 +855,7 @@ func isPassportShape(pattern, digits string) bool {
 		return false
 	}
 	switch pattern {
-	case "4-6", "2-2-6", "10", "4-2-4":
+	case patternPassport, patternSplitSeries, patternSolidTen, "4-2-4":
 		return true
 	default:
 		return false
@@ -945,22 +979,11 @@ func hasFuzzyWord(window string, anchors []string) bool {
 // якоря. Короткие якоря вроде «индекс» (шесть букв) допускают одну опечатку
 // только рядом со значением, поэтому порог для них ниже.
 func hasFuzzyWordMin(window string, anchors []string, minRunes int) bool {
-	norm := FoldHomoglyphs(window)
-
-	// Якори приводятся и отсеиваются по длине ОДИН раз, а не заново для
-	// каждого слова окна. Прежний порядок давал число приведений, равное
-	// числу слов, умноженному на число якорей, и это на самом горячем пути:
-	// обработка текста из-за него подорожала вдвое.
-	folded := make([]string, 0, len(anchors))
-	for _, a := range anchors {
-		if utf8.RuneCountInString(a) < minRunes {
-			continue
-		}
-		folded = append(folded, FoldHomoglyphs(a))
-	}
+	folded := foldAnchors(anchors, minRunes)
 	if len(folded) == 0 {
 		return false
 	}
+	norm := FoldHomoglyphs(window)
 
 	for _, word := range letterWords(norm) {
 		for _, a := range folded {
@@ -971,18 +994,43 @@ func hasFuzzyWordMin(window string, anchors []string, minRunes int) bool {
 	}
 	// Пробел, вставленный внутрь якоря, разрывает слово: «поч товый» вместо
 	// «почтовый». Проверяем окно без пробелов целиком.
-	compact := strings.Map(func(r rune) rune {
-		if r == ' ' || r == '\t' || r == '\u00a0' {
-			return -1
-		}
-		return r
-	}, norm)
+	compact := dropSpaces(norm)
 	for _, a := range folded {
 		if strings.Contains(compact, a) {
 			return true
 		}
 	}
 	return false
+}
+
+// foldAnchors сворачивает якоря по омоглифам и отбрасывает те, что короче
+// minRunes.
+//
+// Якори приводятся и отсеиваются по длине ОДИН раз, а не заново для
+// каждого слова окна. Прежний порядок давал число приведений, равное
+// числу слов, умноженному на число якорей, и это на самом горячем пути:
+// обработка текста из-за него подорожала вдвое.
+func foldAnchors(anchors []string, minRunes int) []string {
+	folded := make([]string, 0, len(anchors))
+	for _, a := range anchors {
+		if utf8.RuneCountInString(a) < minRunes {
+			continue
+		}
+		folded = append(folded, FoldHomoglyphs(a))
+	}
+	return folded
+}
+
+// dropSpaces убирает пробелы, табуляцию и неразрывный пробел. Нужно для
+// якоря, внутрь которого попал пробел: без пробелов «поч товый» снова
+// совпадает с «почтовый».
+func dropSpaces(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\t' || r == '\u00a0' {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // letterWords режет окно на слова из букв. Цифры и знаки препинания служат
@@ -1016,32 +1064,59 @@ func nearlyEqual(a, b string) bool {
 	if len(ra) > len(rb) {
 		ra, rb = rb, ra
 	}
-	if len(rb)-len(ra) > 1 {
+	// Два вида опечатки разобраны порознь: при равной длине буква заменена
+	// или переставлена с соседней, при разной — одна буква лишняя. Общий
+	// проход по двум указателям приходилось ветвить на каждом шаге, хотя
+	// вид опечатки известен заранее — по разнице длин.
+	switch len(rb) - len(ra) {
+	case 0:
+		return oneSwapApart(ra, rb)
+	case 1:
+		return oneInsertApart(ra, rb)
+	default:
 		return false
 	}
-	same := len(ra) == len(rb)
-	i, j, diff := 0, 0, 0
-	for i < len(ra) && j < len(rb) {
-		if ra[i] == rb[j] {
-			i, j = i+1, j+1
-			continue
-		}
-		// Перестановка соседних рун: «ab» против «ba».
-		if same && i+1 < len(ra) && j+1 < len(rb) &&
-			ra[i] == rb[j+1] && ra[i+1] == rb[j] {
-			i, j, diff = i+2, j+2, diff+1
-			if diff > 1 {
-				return false
-			}
+}
+
+// oneSwapApart сравнивает слова одинаковой длины: допускается одна замена
+// буквы либо одна перестановка соседних букв. Перестановка — частая
+// опечатка: «инедкс» вместо «индекс».
+func oneSwapApart(ra, rb []rune) bool {
+	diff := 0
+	for i := 0; i < len(ra); i++ {
+		if ra[i] == rb[i] {
 			continue
 		}
 		diff++
 		if diff > 1 {
 			return false
 		}
-		if same {
+		// Перестановка соседних рун: «ab» против «ba». Обе буквы объясняются
+		// одной опечаткой, поэтому вторую пропускаем, а не считаем заново.
+		if i+1 < len(ra) && ra[i] == rb[i+1] && ra[i+1] == rb[i] {
 			i++
 		}
+	}
+	return true
+}
+
+// oneInsertApart сравнивает слова, длина которых различается на одну руну:
+// в длинном слове допускается ровно одна лишняя буква. Это сразу два вида
+// опечатки — лишняя буква и потерянная: какое из слов считать исходным,
+// неизвестно, поэтому короткое всегда сравнивается с длинным.
+func oneInsertApart(short, long []rune) bool {
+	i, j, diff := 0, 0, 0
+	for i < len(short) && j < len(long) {
+		if short[i] == long[j] {
+			i, j = i+1, j+1
+			continue
+		}
+		diff++
+		if diff > 1 {
+			return false
+		}
+		// Лишняя руна длинного слова пропускается, короткое слово остаётся
+		// на месте: дальше слова обязаны совпасть до конца.
 		j++
 	}
 	return true
