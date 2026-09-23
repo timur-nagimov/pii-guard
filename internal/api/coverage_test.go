@@ -73,29 +73,30 @@ custom_types:
     pattern: "[A-Z]{2}[0-9]{4}"
 `
 
-// doCoverage выполняет запрос матрицы и разбирает ответ.
-func doCoverage(t *testing.T, srv *Server, method string) (*http.Response, coverageResponse) {
+// doCoverage выполняет запрос матрицы и разбирает ответ. Тело читается и
+// закрывается внутри, наружу возвращается код ответа и разобранная матрица.
+func doCoverage(t *testing.T, srv *Server) (int, coverageResponse) {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	srv.handleCoverage(rec, httptest.NewRequest(method, "/v1/coverage", nil))
+	srv.handleCoverage(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/coverage", nil))
 	resp := rec.Result()
+	defer func() { _ = resp.Body.Close() }()
 	var out coverageResponse
 	if resp.StatusCode == http.StatusOK {
 		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 			t.Fatalf("не удалось разобрать ответ: %v", err)
 		}
 	}
-	return resp, out
+	return resp.StatusCode, out
 }
 
 // TestCoverageMatrix проверяет главное: матрица отдаёт системы, типы и клетки,
 // и по ней видно, что маскируется, что выключено, а чего нет вовсе.
 func TestCoverageMatrix(t *testing.T) {
 	srv := newCoverageServer(t)
-	resp, out := doCoverage(t, srv, http.MethodGet)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("код ответа %d, ожидался 200", resp.StatusCode)
+	code, out := doCoverage(t, srv)
+	if code != http.StatusOK {
+		t.Fatalf("код ответа %d, ожидался 200", code)
 	}
 
 	if len(out.Systems) != 3 {
@@ -132,7 +133,7 @@ func TestCoverageMatrix(t *testing.T) {
 // система и тип, который система не маскирует.
 func TestCoverageCells(t *testing.T) {
 	srv := newCoverageServer(t)
-	_, out := doCoverage(t, srv, http.MethodGet)
+	_, out := doCoverage(t, srv)
 
 	// alfasonar маскирует FIO пресетом partial (свой), PHONE — full (per_type).
 	if got := out.Cells["FIO"]["alfasonar"]; got != "partial" {
@@ -159,7 +160,7 @@ func TestCoverageCells(t *testing.T) {
 // преобразование и порог уверенности каждой системы.
 func TestCoverageSystemFlags(t *testing.T) {
 	srv := newCoverageServer(t)
-	_, out := doCoverage(t, srv, http.MethodGet)
+	_, out := doCoverage(t, srv)
 
 	byName := make(map[string]coverageSystem, len(out.Systems))
 	for _, sys := range out.Systems {
@@ -185,7 +186,7 @@ func TestCoverageSystemFlags(t *testing.T) {
 func TestCoverageReflectsConfigChange(t *testing.T) {
 	srv := newCoverageServer(t)
 
-	_, before := doCoverage(t, srv, http.MethodGet)
+	_, before := doCoverage(t, srv)
 	if got := before.Cells["FIO"]["alfasonar"]; got != "partial" {
 		t.Fatalf("до смены FIO в alfasonar = %q, ожидался partial", got)
 	}
@@ -200,7 +201,7 @@ func TestCoverageReflectsConfigChange(t *testing.T) {
 	cfg.Systems["alfasonar"] = sys
 	srv.SetConfig(cfg)
 
-	_, after := doCoverage(t, srv, http.MethodGet)
+	_, after := doCoverage(t, srv)
 	if got := after.Cells["FIO"]["alfasonar"]; got != "full" {
 		t.Errorf("после смены FIO в alfasonar = %q, ожидался full", got)
 	}
@@ -210,9 +211,11 @@ func TestCoverageReflectsConfigChange(t *testing.T) {
 func TestCoverageRejectsNonGet(t *testing.T) {
 	srv := newCoverageServer(t)
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
-		resp, _ := doCoverage(t, srv, method)
+		rec := httptest.NewRecorder()
+		srv.handleCoverage(rec, httptest.NewRequestWithContext(t.Context(), method, "/v1/coverage", nil))
+		resp := rec.Result()
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusMethodNotAllowed {
 			t.Errorf("метод %s дал код %d, ожидался 405", method, resp.StatusCode)
 		}

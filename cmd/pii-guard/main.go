@@ -18,6 +18,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -44,7 +45,7 @@ func main() {
 	flag.Parse()
 
 	if *healthcheck {
-		if err := runHealthcheck(); err != nil {
+		if err := runHealthcheck(*configPath); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -138,8 +139,25 @@ func logConfig(cfg *config.Config, out io.Writer) logging.Config {
 	file := cfg.Logging
 
 	c := def
-	// Файл поверх умолчаний. Незаданные поля файла уже заполнены значениями
-	// по умолчанию при разборе настроек, поэтому проверять их здесь не надо.
+	applyFileLogging(&c, file)
+	applyEnvLogging(&c, env, def)
+	// Имя копии и версия сборки приходят только из окружения: в файле,
+	// общем для всех копий, им места нет.
+	c.Instance = env.Instance
+	c.Version = env.Version
+
+	// Приёмник журнала буферизован. Без буфера каждая запись — отдельный
+	// системный вызов, и на штатной нагрузке он стоит дороже самого разбора
+	// текста: замер дал сорок процентов процессора сервиса на одном выводе
+	// журнала против 0.94 процента после буферизации.
+	c.Output = out
+	return c
+}
+
+// applyFileLogging накладывает настройки журнала из файла поверх значений по
+// умолчанию. Незаданные поля файла уже заполнены значениями по умолчанию при
+// разборе настроек, поэтому проверять их здесь не надо.
+func applyFileLogging(c *logging.Config, file config.Logging) {
 	c.Level = file.Level
 	c.Format = file.Format
 	c.RepeatWindow = file.RepeatWindow
@@ -162,8 +180,13 @@ func logConfig(cfg *config.Config, out io.Writer) logging.Config {
 	if file.Audit.Keep > 0 {
 		c.Audit.Keep = file.Audit.Keep
 	}
+}
 
-	// Окружение поверх файла.
+// applyEnvLogging накладывает настройки журнала из окружения поверх файла.
+// Что именно задано в окружении, определяется сравнением со значением по
+// умолчанию: FromEnv возвращает готовый набор поверх умолчаний, поэтому
+// отличие поля означает, что переменная задана.
+func applyEnvLogging(c *logging.Config, env, def logging.Config) {
 	if env.Level != def.Level {
 		c.Level = env.Level
 	}
@@ -200,17 +223,6 @@ func logConfig(cfg *config.Config, out io.Writer) logging.Config {
 	if env.Audit.Keep > 0 {
 		c.Audit.Keep = env.Audit.Keep
 	}
-	// Имя копии и версия сборки приходят только из окружения: в файле,
-	// общем для всех копий, им места нет.
-	c.Instance = env.Instance
-	c.Version = env.Version
-
-	// Приёмник журнала буферизован. Без буфера каждая запись — отдельный
-	// системный вызов, и на штатной нагрузке он стоит дороже самого разбора
-	// текста: замер дал сорок процентов процессора сервиса на одном выводе
-	// журнала против 0.94 процента после буферизации.
-	c.Output = out
-	return c
 }
 
 // Параметры буфера журнала. Размер буфера выбран так, чтобы в него помещалось
@@ -554,27 +566,34 @@ func watchConfig(path string, apply func(reason string) error, log *slog.Logger,
 		case <-sig:
 			_ = applied("signal")
 		case <-ticker.C:
-			st, err := os.Stat(path)
-			if err != nil {
-				continue
-			}
-			// Отметка времени двигается ТОЛЬКО при удачном применении.
-			// Прежний порядок двигал её и при отказе, поэтому исправление,
-			// внесённое в ту же секунду, не подхватывалось: точность времени
-			// изменения на многих файловых системах равна секунде. Оператор
-			// правил опечатку, сервис молчал, и выглядело это так, будто
-			// настройки вообще не перечитываются.
-			//
-			// Побочное следствие: сломанный файл перечитывается каждые пять
-			// секунд, пока его не починят. Журнал от этого не пухнет, потому
-			// что одинаковые записи глушатся повторами.
-			if st.ModTime().After(lastMod) {
-				if applied("file_changed") {
-					lastMod = st.ModTime()
-				}
-			}
+			lastMod = checkFileChange(path, lastMod, applied)
 		}
 	}
+}
+
+// checkFileChange применяет настройки, если файл изменился с последнего
+// удачного применения, и возвращает новую отметку времени.
+//
+// Отметка времени двигается ТОЛЬКО при удачном применении. Прежний порядок
+// двигал её и при отказе, поэтому исправление, внесённое в ту же секунду, не
+// подхватывалось: точность времени изменения на многих файловых системах
+// равна секунде. Оператор правил опечатку, сервис молчал, и выглядело это
+// так, будто настройки вообще не перечитываются.
+//
+// Побочное следствие: сломанный файл перечитывается каждые пять секунд, пока
+// его не починят. Журнал от этого не пухнет, потому что одинаковые записи
+// глушатся повторами.
+func checkFileChange(path string, lastMod time.Time, applied func(reason string) bool) time.Time {
+	st, err := os.Stat(path)
+	if err != nil {
+		return lastMod
+	}
+	if st.ModTime().After(lastMod) {
+		if applied("file_changed") {
+			return st.ModTime()
+		}
+	}
+	return lastMod
 }
 
 // newConfigApplier собирает функцию применения настроек из файла.
@@ -700,14 +719,24 @@ func selfSignedCert() (tls.Certificate, error) {
 }
 
 // runHealthcheck обращается к собственной ручке живости. Нужен для образа без
-// оболочки: в нём нет ни curl, ни wget.
-func runHealthcheck() error {
-	addr := os.Getenv("PII_HEALTHCHECK_URL")
-	if addr == "" {
-		addr = "http://127.0.0.1:8080/healthz"
+// оболочки: в нём нет ни curl, ни wget. Адрес берётся из настроек сервера и
+// всегда указывает на loopback, поэтому проверка не может стать мостом к
+// произвольному адресу.
+func runHealthcheck(configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("настройки для проверки живости не прочитаны: %w", err)
+	}
+	addr, err := healthcheckURL(cfg.Server.HTTP)
+	if err != nil {
+		return err
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(addr) //nolint:noctx // короткая проверка живости
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, addr, nil)
+	if err != nil {
+		return fmt.Errorf("не удалось собрать запрос проверки живости: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -716,4 +745,19 @@ func runHealthcheck() error {
 		return fmt.Errorf("сервис ответил кодом %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// healthcheckURL собирает адрес проверки живости из адреса слушателя сервера.
+// Адрес слушателя вида «:8080» превращается в «http://127.0.0.1:8080/healthz»,
+// то есть проверка всегда идёт на loopback и не может стать мостом к
+// произвольному адресу.
+func healthcheckURL(listen string) (string, error) {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "", fmt.Errorf("адрес слушателя сервера не разобран: %w", err)
+	}
+	if host != "" && host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		return "", fmt.Errorf("адрес слушателя сервера обязан указывать на loopback")
+	}
+	return "http://127.0.0.1:" + port + "/healthz", nil
 }

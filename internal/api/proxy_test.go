@@ -49,7 +49,7 @@ func TestProxyStripsSystemField(t *testing.T) {
 		"system": "kilo",
 	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 
@@ -84,7 +84,7 @@ func TestProxyUnknownSystemRejected(t *testing.T) {
 		"system":   "неттакой",
 	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 
@@ -197,14 +197,14 @@ systems:
 	defer ts.Close()
 
 	body := `{"messages":[{"role":"user","content":"телефон +79161234567"},{"role":"user","content":"телефон +79990001122"}]}`
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader([]byte(body)))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Key", "proxy-key")
 	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("запрос не выполнился: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() { _ = resp.Body.Close() })
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("код %d: %s", resp.StatusCode, raw)
@@ -261,7 +261,7 @@ func TestProxyExplainsEmptyUpstreamError(t *testing.T) {
 	defer ts.Close()
 
 	body := `{"messages":[{"role":"user","content":"тел +7 916 123-45-67"}]}`
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-System-Key", "test-key")
 	resp, err := http.DefaultClient.Do(req)
@@ -307,7 +307,7 @@ func TestProxyMasksArrayContent(t *testing.T) {
 		"system": "kilo",
 	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 
@@ -370,7 +370,7 @@ func TestProxyMasksToolsAndResponseFormat(t *testing.T) {
 		"system": "kilo",
 	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 
@@ -415,7 +415,7 @@ func TestProxyRestoreIgnoresServiceFields(t *testing.T) {
 		"system": "kilo",
 	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 
@@ -454,7 +454,7 @@ func TestProxyStreamNotSupported(t *testing.T) {
 		"system":   "kilo",
 	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 
@@ -491,7 +491,7 @@ func TestProxyConversationRestore(t *testing.T) {
 		"system": "kilo",
 	})
 	rec1 := httptest.NewRecorder()
-	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(first))
+	req1 := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(first))
 	req1.Header.Set("Content-Type", "application/json")
 	req1.Header.Set("X-Conversation-Id", "dialog-1")
 	h.ServeHTTP(rec1, req1)
@@ -510,7 +510,7 @@ func TestProxyConversationRestore(t *testing.T) {
 		"system": "kilo",
 	})
 	rec2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(second))
+	req2 := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(second))
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("X-Conversation-Id", "dialog-1")
 	h.ServeHTTP(rec2, req2)
@@ -567,7 +567,7 @@ func TestProxyMethodNotAllowed(t *testing.T) {
 
 	h := newProxyServer(t, upstream.URL)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/chat/completions", nil)
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -593,7 +593,7 @@ func TestProxyPayloadTooLarge(t *testing.T) {
 		"system":   "kilo",
 	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 
@@ -611,7 +611,7 @@ func TestProxyInvalidJSON(t *testing.T) {
 
 	h := newProxyServer(t, upstream.URL)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("не json"))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader("не json"))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 
@@ -654,7 +654,7 @@ systems:
 		"system":   "kilo",
 	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 
@@ -681,7 +681,7 @@ func TestProxyUpstreamError(t *testing.T) {
 		"system":   "kilo",
 	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 

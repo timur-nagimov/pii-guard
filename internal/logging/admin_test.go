@@ -15,7 +15,7 @@ func TestLevelHandler(t *testing.T) {
 	h := l.LevelHandler(nil)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/loglevel", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/loglevel", nil))
 	var body map[string]string
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("ответ не разобран: %v", err)
@@ -25,7 +25,7 @@ func TestLevelHandler(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/loglevel?level=debug&ttl=50ms", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/admin/loglevel?level=debug&ttl=50ms", nil))
 	if l.LevelName() != "debug" {
 		t.Fatalf("уровень не поднят: %q", l.LevelName())
 	}
@@ -38,7 +38,7 @@ func TestLevelHandler(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/loglevel?level=нет", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/admin/loglevel?level=нет", nil))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("неизвестный уровень принят с кодом %d", rec.Code)
 	}
@@ -49,7 +49,7 @@ func TestLevelHandlerForbidden(t *testing.T) {
 	l, _ := newTestLogger(t, DefaultConfig())
 	h := l.LevelHandler(func(*http.Request) bool { return false })
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/loglevel", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admin/loglevel", nil))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("ручка открыта без проверки: код %d", rec.Code)
 	}
