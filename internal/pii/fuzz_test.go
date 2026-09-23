@@ -20,6 +20,7 @@ func allDetectors() []Detector {
 		NewDriverLicenseLettersDetector(),
 		NewCardHolderDetector(),
 		NewExtraDocumentsDetector(),
+		NewExtraDetector(),
 	}
 }
 
