@@ -138,28 +138,47 @@ func (extraDetector) detectAlnum(d *Doc) []Span {
 		// Пробуем собрать госномер: буква, три цифры, две буквы, две или три
 		// цифры, с одиночными пробелами между группами.
 		if start, end, ok := plateSpan(d, toks, i); ok {
-			out = appendAnchored(d, out, start, end, anchorsPlate, anchorWindow, TypePlate, "plate:anchor")
+			out = appendAnchored(d, out, start, end, &plateRule)
 			i = tokenIndexAt(toks, end)
 			continue
 		}
 		// Пробуем собрать VIN: семнадцать знаков латиницы и цифр без пробелов.
 		if start, end, ok := vinSpan(d, toks, i); ok {
-			out = appendAnchored(d, out, start, end, anchorsVIN, vinAnchorWindow, TypeVIN, "vin:anchor")
+			out = appendAnchored(d, out, start, end, &vinRule)
 			i = tokenIndexAt(toks, end)
 		}
 	}
 	return out
 }
 
+// alnumRule — чем якорится буквенно-цифровой тип и как подписывается найденное.
+// Окно у каждого типа своё: у VIN оно шире, потому что якорь стоит дальше.
+//
+// Правила заведены переменными пакета, а не собираются в месте вызова:
+// detectAlnum идёт по всем токенам текста, и сборка этих полей повторялась бы
+// на каждом кандидате. По той же причине правило передаётся указателем —
+// иначе на каждое совпадение копировались бы все четыре поля.
+type alnumRule struct {
+	anchors []string
+	before  int
+	typ     Type
+	reason  string
+}
+
+var (
+	plateRule = alnumRule{anchors: anchorsPlate, before: anchorWindow, typ: TypePlate, reason: "plate:anchor"}
+	vinRule   = alnumRule{anchors: anchorsVIN, before: vinAnchorWindow, typ: TypeVIN, reason: "vin:anchor"}
+)
+
 // appendAnchored дописывает фрагмент, если рядом со значением нашёлся якорь.
 // Обе буквенно-цифровые формы без якоря не маскируются: госномер и VIN сами по
 // себе неотличимы от артикула или кода товара, а форма найдена в любом случае —
 // разбор всё равно перескакивает её целиком.
-func appendAnchored(d *Doc, out []Span, start, end int, anchors []string, before int, t Type, reason string) []Span {
-	if !extraAnchorNear(d, start, end, anchors, before, nearAnchorWindow) {
+func appendAnchored(d *Doc, out []Span, start, end int, rule *alnumRule) []Span {
+	if !extraAnchorNear(d, start, end, rule.anchors, rule.before, nearAnchorWindow) {
 		return out
 	}
-	s, ok := extraSpan(d, start, end, t, ConfHigh, reason)
+	s, ok := extraSpan(d, start, end, rule.typ, ConfHigh, rule.reason)
 	if !ok {
 		return out
 	}
