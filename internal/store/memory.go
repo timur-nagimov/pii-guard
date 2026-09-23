@@ -188,25 +188,36 @@ func (s *MemoryStore) sweep() {
 	}
 }
 
-// evictOldest удаляет самые ранние записи, когда превышен предел их числа.
+// evictOldest удаляет самую раннюю запись, когда превышен предел их числа.
+// Вытесняется ровно одна запись — глобально самая старая, а не по одной из
+// каждого сегмента: иначе один запрос сверх предела вытеснял бы до двухсот
+// пятидесяти шести действующих записей и счётчик уходил бы в минус.
 func (s *MemoryStore) evictOldest() {
+	var oldestShard *shard
+	var oldestID string
+	var oldest time.Time
 	for _, sh := range s.shards {
 		sh.mu.Lock()
-		oldestID := oldestIn(sh.data)
-		if oldestID == "" {
-			sh.mu.Unlock()
-			continue
+		id, exp := oldestIn(sh.data)
+		if id != "" && (oldest.IsZero() || exp.Before(oldest)) {
+			oldest, oldestID, oldestShard = exp, id, sh
 		}
-		delete(sh.data, oldestID)
 		sh.mu.Unlock()
-		s.countMu.Lock()
-		s.count--
-		s.countMu.Unlock()
 	}
+	if oldestShard == nil {
+		return
+	}
+	oldestShard.mu.Lock()
+	delete(oldestShard.data, oldestID)
+	oldestShard.mu.Unlock()
+	s.countMu.Lock()
+	s.count--
+	s.countMu.Unlock()
 }
 
-// oldestIn находит идентификатор записи с ближайшим сроком истечения.
-func oldestIn(data map[string]*Entry) string {
+// oldestIn находит идентификатор записи с ближайшим сроком истечения и сам
+// этот срок: по нему сравниваются сегменты при поиске глобально самой старой.
+func oldestIn(data map[string]*Entry) (string, time.Time) {
 	var oldestID string
 	var oldest time.Time
 	for id, e := range data {
@@ -214,5 +225,5 @@ func oldestIn(data map[string]*Entry) string {
 			oldest, oldestID = e.ExpiresAt, id
 		}
 	}
-	return oldestID
+	return oldestID, oldest
 }

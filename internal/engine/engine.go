@@ -38,6 +38,12 @@ type Result struct {
 	Placeholders []mask.Placeholder
 	// Counts — сколько фрагментов каждого типа найдено.
 	Counts map[pii.Type]int
+	// Subjects — разбиение фрагментов на субъектов: какие фрагменты относятся
+	// к одному человеку. Строятся поверх найденных фрагментов, детекторы не
+	// меняются. Рёбра — основание для правила сочетаний, а не само правило.
+	Subjects []Subject
+	// Edges — основания считать пары фрагментов относящимися к одному человеку.
+	Edges []Edge
 }
 
 // Meta возвращает метаданные фрагментов без самих значений — их безопасно
@@ -58,6 +64,13 @@ type Engine struct {
 	filters  sync.Map
 	onPanic  PanicHandler
 
+	// docPool переиспользует разобранные документы между запросами. Разбор
+	// строит копию текста в нижнем регистре, срез токенов и индекс рун, и на
+	// коротких текстах это самая дорогая по памяти часть запроса. Документ
+	// живёт только внутри одного запроса и после ответа нигде не сохраняется,
+	// поэтому пул безопасен по сроку жизни.
+	docPool sync.Pool
+
 	// chunkHook — точка вмешательства перед разбором куска. В рабочем режиме
 	// она пустая и стоит ровно ноль: поле нужно тесту, которому иначе нечем
 	// уронить панику именно внутри рабочей горутины, не подкладывая в рабочий
@@ -71,7 +84,24 @@ type Engine struct {
 type PanicHandler func(chunk int, recovered any)
 
 // New создаёт конвейер поверх набора детекторов.
-func New(reg *pii.Registry) *Engine { return &Engine{registry: reg} }
+func New(reg *pii.Registry) *Engine {
+	e := &Engine{registry: reg}
+	e.docPool.New = func() any { return &pii.Doc{} }
+	return e
+}
+
+// getDoc берёт документ из пула и разбирает в него текст.
+func (e *Engine) getDoc(text string) *pii.Doc {
+	d := e.docPool.Get().(*pii.Doc)
+	d.Parse(text)
+	return d
+}
+
+// putDoc возвращает документ в пул после того, как запрос закончил с ним
+// работу. Документ нигде не сохраняется, поэтому возврат безопасен.
+func (e *Engine) putDoc(d *pii.Doc) {
+	e.docPool.Put(d)
+}
 
 // OnPanic задаёт обработчик сбоя обработки куска. Задаётся один раз при сборке
 // сервиса, до первого запроса, как и такой же обработчик у набора детекторов.
@@ -125,12 +155,27 @@ func (e *Engine) Mask(text string, sys config.System, defs config.Defaults) Resu
 	// Разбор текста делается один раз и переиспользуется всеми этапами:
 	// и детекторами, и контекстными правилами. Разбор строит копию текста в
 	// нижнем регистре, срез токенов и индекс рун, и на коротких текстах это
-	// самая дорогая по памяти часть запроса.
-	doc := pii.NewDoc(text)
+	// самая дорогая по памяти часть запроса. Документ берётся из пула, чтобы
+	// срезы токенов и индекса рун переживали запрос и не выделялись заново.
+	doc := e.getDoc(text)
+	defer e.putDoc(doc)
 	spans := e.detectDoc(doc)
 	spans = filterByTypes(spans, sys)
 	spans = filterDatesByMode(spans, sys.DateMode(defs))
-	spans = applyContextRules(spans, sys, defs)
+
+	// Связи строятся поверх найденных фрагментов и дают основание для правила
+	// сочетаний: «маскировать пин-код, только если у того же субъекта есть
+	// номер карты». Рёбра сами по себе ничего не маскируют.
+	//
+	// Связи строятся только при включённом правиле сочетаний: замер показал,
+	// что они стоят больше пяти процентов запроса, а без правила сочетаний
+	// они не влияют на решение и нужны только для разбора. Поэтому на горячем
+	// пути без правила сочетаний они не строятся вовсе.
+	links := linkResult{}
+	if sys.ContextRulesOn(defs) {
+		links = linkSubjects(doc, spans)
+		spans = applyContextRules(spans, links.Subjects, sys, defs)
+	}
 
 	// Контекстные правила снимают то, что формально похоже на персональные
 	// данные, но ими не является: исторических лиц, адреса отделений, улицы,
@@ -145,12 +190,23 @@ func (e *Engine) Mask(text string, sys config.System, defs config.Defaults) Resu
 	for _, s := range kept {
 		counts[s.Type]++
 	}
+	// Связи для ответа строятся на принятых фрагментах: их индексы должны
+	// совпадать с индексами в Result.Spans, иначе по ответу не сопоставить
+	// ребро с фрагментом. Для правила сочетаний связи уже построены выше на
+	// фрагментах до разрешения пересечений. Как и выше, связи строятся только
+	// при включённом правиле сочетаний.
+	keptLinks := linkResult{}
+	if sys.ContextRulesOn(defs) {
+		keptLinks = linkSubjects(doc, kept)
+	}
 	return Result{
 		Text:         applied.Text,
 		Spans:        kept,
 		Skipped:      dropped,
 		Placeholders: applied.Placeholders,
 		Counts:       counts,
+		Subjects:     keptLinks.Subjects,
+		Edges:        keptLinks.Edges,
 	}
 }
 
@@ -239,7 +295,12 @@ func splitBounds(text string) [][2]int {
 			break
 		}
 		end = preferredBreak(text, start, end)
-		bounds = append(bounds, [2]int{start, minInt(end+chunkOverlap, len(text))})
+		// Правая граница выравнивается по руне так же, как левая. Без этого
+		// кусок обрывался посреди многобайтовой руны: end уже выровнен, а
+		// end+chunkOverlap на границу руны не попадает. На русском тексте, где
+		// буква занимает два байта, это срабатывало у каждого куска, а не в
+		// редком случае.
+		bounds = append(bounds, [2]int{start, alignRune(text, minInt(end+chunkOverlap, len(text)))})
 		start = end
 	}
 	return bounds
@@ -304,38 +365,78 @@ func filterByTypes(spans []pii.Span, sys config.System) []pii.Span {
 // applyContextRules реализует правило «маскировать только в сочетании»:
 // например, пин-код сам по себе не маскируется, а вместе с номером карты —
 // маскируется. Правила включаются одним признаком в настройках.
-func applyContextRules(spans []pii.Span, sys config.System, defs config.Defaults) []pii.Span {
+//
+// Правило выражается через связи фрагментов в субъектов: тип маскируется,
+// только если у того же субъекта есть требуемый сосед. Это прямое прочтение
+// требования «маскирование только при наличии нескольких однозначно
+// идентифицированных типов ПД». Рёбра — основание для правила, а не само
+// правило: сами по себе они ничего не маскируют.
+func applyContextRules(spans []pii.Span, subjects []Subject, sys config.System, defs config.Defaults) []pii.Span {
 	if !sys.ContextRulesOn(defs) || len(sys.ContextRules) == 0 {
 		return spans
 	}
-	present := make(map[pii.Type]bool, len(spans))
-	for _, s := range spans {
-		present[s.Type] = true
-	}
-	blocked := make(map[pii.Type]bool)
+	subjectOf, subjectTypes := subjectTypeIndex(spans, subjects)
+
+	blocked := make(map[int]bool)
 	for _, rule := range sys.ContextRules {
-		satisfied := false
-		for _, req := range rule.Requires {
-			if present[req] {
-				satisfied = true
-				break
+		for i, s := range spans {
+			if s.Type != rule.Mask {
+				continue
 			}
-		}
-		if !satisfied {
-			blocked[rule.Mask] = true
+			if !subjectHasAny(subjectOf, subjectTypes, i, rule.Requires) {
+				blocked[i] = true
+			}
 		}
 	}
 	if len(blocked) == 0 {
 		return spans
 	}
 	out := spans[:0]
-	for _, s := range spans {
-		if blocked[s.Type] {
+	for i, s := range spans {
+		if blocked[i] {
 			continue
 		}
 		out = append(out, s)
 	}
 	return out
+}
+
+// subjectTypeIndex строит две карты: «индекс фрагмента → субъект» и
+// «субъект → набор типов». Субъект без рёбер — это субъект из одного
+// фрагмента, поэтому каждый фрагмент попадает в какую-то группу.
+func subjectTypeIndex(spans []pii.Span, subjects []Subject) (map[int]int, []map[pii.Type]bool) {
+	subjectOf := make(map[int]int, len(spans))
+	for si, sub := range subjects {
+		for _, fi := range sub.Fragments {
+			subjectOf[fi] = si
+		}
+	}
+	subjectTypes := make([]map[pii.Type]bool, len(subjects))
+	for si := range subjects {
+		subjectTypes[si] = make(map[pii.Type]bool)
+	}
+	for i, s := range spans {
+		if si, ok := subjectOf[i]; ok {
+			subjectTypes[si][s.Type] = true
+		}
+	}
+	return subjectOf, subjectTypes
+}
+
+// subjectHasAny сообщает, есть ли у субъекта фрагмента i хотя бы один из
+// требуемых типов. Фрагмент без субъекта — одиночка: требуемого соседа у него
+// нет, и тип блокируется.
+func subjectHasAny(subjectOf map[int]int, subjectTypes []map[pii.Type]bool, i int, requires []pii.Type) bool {
+	si, ok := subjectOf[i]
+	if !ok {
+		return false
+	}
+	for _, req := range requires {
+		if subjectTypes[si][req] {
+			return true
+		}
+	}
+	return false
 }
 
 func minInt(a, b int) int {

@@ -276,6 +276,66 @@ func decodeLastRuneBefore(s string, end int) (rune, int) {
 	return r, size
 }
 
+// homoglyphCyr — латинские буквы, неотличимые на вид от кириллических, и их
+// кириллические двойники. Подмена таких букв — классический способ обойти
+// маскирование: значение остаётся персональными данными, а слово перестаёт
+// совпадать со словарём. Сравнение ведётся по свёрнутой строке, где латинская
+// буква заменена на кириллическую того же начертания.
+var homoglyphCyr = map[rune]rune{
+	'a': 'а', 'e': 'е', 'o': 'о', 'p': 'р', 'c': 'с', 'y': 'у', 'x': 'х',
+	'A': 'А', 'E': 'Е', 'O': 'О', 'P': 'Р', 'C': 'С', 'Y': 'У', 'X': 'Х',
+}
+
+// FoldHomoglyphs заменяет латинские омоглифы на кириллические того же
+// начертания. Длина строки в байтах при этом меняется: латинская буква занимает
+// один байт, кириллическая два. Поэтому результат пригоден для сравнения, но
+// не для смещений в исходном тексте.
+// homoglyphASCII — та же таблица, но массивом по коду ASCII. Ноль означает,
+// что замены нет. Массив вместо карты потому, что эта функция оказалась самой
+// дорогой на горячем пути: профиль показал 27 процентов времени, из них 22 на
+// доступе к карте. Все ключи таблицы это латинские буквы, то есть коды меньше
+// 128, поэтому массива на 128 ячеек достаточно.
+var homoglyphASCII = func() [128]rune {
+	var t [128]rune
+	for k, v := range homoglyphCyr {
+		if k < 128 {
+			t[k] = v
+		}
+	}
+	return t
+}()
+
+// FoldHomoglyphs заменяет латинские омоглифы на кириллические того же
+// начертания.
+//
+// Проверка «нужна ли замена» идёт по БАЙТАМ, а не по рунам. Это безопасно
+// ровно потому, что все заменяемые буквы латинские: в UTF-8 у многобайтовой
+// руны все байты больше 127, поэтому кириллица под проверку не попадает и
+// ложного срабатывания не даёт. Для обычного русского текста цикл сводится к
+// одному сравнению на байт без единого обращения к таблице.
+func FoldHomoglyphs(s string) string {
+	need := false
+	for i := 0; i < len(s); i++ {
+		if b := s[i]; b < 128 && homoglyphASCII[b] != 0 {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for _, r := range s {
+		if r < 128 && homoglyphASCII[r] != 0 {
+			b.WriteRune(homoglyphASCII[r])
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // ContainsAnyLower ищет в строке нижнего регистра любое из слов и возвращает
 // первое найденное.
 func ContainsAnyLower(haystack string, needles []string) (string, bool) {
@@ -303,9 +363,15 @@ func (d *Doc) NumRuns() []NumRun {
 // AnchorBefore ищет якорь слева от значения и требует, чтобы между якорем и
 // значением не было других цифр. Без этого требования якорь «cvc2» из одной
 // части предложения помечает число из другой его части.
+//
+// Поиск идёт по свёрнутой строке, где латинские омоглифы заменены на
+// кириллические: «пасп0рт» с латинской «о» и «паспорт» с кириллической
+// считаются одним словом. Проверка «между якорем и значением нет цифр» идёт
+// по той же свёрнутой строке: цифры омоглифами не бывают и не меняются.
 func (d *Doc) AnchorBefore(start int, anchors []string, maxRunes int) (string, bool) {
 	lo, _ := d.WindowRunes(start, start, maxRunes, 0)
 	window := d.Lower[lo:start]
+	norm := FoldHomoglyphs(window)
 	// Берём якорь, который заканчивается ближе всего к значению: из пары
 	// «cvc» и «cvc2» должен победить более длинный, иначе цифра из самого
 	// якоря окажется «чужой цифрой» между якорем и значением.
@@ -314,22 +380,72 @@ func (d *Doc) AnchorBefore(start int, anchors []string, maxRunes int) (string, b
 		if a == "" {
 			continue
 		}
-		pos := strings.LastIndex(window, a)
+		na := FoldHomoglyphs(a)
+		pos := strings.LastIndex(norm, na)
 		if pos < 0 {
 			continue
 		}
-		if end := pos + len(a); end > bestPos {
+		if end := pos + len(na); end > bestPos {
 			bestPos, bestAnchor = end, a
 		}
 	}
 	if bestAnchor == "" {
-		return "", false
+		// Пробел, вставленный внутрь якоря, разрывает слово: «поч товый»
+		// вместо «почтовый». Пробуем окно без пробелов.
+		return anchorBeforeCompact(norm, anchors)
 	}
 	// Между якорем и значением не должно быть других цифр.
-	for _, r := range window[bestPos:] {
+	for _, r := range norm[bestPos:] {
 		if r >= '0' && r <= '9' {
 			return "", false
 		}
 	}
 	return bestAnchor, true
+}
+
+// anchorBeforeCompact ищет якорь в окне, из которого убраны пробелы. Так
+// опечатка с лишним пробелом внутри слова не теряет якорь: «поч товый» и
+// «почтовый» считаются одним словом.
+func anchorBeforeCompact(norm string, anchors []string) (string, bool) {
+	compact := strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\t' || r == '\u00a0' {
+			return -1
+		}
+		return r
+	}, norm)
+	best := ""
+	for _, a := range anchors {
+		if a == "" || len(a) <= len(best) {
+			continue
+		}
+		na := FoldHomoglyphs(a)
+		naCompact := strings.Map(func(r rune) rune {
+			if r == ' ' || r == '\t' || r == '\u00a0' {
+				return -1
+			}
+			return r
+		}, na)
+		if !strings.Contains(compact, naCompact) {
+			continue
+		}
+		best = a
+	}
+	if best == "" {
+		return "", false
+	}
+	// Между якорем и значением не должно быть других цифр.
+	na := FoldHomoglyphs(best)
+	naCompact := strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\t' || r == '\u00a0' {
+			return -1
+		}
+		return r
+	}, na)
+	pos := strings.LastIndex(compact, naCompact)
+	for _, r := range compact[pos+len(naCompact):] {
+		if r >= '0' && r <= '9' {
+			return "", false
+		}
+	}
+	return best, true
 }

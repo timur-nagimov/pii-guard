@@ -50,10 +50,31 @@ type Doc struct {
 
 // NewDoc разбирает текст: строит нижний регистр, токены и индекс рун.
 func NewDoc(text string) *Doc {
-	d := &Doc{Text: text}
+	d := &Doc{}
+	d.Parse(text)
+	return d
+}
+
+// Parse разбирает новый текст в существующий документ, переиспользуя ёмкость
+// внутренних срезов. Используется пулом, чтобы не выделять срезы токенов и
+// индекса рун заново на каждом запросе.
+func (d *Doc) Parse(text string) {
+	d.Reset()
+	d.Text = text
 	d.Lower = lowerSameWidth(text)
 	d.tokenize()
-	return d
+}
+
+// Reset подготавливает документ к повторному разбору нового текста, сохраняя
+// ёмкость внутренних срезов. Вызывается только из пула, когда документ больше
+// не используется ни одним запросом: после ответа он нигде не сохраняется,
+// поэтому переиспользование безопасно по сроку жизни.
+func (d *Doc) Reset() {
+	d.Text = ""
+	d.Lower = ""
+	d.Tokens = d.Tokens[:0]
+	d.runeStarts = d.runeStarts[:0]
+	d.runs = nil
 }
 
 // lowerSameWidth приводит строку к нижнему регистру, сохраняя байтовую длину.
@@ -90,27 +111,46 @@ func classify(r rune) Kind {
 }
 
 // tokenize проходит по тексту один раз и заполняет Tokens и runeStarts.
+// Срезы переиспользуются между разборами: ёмкость, накопленная на прошлых
+// текстах, сохраняется, и на горячем пути не тратится на повторное выделение.
 func (d *Doc) tokenize() {
 	n := len(d.Text)
-	d.Tokens = make([]Token, 0, n/4+1)
-	d.runeStarts = make([]int32, 0, n/2+1)
+	if d.Tokens == nil {
+		d.Tokens = make([]Token, 0, n/4+1)
+	} else {
+		d.Tokens = d.Tokens[:0]
+	}
+	if d.runeStarts == nil {
+		d.runeStarts = make([]int32, 0, n/2+1)
+	} else {
+		d.runeStarts = d.runeStarts[:0]
+	}
 
 	cur := Token{Start: 0, End: 0, Kind: KindOther}
 	started := false
 	for i, r := range d.Text {
 		d.runeStarts = append(d.runeStarts, int32(i))
+		// Размер руны берём из DecodeRuneInString, а не из utf8.RuneLen(r):
+		// для невалидного UTF-8 range отдаёт RuneError и съедает один байт,
+		// тогда как RuneLen(RuneError) возвращает три. Конец токена по
+		// RuneLen вылезал бы за границы строки и ронял срез по нему в
+		// детекторах.
+		size := 1
+		if _, sz := utf8.DecodeRuneInString(d.Text[i:]); sz > 0 {
+			size = sz
+		}
 		k := classify(r)
 		if !started {
-			cur = Token{Kind: k, Start: i, End: i + utf8.RuneLen(r)}
+			cur = Token{Kind: k, Start: i, End: i + size}
 			started = true
 			continue
 		}
 		if k == cur.Kind {
-			cur.End = i + utf8.RuneLen(r)
+			cur.End = i + size
 			continue
 		}
 		d.Tokens = append(d.Tokens, cur)
-		cur = Token{Kind: k, Start: i, End: i + utf8.RuneLen(r)}
+		cur = Token{Kind: k, Start: i, End: i + size}
 	}
 	if started {
 		d.Tokens = append(d.Tokens, cur)
@@ -185,14 +225,19 @@ func (d *Doc) LowerWindow(start, end, before, after int) string {
 
 // FindAnchor ищет любое из якорных слов в окне вокруг диапазона и возвращает
 // найденное слово. Якоря задаются в нижнем регистре.
+//
+// Поиск идёт по свёрнутой строке, где латинские омоглифы заменены на
+// кириллические: «пасп0рт» с латинской «о» и «паспорт» с кириллической
+// считаются одним словом. Свёртка меняет длину строки в байтах, но для
+// проверки наличия якоря это не важно.
 func (d *Doc) FindAnchor(start, end int, anchors []string, before, after int) (string, bool) {
-	w := d.LowerWindow(start, end, before, after)
+	w := FoldHomoglyphs(d.LowerWindow(start, end, before, after))
 	best := ""
 	for _, a := range anchors {
 		if a == "" {
 			continue
 		}
-		if strings.Contains(w, a) && len(a) > len(best) {
+		if strings.Contains(w, FoldHomoglyphs(a)) && len(a) > len(best) {
 			best = a
 		}
 	}

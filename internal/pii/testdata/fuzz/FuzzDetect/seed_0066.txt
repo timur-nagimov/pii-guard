@@ -1,0 +1,2 @@
+go test fuzz v1
+string("CVC2 549, проверьте данные.")

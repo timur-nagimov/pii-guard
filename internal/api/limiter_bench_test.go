@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -144,5 +145,85 @@ func TestAcquireStopsOnCanceledContext(t *testing.T) {
 	}
 	if waited := time.Since(started); waited > time.Second {
 		t.Fatalf("отменённый запрос ждал %v вместо немедленного выхода", waited)
+	}
+}
+
+// limiterServer поднимает сервер с заданными размерами обоих ограничителей.
+func limiterServer(tb testing.TB, inflight, heavyInflight int) *Server {
+	tb.Helper()
+	s := benchServer(tb, inflight)
+	cfg := s.Config()
+	cfg.Limits.Inflight = inflight
+	cfg.Limits.HeavyInflight = heavyInflight
+	s.sem = make(chan struct{}, inflight)
+	s.heavySem = make(chan struct{}, heavyInflight)
+	s.SetConfig(cfg)
+	return s
+}
+
+// TestHeavyDoesNotStarveLight закрепляет разделение ограничителей.
+//
+// Находка ночного ревью: тяжёлый запрос занимает место в ОБЩЕМ ограничителе и
+// только потом встаёт в очередь за местом в тяжёлом. Пока он ждёт, общее место
+// занято впустую, и при потоке тяжёлых лёгкие запросы голодают до истечения
+// срока ожидания, хотя работы для них нет.
+//
+// Числа в самой находке были неверны: два тяжёлых запроса при девяноста шести
+// общих местах ничего не блокируют. Условие наступает, когда тяжёлых запросов
+// столько же, сколько общих мест. Тест воспроизводит именно это, на малых
+// числах.
+func TestHeavyDoesNotStarveLight(t *testing.T) {
+	const common, heavy = 4, 1
+	s := limiterServer(t, common, heavy)
+	limits := s.Config().Limits
+	limits.MaxWait = 150 * time.Millisecond
+	ctx := context.Background()
+
+	// Занимаем все общие места тяжёлыми запросами. Первый получит место в
+	// тяжёлом ограничителе, остальные встанут в очередь за ним.
+	var mu sync.Mutex
+	var releases []func()
+	t.Cleanup(func() {
+		// Замок нужен и здесь: горутины могут дописывать список в момент
+		// уборки. Без него детектор гонок справедливо ругается.
+		mu.Lock()
+		defer mu.Unlock()
+		for _, r := range releases {
+			r()
+		}
+	})
+	// Каждый тяжёлый запрос отдельной горутиной: в одной они выполнялись бы
+	// по очереди, и второй заблокировал бы цикл, не дав остальным занять
+	// места. Именно на этом первая версия теста проходила без починки.
+	for i := 0; i < common; i++ {
+		go func() {
+			if release, ok := s.acquire(ctx, true, limits); ok {
+				mu.Lock()
+				releases = append(releases, release)
+				mu.Unlock()
+			}
+		}()
+	}
+	// Ждём, пока тяжёлые разойдутся по очередям. Проверять промежуточное
+	// состояние нельзя: после починки оно как раз и не наступает, потому что
+	// ожидающие тяжёлые общих мест не держат. Проверяем исход.
+	for i := 0; i < 100 && len(s.heavySem) < heavy; i++ {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if len(s.heavySem) < heavy {
+		t.Fatalf("условие не воспроизведено: тяжёлых мест занято %d из %d", len(s.heavySem), heavy)
+	}
+
+	// Лёгкому запросу работы хватает: тяжёлые, стоящие в очереди, ничего не
+	// считают. Он обязан получить место, а не ждать до отказа.
+	started := time.Now()
+	release, ok := s.acquire(ctx, false, limits)
+	waited := time.Since(started)
+	if !ok {
+		t.Fatalf("лёгкий запрос получил отказ через %v: тяжёлые заняли общие места, пока ждали своей очереди", waited)
+	}
+	release()
+	if waited > limits.MaxWait/2 {
+		t.Errorf("лёгкий запрос ждал %v при сроке ожидания %v: он стоял за тяжёлыми", waited, limits.MaxWait)
 	}
 }

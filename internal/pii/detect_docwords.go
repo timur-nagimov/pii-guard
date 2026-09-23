@@ -22,7 +22,7 @@ const dwMaxStemTail = 4
 const dwShortAnchorRunes = 3
 
 // dwSeparatorRunes — знаки, которые могут стоять между якорем и значением.
-const dwSeparatorRunes = " \t\r\n:-–—«\"'№.=>|"
+const dwSeparatorRunes = " \t\r\n:-–—«\"'№.=>|()[]"
 
 // dwWordGapRunes — знаки, допустимые между словами одного значения. Запятая
 // сюда не входит: она разделяет разные сведения в анкете.
@@ -50,11 +50,14 @@ func dwRuneAt(s string, i int) rune {
 }
 
 // dwRuneBefore возвращает руну перед смещением или ноль в начале строки.
+// Декодирование идёт с конца, а не проходом с начала: проход делал вызов
+// квадратичным по длине текста и ронял пропускную способность на длинных
+// документах в разы.
 func dwRuneBefore(s string, i int) rune {
 	if i <= 0 || i > len(s) {
 		return 0
 	}
-	r, _ := lastRune(s[:i])
+	r, _ := decodeLastRuneBefore(s, i)
 	return r
 }
 
@@ -114,24 +117,61 @@ func dwAnyAnchor(hay string, anchors []string) (string, bool) {
 // dwMatchLongestAnchor подбирает самый длинный якорь, начинающийся в данном
 // смещении. Длинный выигрывает у короткого, иначе «выдано» разберётся как
 // «выдан» с лишней буквой в значении.
+//
+// Сравнение идёт по свёрнутой строке, где латинские омоглифы заменены на
+// кириллические: «грaждaнcтво» с латинскими буквами совпадает с якорем
+// «гражданство». Возвращается длина совпадения в байтах исходной строки.
 func dwMatchLongestAnchor(s string, at int, anchors []string) (string, bool) {
 	best := ""
+	bestLen := 0
 	for _, a := range anchors {
-		if len(a) <= len(best) || !strings.HasPrefix(s[at:], a) {
+		na := FoldHomoglyphs(a)
+		matched, n := dwFoldPrefixLen(s[at:], na)
+		if !matched || n <= bestLen {
 			continue
 		}
-		if dwIsWordRune(dwRuneAt(s, at+len(a))) {
+		if dwIsWordRune(dwRuneAt(s, at+n)) {
 			continue
 		}
-		best = a
+		best, bestLen = a, n
 	}
 	return best, best != ""
 }
 
-// dwInList сообщает, что слово есть в списке целиком.
+// dwFoldPrefixLen сообщает, что свёрнутая строка начинается с префикса, и
+// возвращает длину совпадения в байтах исходной строки.
+func dwFoldPrefixLen(s, prefix string) (bool, int) {
+	si, pi := 0, 0
+	for pi < len(prefix) {
+		if si >= len(s) {
+			return false, 0
+		}
+		sr, ssize := firstRune(s[si:])
+		pr, psize := firstRune(prefix[pi:])
+		if foldRune(sr) != pr {
+			return false, 0
+		}
+		si += ssize
+		pi += psize
+	}
+	return true, si
+}
+
+// foldRune приводит латинский омоглиф к кириллице того же начертания.
+func foldRune(r rune) rune {
+	if c, ok := homoglyphCyr[r]; ok {
+		return c
+	}
+	return r
+}
+
+// dwInList сообщает, что слово есть в списке целиком. Слово и элементы списка
+// сворачиваются по омоглифам: латинская «о» и кириллическая «о» считаются
+// одной буквой.
 func dwInList(word string, list []string) bool {
+	norm := FoldHomoglyphs(word)
 	for _, w := range list {
-		if word == w {
+		if norm == FoldHomoglyphs(w) {
 			return true
 		}
 	}
@@ -140,13 +180,36 @@ func dwInList(word string, list []string) bool {
 
 // dwHasStem сообщает, что слово начинается с одной из основ и хвост после
 // основы короткий. Так одна основа покрывает все падежные формы названия.
+// Слово и основа сворачиваются по омоглифам, поэтому «Pocсия» с латинской
+// «о» совпадает с основой «росси», а латинская основа «russia» — со словом
+// «russiа» с кириллической «а».
+//
+// Если точного совпадения нет, допускается одна опечатка в основе: «Азерайджан»
+// совпадает с основой «азербайджан». Опечатка принимается только у длинных
+// слов, чтобы не ловить случайные совпадения.
 func dwHasStem(word string, stems []string) bool {
-	wl := utf8.RuneCountInString(word)
+	norm := FoldHomoglyphs(word)
+	wl := utf8.RuneCountInString(norm)
 	for _, st := range stems {
-		if !strings.HasPrefix(word, st) {
+		nst := FoldHomoglyphs(st)
+		if !strings.HasPrefix(norm, nst) {
 			continue
 		}
-		if wl-utf8.RuneCountInString(st) <= dwMaxStemTail {
+		if wl-utf8.RuneCountInString(nst) <= dwMaxStemTail {
+			return true
+		}
+	}
+	// Опечатка в основе: одна вставка, удаление или замена руны. Только для
+	// достаточно длинных слов и основ, чтобы не ловить случайные совпадения.
+	if wl < 6 {
+		return false
+	}
+	for _, st := range stems {
+		nst := FoldHomoglyphs(st)
+		if utf8.RuneCountInString(nst) < 6 {
+			continue
+		}
+		if nearlyEqual(norm, nst) {
 			return true
 		}
 	}
@@ -213,7 +276,7 @@ func dwNextWord(s string, from, limit int) (int, int, bool) {
 func dwPrevWord(s string, lo, from int) (int, int, bool) {
 	i, gaps := from, 0
 	for i > lo {
-		r, size := lastRune(s[:i])
+		r, size := decodeLastRuneBefore(s, i)
 		if size == 0 || dwIsLetter(r) {
 			break
 		}
@@ -225,7 +288,7 @@ func dwPrevWord(s string, lo, from int) (int, int, bool) {
 	}
 	end := i
 	for i > lo {
-		r, size := lastRune(s[:i])
+		r, size := decodeLastRuneBefore(s, i)
 		if size == 0 || !dwIsLetter(r) {
 			break
 		}
@@ -241,7 +304,7 @@ func dwPrevWord(s string, lo, from int) (int, int, bool) {
 func dwWordBefore(s string, i int) string {
 	end := i
 	for i > 0 {
-		r, size := lastRune(s[:i])
+		r, size := decodeLastRuneBefore(s, i)
 		if size == 0 || !dwIsLetter(r) {
 			break
 		}
@@ -587,6 +650,8 @@ var citizenshipAnchors = []string{
 	"гражданство", "гражданства", "гражданстве", "гражданин", "гражданина",
 	"гражданину", "гражданином", "гражданка", "гражданки", "гражданке",
 	"гражданкой", "подданство", "подданства", "подданный", "подданная",
+	"гражданская принадлежность", "гражданской принадлежности",
+	"гражданскую принадлежность", "гражданской принадлежностью",
 	"citizenship", "nationality",
 }
 
@@ -600,7 +665,7 @@ var citizenshipQualifiers = []string{
 	"демократическая", "исламская", "королевство", "королевства",
 	"соединенные", "соединённые", "штаты", "южная", "северная", "новая",
 	"гражданин", "гражданина", "гражданка", "гражданки", "подданный",
-	"подданная", "подданного", "citizen", "national",
+	"подданная", "подданного", "citizen", "national", "и",
 	"republic", "federation", "united", "states",
 }
 
@@ -610,6 +675,7 @@ var citizenshipQualifiers = []string{
 var citizenshipFillerWords = []string{
 	"по", "паспорту", "паспорта", "документу", "документам", "клиента",
 	"клиенту", "заявителя", "заявителю", "страна", "страны", "of",
+	"владельца", "владельцу", "счёта", "счета", "счет",
 }
 
 // citizenshipMaxFillers — сколько служебных слов допускается между якорем и
@@ -624,7 +690,7 @@ var citizenshipStems = []string{
 	"казах", "беларус", "белорус", "узбекистан", "узбекск", "узбек", "армени",
 	"армянск", "армян", "киргиз", "кыргыз", "кыргызстан", "таджикистан",
 	"таджикск", "таджик", "украин", "азербайджан", "грузи", "грузинск",
-	"молдав", "молдов", "туркмен", "латви", "латышск", "литв", "литовск",
+	"молдав", "молдов", "туркмен", "туркменистан", "латви", "латышск", "литв", "литовск",
 	"эстон", "израил", "израильск", "герман", "немецк", "турци", "турецк",
 	"кита", "китайск", "вьетнам", "сша", "америк", "американск", "инди",
 	"индийск", "серб", "польш", "польск", "поляк", "финлянд", "финск", "итал",
@@ -635,7 +701,7 @@ var citizenshipStems = []string{
 	"австрал", "чехи", "чешск", "словак", "словени", "болгари", "болгарск",
 	"румыни", "венгри", "греци", "греческ", "португал", "иностранн", "двойн",
 	"russia", "russian", "kazakh", "belarus", "ukrain", "uzbek", "armenia",
-	"georgia", "germany", "turkey", "china", "india", "usa",
+	"georgia", "germany", "turkey", "china", "india", "usa", "ru", "rf",
 }
 
 // citizenshipMaxWords — сколько слов может занимать значение гражданства:

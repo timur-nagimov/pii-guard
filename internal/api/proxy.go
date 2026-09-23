@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,9 +24,13 @@ import (
 // chatRequest — часть запроса к языковой модели, которая нас интересует.
 // Остальные поля сохраняются без изменений и уходят к модели как есть.
 type chatRequest struct {
-	Messages []chatMessage  `json:"messages"`
-	Stream   bool           `json:"stream,omitempty"`
-	rest     map[string]any `json:"-"`
+	Messages []chatMessage `json:"messages"`
+	Stream   bool          `json:"stream,omitempty"`
+	// System выбирает профиль системы-потребителя по имени. Поле нужно странице
+	// проверки, которая переключает профили, не зная ключей; модели оно не
+	// передаётся.
+	System string         `json:"system,omitempty"`
+	rest   map[string]any `json:"-"`
 }
 
 type chatMessage struct {
@@ -48,16 +54,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := s.Config()
-	sys, ok := s.resolveSystem(r, cfg)
-	if !ok {
-		s.writeError(w, r, http.StatusForbidden, "system_not_allowed", "система не опознана или отключена")
-		return
-	}
-	if sys.Upstream.URL == "" {
-		s.writeError(w, r, http.StatusNotImplemented, "upstream_not_configured", "для системы не задан адрес языковой модели")
-		return
-	}
-	s.extendWriteDeadline(w, r, sys)
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, cfg.Server.MaxBodyBytes))
 	if err != nil {
@@ -75,6 +71,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.writeValidation(w, r, "json_invalid", []string{"body", "messages"}, "не удалось разобрать список сообщений")
 		return
 	}
+	// Поле system — выбор профиля для страницы проверки, модели оно не нужно.
+	delete(raw, "system")
+
+	// Страница проверки выбирает профиль системы по имени; ключ доступа ей не
+	// нужен. Имя задано — подменяем систему, имени нет — остаёмся на системе,
+	// опознанной по ключу.
+	sys, ok := s.resolveRequestSystem(r, cfg, req.System)
+	if !ok {
+		s.writeError(w, r, http.StatusForbidden, "system_not_allowed", "система не опознана или отключена")
+		return
+	}
+	if sys.Upstream.URL == "" {
+		s.writeError(w, r, http.StatusNotImplemented, "upstream_not_configured", "для системы не задан адрес языковой модели")
+		return
+	}
+	s.extendWriteDeadline(w, r, sys)
 
 	// Маскируем текст каждого сообщения и запоминаем подстановки.
 	opts := sys.MaskOptions(cfg.Defaults)
@@ -85,6 +97,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	back := make(map[string]string)
 	counts := make(map[string]int)
 	masked := make([]chatMessage, len(req.Messages))
+	// Счётчик плейсхолдеров общий на весь запрос: иначе в каждом сообщении
+	// первый телефон получал бы [PHONE_1], и разные значения столкнулись бы в
+	// одной подстановке, а обратное преобразование подставило бы одно последнее.
+	shared := &mask.TokenState{}
 	for i, msg := range req.Messages {
 		text, isString := decodeContent(msg.Content)
 		if !isString {
@@ -95,6 +111,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		for t, n := range res.Counts {
 			counts[string(t)] += n
 		}
+		opts.Shared = shared
 		applied := mask.Apply(text, res.Spans, opts)
 		for _, ph := range applied.Placeholders {
 			back[ph.Token] = ph.Value
@@ -143,6 +160,21 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	s.metrics.ObserveUpstream(sys.Name, itoa(resp.StatusCode), time.Since(started))
 
+	// Модель может отказать с пустым телом: так, например, выглядит ответ на
+	// неверный адрес ручки. Пересылать пустоту нельзя, по ней причину понять
+	// невозможно, а вызывающий видит только «модель не ответила». Подставляем
+	// объяснимый ответ с кодом, который она вернула.
+	if resp.StatusCode >= 400 && len(bytes.TrimSpace(respBody)) == 0 {
+		s.log.WarnContext(r.Context(), "модель отказала без объяснения",
+			logging.Event(logging.EventProxy), logging.Component("proxy"),
+			slog.Int("upstream_status", resp.StatusCode))
+		s.writeError(w, r, resp.StatusCode, "upstream_rejected",
+			"языковая модель отказала кодом "+itoa(resp.StatusCode)+" без объяснения; "+
+				"проверьте адрес и ключ доступа в разделе upstream настроек системы")
+		s.auditProcess(r, sys, "", "proxy", len(body), counts, time.Since(begin), "error")
+		return
+	}
+
 	restored := restorePlaceholders(string(respBody), back)
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -189,13 +221,40 @@ func (s *Server) extendWriteDeadline(w http.ResponseWriter, r *http.Request, sys
 	}
 }
 
+// upstreamChatURL приводит адрес модели к полному адресу ручки чата.
+//
+// В настройках адрес задают по-разному, и все формы встречаются в живых
+// инструкциях: базовый адрес площадки, он же с версией, и сразу полный путь
+// ручки. Прежний код просто дописывал суффикс, поэтому полный путь удваивался
+// и превращался в «.../chat/completions/chat/completions». Модель отвечала на
+// это кодом 401 с пустым телом, и понять причину по такому ответу нельзя.
+//
+// Разбираем все три формы:
+//
+//	https://host/continue-dev            → https://host/continue-dev/v1/chat/completions
+//	https://host/continue-dev/v1         → https://host/continue-dev/v1/chat/completions
+//	https://host/continue-dev/v1/chat/completions → без изменений
+func upstreamChatURL(raw string) string {
+	base := strings.TrimRight(raw, "/")
+	if base == "" {
+		return ""
+	}
+	if strings.HasSuffix(base, "/chat/completions") {
+		return base
+	}
+	if !strings.HasSuffix(base, "/v1") {
+		base += "/v1"
+	}
+	return base + "/chat/completions"
+}
+
 // callUpstream отправляет подготовленный запрос языковой модели.
 func (s *Server) callUpstream(r *http.Request, sys config.System, body []byte) (*http.Response, error) {
 	timeout := sys.Upstream.Timeout
 	if timeout <= 0 {
 		timeout = defaultUpstreamTimeout
 	}
-	url := strings.TrimRight(sys.Upstream.URL, "/") + "/chat/completions"
+	url := upstreamChatURL(sys.Upstream.URL)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -317,15 +376,27 @@ func restorePlaceholders(text string, back map[string]string) string {
 	if len(back) == 0 {
 		return text
 	}
-	out := text
+
+	// Замена идёт ОДНИМ проходом, а не по очереди для каждого плейсхолдера.
+	// Прежний способ переписывал уже изменённый текст, из-за чего значение,
+	// подставленное вместо одного плейсхолдера, попадало под замену
+	// следующего: данные одного человека искажались подстановкой другого.
+	// Вдобавок порядок обхода карты в Go случаен, поэтому ответ модели был
+	// невоспроизводим между одинаковыми запросами.
+	//
+	// strings.Replacer проходит текст один раз и подставленное не перечитывает.
+	// Порядок пар задаётся явно: сначала длинные образцы, потом короткие, а при
+	// равной длине по алфавиту. Это нужно, чтобы короткий образец не съедал
+	// начало длинного и чтобы результат не зависел от карты.
+	type pair struct{ from, to string }
+	var pairs []pair
+
 	for token, value := range back {
 		encoded, err := json.Marshal(value)
 		if err != nil {
 			continue
 		}
-		quoted := string(encoded)
-		quoted = strings.TrimPrefix(quoted, "\"")
-		quoted = strings.TrimSuffix(quoted, "\"")
+		quoted := strings.TrimSuffix(strings.TrimPrefix(string(encoded), "\""), "\"")
 
 		inner := strings.TrimSuffix(strings.TrimPrefix(token, "["), "]")
 		for _, variant := range []string{
@@ -335,8 +406,31 @@ func restorePlaceholders(text string, back map[string]string) string {
 			"{" + inner + "}",
 			inner,
 		} {
-			out = strings.ReplaceAll(out, variant, quoted)
+			if variant == "" {
+				continue
+			}
+			pairs = append(pairs, pair{variant, quoted})
 		}
 	}
-	return out
+	if len(pairs) == 0 {
+		return text
+	}
+
+	sort.Slice(pairs, func(i, j int) bool {
+		if len(pairs[i].from) != len(pairs[j].from) {
+			return len(pairs[i].from) > len(pairs[j].from)
+		}
+		return pairs[i].from < pairs[j].from
+	})
+
+	flat := make([]string, 0, len(pairs)*2)
+	seen := make(map[string]bool, len(pairs))
+	for _, pr := range pairs {
+		if seen[pr.from] {
+			continue // один образец не должен встречаться дважды
+		}
+		seen[pr.from] = true
+		flat = append(flat, pr.from, pr.to)
+	}
+	return strings.NewReplacer(flat...).Replace(text)
 }

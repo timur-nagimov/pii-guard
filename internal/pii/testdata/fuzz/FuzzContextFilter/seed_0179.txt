@@ -1,0 +1,6 @@
+go test fuzz v1
+string("ИНН: 8728846499, проверьте данные.")
+int(0)
+int(0)
+int(0)
+int(0)

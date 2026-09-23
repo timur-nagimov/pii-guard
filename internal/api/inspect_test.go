@@ -118,6 +118,40 @@ func TestInspectTokenPresetReturnsPlaceholders(t *testing.T) {
 	}
 }
 
+// TestInspectReturnsLinks проверяет, что ручка разбора отдаёт связи между
+// фрагментами: по ним видно, почему фрагменты объединены в субъекта.
+func TestInspectReturnsLinks(t *testing.T) {
+	h := newInspectServer(t)
+	text := "Иванов Иван Иванович, тел +7 916 123-45-67. Петров Пётр Петрович, тел +7 916 000-00-00."
+
+	resp := doInspect(t, h, map[string]any{"text": text})
+	if len(resp.Subjects) != 2 {
+		t.Fatalf("ожидались два субъекта, получено %d: %+v", len(resp.Subjects), resp.Subjects)
+	}
+	if len(resp.Edges) == 0 {
+		t.Fatal("не возвращено ни одного ребра связи")
+	}
+	// Индексы рёбер и субъектов ссылаются на фрагменты в spans.
+	for _, e := range resp.Edges {
+		if e.A < 0 || e.A >= len(resp.Spans) || e.B < 0 || e.B >= len(resp.Spans) {
+			t.Fatalf("ребро %+v ссылается на фрагмент вне диапазона %d", e, len(resp.Spans))
+		}
+		if e.Basis == "" {
+			t.Errorf("у ребра %+v пустое основание", e)
+		}
+	}
+	for _, sub := range resp.Subjects {
+		if len(sub.Fragments) == 0 {
+			t.Fatalf("субъект %+v без фрагментов", sub)
+		}
+		for _, fi := range sub.Fragments {
+			if fi < 0 || fi >= len(resp.Spans) {
+				t.Fatalf("субъект %+v ссылается на фрагмент вне диапазона %d", sub, len(resp.Spans))
+			}
+		}
+	}
+}
+
 // TestInspectValidation проверяет понятные отказы на неверные запросы.
 func TestInspectValidation(t *testing.T) {
 	h := newInspectServer(t)
@@ -189,7 +223,8 @@ func newInspectServer(t *testing.T) http.Handler {
 }
 
 // inspectConfigYAML — настройки для тестов разбора: одна анонимная система,
-// разбор включён.
+// разбор включён. Правило сочетаний включено, чтобы связи между фрагментами
+// строились и были видны в ответе разбора.
 const inspectConfigYAML = `
 defaults:
   preset: full
@@ -202,6 +237,10 @@ systems:
     types: [all]
     demask: true
     preset: full
+    context_rules_enabled: true
+    context_rules:
+      - mask: PIN
+        requires: [CARD]
     exclusions:
       public_figures: true
       org_addresses: true

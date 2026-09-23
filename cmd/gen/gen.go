@@ -169,6 +169,7 @@ func splitPool(all []string) pool {
 type Generator struct {
 	r         *rand.Rand
 	holdout   bool
+	lowercase bool
 	surnames  pool
 	maleNames pool
 	femNames  pool

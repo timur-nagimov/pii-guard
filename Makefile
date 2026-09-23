@@ -68,12 +68,16 @@ logs: ## показать журнал сервиса
 	fi
 
 .PHONY: gate
-gate: ## ворота качества: четырнадцать проверок, один код возврата
+gate: ## ворота качества: семнадцать проверок, один код возврата
 	@bash scripts/gate.sh
 
 .PHONY: gate-quick
 gate-quick: ## ворота без набора данных и без схем, для быстрой проверки
 	@bash scripts/gate.sh --quick
+
+.PHONY: gate-selfcheck
+gate-selfcheck: ## проверить, что сами ворота ловят то, что обещают
+	@bash scripts/gate-selfcheck.sh
 
 .PHONY: jury-check
 jury-check: ## прогнать все проверочные сценарии для жюри

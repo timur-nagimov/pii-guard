@@ -390,3 +390,173 @@ func negTrackNumber(g *Generator) []frag {
 	}
 	return frags(lit(fmt.Sprintf(g.pick(tmpl), track)))
 }
+
+// negVehiclePlate порождает государственный номер автомобиля: буквы и цифры
+// похожи на серию документа, но относятся к транспортному средству.
+func negVehiclePlate(g *Generator) []frag {
+	letters := []string{"А", "В", "Е", "К", "М", "Н", "О", "Р", "С", "Т", "У", "Х"}
+	plate := fmt.Sprintf("%s%d%s%s%d", g.pick(letters), g.r.IntN(10), g.pick(letters), g.pick(letters), 1+g.r.IntN(199))
+	tmpl := []string{
+		"Автомобиль с номером %s припаркован у отделения.",
+		"Госномер %s зафиксирован камерой на въезде.",
+		"Машина %s числится в розыске по заявлению.",
+		"На парковке банка оставлен автомобиль %s.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), plate)))
+}
+
+// negIMEI порождает идентификатор устройства: пятнадцать цифр похожи на номер
+// карты, но относятся к телефону.
+func negIMEI(g *Generator) []frag {
+	imei := g.digitsNonZero(15)
+	tmpl := []string{
+		"IMEI устройства %s, приложение установлено.",
+		"Телефон с IMEI %s заблокирован по заявлению.",
+		"Идентификатор устройства %s внесён в белый список.",
+		"IMEI %s указан в гарантийном талоне.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), imei)))
+}
+
+// negSerialNumber порождает серийный номер оборудования: буквы и цифры похожи
+// на реквизиты документа, но относятся к технике.
+func negSerialNumber(g *Generator) []frag {
+	serial := fmt.Sprintf("%s-%s-%s", g.pick(serialPrefixes), g.digits(4), g.digits(4))
+	tmpl := []string{
+		"Серийный номер оборудования %s, гарантия действует.",
+		"Терминал с серийным номером %s установлен в отделении.",
+		"Серийник %s указан в акте приёма.",
+		"Оборудование %s списано по акту.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), serial)))
+}
+
+// negInsurancePolicy порождает номер страхового полиса: длинное число похоже
+// на номер документа, но относится к договору страхования.
+func negInsurancePolicy(g *Generator) []frag {
+	policy := fmt.Sprintf("%s %s", g.digitsNonZero(4), g.digits(10))
+	tmpl := []string{
+		"Номер страхового полиса %s, срок действия до конца года.",
+		"Полис %s покрывает риски по кредиту.",
+		"Страховка %s оформлена автоматически.",
+		"Договор страхования %s расторгнут по заявлению.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), policy)))
+}
+
+// negMedicalCard порождает номер медицинской карты: похож на номер документа,
+// но относится к записи в поликлинике.
+func negMedicalCard(g *Generator) []frag {
+	card := g.digitsNonZero(6) + "-" + g.digits(4)
+	tmpl := []string{
+		"Номер медицинской карты %s, приём у терапевта.",
+		"Карта %s заведена в регистратуре.",
+		"Медицинская карта %s передана в архив.",
+		"Запись по карте %s обновлена.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), card)))
+}
+
+// negStudentTicket порождает номер студенческого билета: похож на номер
+// документа, но относится к учебному заведению.
+func negStudentTicket(g *Generator) []frag {
+	ticket := fmt.Sprintf("%s-%s", g.digitsNonZero(4), g.digits(6))
+	tmpl := []string{
+		"Номер студенческого билета %s, форма обучения очная.",
+		"Студенческий билет %s предъявлен при оформлении.",
+		"Билет %s даёт право на скидку.",
+		"Студенческий %s продлён на следующий семестр.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), ticket)))
+}
+
+// negEmployeeBadge порождает табельный номер сотрудника: похож на номер
+// документа, но относится к внутреннему учёту.
+func negEmployeeBadge(g *Generator) []frag {
+	badge := g.digitsNonZero(5)
+	tmpl := []string{
+		"Табельный номер сотрудника %s, отдел продаж.",
+		"Пропуск %s выдан при трудоустройстве.",
+		"Сотрудник с номером %s прошёл аттестацию.",
+		"Табельный %s указан в приказе о премировании.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), badge)))
+}
+
+// negRoomNumber порождает номер комнаты или кабинета: похож на номер документа,
+// но относится к помещению.
+func negRoomNumber(g *Generator) []frag {
+	room := fmt.Sprintf("%d-%d", 1+g.r.IntN(9), 1+g.r.IntN(99))
+	tmpl := []string{
+		"Переговорная комната %s забронирована на два часа.",
+		"Кабинет %s находится на третьем этаже.",
+		"Встреча пройдёт в комнате %s.",
+		"Документы ждут в кабинете %s.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), room)))
+}
+
+// negRouteNumber порождает номер маршрута транспорта: похож на номер документа,
+// но относится к линии движения.
+func negRouteNumber(g *Generator) []frag {
+	route := fmt.Sprintf("%d", 1+g.r.IntN(999))
+	tmpl := []string{
+		"Автобус маршрута %s следует до центра.",
+		"Трамвай %s ходит каждые десять минут.",
+		"Маршрут %s продлён до нового района.",
+		"Остановка обслуживается маршрутом %s.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), route)))
+}
+
+// negHistoricalFigure порождает упоминание исторической личности: имя в
+// историческом контексте не является персональными данными клиента.
+func negHistoricalFigure(g *Generator) []frag {
+	f := historicalFigures[g.r.IntN(len(historicalFigures))]
+	tmpl := []string{
+		"В учебнике описана эпоха %s.",
+		"Памятник %s установлен на центральной площади.",
+		"Музейная экспозиция посвящена %s.",
+		"Документальный фильм рассказывает о %s.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), f)))
+}
+
+// negPoetVerse порождает строку из стихотворения: имя поэта в подписи не
+// является персональными данными.
+func negPoetVerse(g *Generator) []frag {
+	verse := g.pick(poetVerses)
+	tmpl := []string{
+		"В письме процитирована строка: «%s».",
+		"Эпиграф к документу: «%s».",
+		"В отчёте приведена цитата: «%s».",
+		"На обложке брошюры напечатано: «%s».",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), verse)))
+}
+
+// negCompanyINN порождает ИНН организации: реквизит юридического лица, а не
+// налоговый номер клиента.
+func negCompanyINN(g *Generator) []frag {
+	inn := g.digitsNonZero(10)
+	tmpl := []string{
+		"ИНН организации %s, КПП указан в договоре.",
+		"Реквизиты контрагента: ИНН %s.",
+		"ИНН поставщика %s подтверждён в реестре.",
+		"В счёте указан ИНН %s.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), inn)))
+}
+
+// negContractNumber порождает номер договора: похож на номер документа, но
+// относится к соглашению между организациями.
+func negContractNumber(g *Generator) []frag {
+	contract := fmt.Sprintf("%s/%s", g.digitsNonZero(4), g.digits(4))
+	tmpl := []string{
+		"Договор № %s заключён между банком и поставщиком.",
+		"Контракт %s вступил в силу с начала квартала.",
+		"Соглашение %s продлено автоматически.",
+		"Номер договора %s указан в платёжном поручении.",
+	}
+	return frags(lit(fmt.Sprintf(g.pick(tmpl), contract)))
+}

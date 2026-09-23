@@ -9,6 +9,35 @@ WHICH="${2:-all}"
 JURY_KEY="${JURY_KEY:-}"; JURY2_KEY="${JURY2_KEY:-}"; KILO_KEY="${KILO_KEY:-}"
 n=0
 
+# Профили с ключами доступа выключаются, если ключ не задан. Без этой проверки
+# показ выглядел бы так: «профиль жюри, частичная маска» и вывод, совпадающий с
+# профилем по умолчанию, потому что запрос ушёл анонимной системе. Жюри увидело
+# бы, что настройка ничего не меняет, и списало бы это решению в минус.
+missing_keys=""
+for pair in "JURY_KEY:профиль жюри" "JURY2_KEY:профиль без права демаскирования" "KILO_KEY:профиль с плейсхолдерами для модели"; do
+  var="${pair%%:*}"; human="${pair#*:}"
+  if [[ -z "${!var}" ]]; then
+    missing_keys="${missing_keys}
+    $var — $human"
+  fi
+done
+
+if [[ -n "$missing_keys" ]]; then
+  cat <<BANNER
+
+  ВНИМАНИЕ. Не заданы ключи доступа, и показы по ним будут неполными:$missing_keys
+
+  Сценарии ниже отработают, но профили с ключами покажут результат анонимной
+  системы, а не свой. Так выглядит, будто настройка ничего не меняет.
+
+  Чтобы увидеть их по-настоящему, задайте ключи в .env и перезапустите сервис.
+  Хеш для настроек считается так:
+
+    printf '%s' "ваш-ключ" | shasum -a 256 | cut -d' ' -f1
+
+BANNER
+fi
+
 req() { # текст, идентификатор, [ключ]
   local body raw
   body=$(python3 -c 'import json,sys;print(json.dumps({"payload":sys.argv[1],"payload_id":sys.argv[2]}))' "$1" "$2")
@@ -138,6 +167,63 @@ case_7() {
   show "дополнительные документы" "СНИЛС 112-233-445 95, загранпаспорт 75 1234567, вид на жительство 82 № 0123456" "$(req "СНИЛС 112-233-445 95, загранпаспорт 75 1234567, вид на жительство 82 № 0123456" "jury7c-$RANDOM")"
   show "пин-код без карты" "Пин-код 4321 запомните" "$(req "Пин-код 4321 запомните" "jury7d-$RANDOM")"
   echo "  правило сочетаний включается признаком context_rules_enabled в настройках системы"
+
+  echo
+  echo "--- Разбор с объяснением решения ---"
+  echo "  По каждому фрагменту видно, КАКОЕ ПРАВИЛО сработало, а не только результат."
+  curl -s -m 10 -X POST "$URL/v1/inspect" -H 'Content-Type: application/json' \
+    -d '{"text":"Клиент Иванов Иван Иванович, паспорт 4509 123456, тел +7 916 123-45-67"}' \
+    | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+for s in d.get("spans", []):
+    print("    %-12s %-26s уверенность %s  правило %s" % (s["type"], repr(s["value"]), s["confidence"], s["reason"]))
+print("    снято с маскирования фрагментов: %d" % len(d.get("skipped", [])))
+' 2>/dev/null || echo "    разбор выключен настройкой inspect_enabled"
+
+  echo
+  echo "--- Связи между фрагментами одного человека ---"
+  echo "  Текст с двумя людьми разбирается на двух субъектов, карта остаётся у своего."
+  curl -s -m 10 -X POST "$URL/v1/inspect" -H 'Content-Type: application/json' \
+    -d '{"text":"Клиент Иванов Иван Иванович, карта 4111 1111 1111 1111. Менеджер Петров Пётр, тел +7 495 111-22-33."}' \
+    | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+sp = d.get("spans", [])
+subs = d.get("subjects", [])
+if not subs:
+    print("    субъектов ноль: связи строятся только при context_rules_enabled: true")
+for i, s in enumerate(subs, 1):
+    vals = [sp[j]["value"] for j in s.get("fragments", []) if j < len(sp)]
+    print("    субъект %d: типы %s" % (i, s.get("types")))
+    print("       фрагменты: %s" % vals)
+' 2>/dev/null || true
+
+  echo
+  echo "--- Матрица покрытия: что настроено, а что нет ---"
+  curl -s -m 10 "$URL/v1/coverage" -H "X-System-Key: $JURY_KEY" \
+    | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+# Форма ответа взята с живой ручки, а не угадана: systems это список
+# объектов с полем name, types тоже, а cells это карта «тип → система → вид
+# маски». Пустое значение означает, что система этот тип не маскирует.
+systems = d.get("systems", [])
+types = d.get("types", [])
+cells = d.get("cells", {})
+task_types = [t["name"] for t in types if t.get("source") == "task"]
+print("    систем-потребителей: %d, типов в матрице: %d, из них по заданию: %d"
+      % (len(systems), len(types), len(task_types)))
+for sy in systems:
+    name = sy["name"]
+    covered = sum(1 for tn in task_types if (cells.get(tn) or {}).get(name))
+    mark = "" if covered == len(task_types) else "  <- не все типы задания"
+    print("      %-14s маскирует типов задания: %d из %d%s"
+          % (name, covered, len(task_types), mark))
+' 2>/dev/null || echo "    матрица недоступна"
+
+  echo
+  echo "  Наглядно всё перечисленное на одной странице: $URL/ui"
 }
 
 case_8() {
