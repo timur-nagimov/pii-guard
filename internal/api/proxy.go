@@ -8,9 +8,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -307,8 +309,20 @@ func (s *Server) callUpstream(r *http.Request, sys config.System, body []byte) (
 	if timeout <= 0 {
 		timeout = defaultUpstreamTimeout
 	}
-	url := upstreamChatURL(sys.Upstream.URL)
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(body))
+	addr := upstreamChatURL(sys.Upstream.URL)
+	// Адрес модели проверен при загрузке настроек, но проверка повторяется и
+	// здесь: запрос уходит наружу, и схема с хостом обязаны быть известными.
+	u, err := url.Parse(addr)
+	if err != nil {
+		return nil, fmt.Errorf("адрес языковой модели не разобран: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("адрес языковой модели допускает только http и https")
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("адрес языковой модели без хоста")
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, addr, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -321,6 +335,7 @@ func (s *Server) callUpstream(r *http.Request, sys config.System, body []byte) (
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
+	//nolint:gosec // адрес модели задаёт оператор в настройках, схема и хост проверены при загрузке и перед запросом
 	return s.upstreamClient(sys, timeout).Do(req)
 }
 

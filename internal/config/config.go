@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -644,7 +645,31 @@ func (c *Config) validateSystem(name string, s System) error {
 	if s.Auth.KeySHA256 != "" && len(s.Auth.KeySHA256) != 64 {
 		return fmt.Errorf("система %q: хеш ключа должен быть 64 символа", name)
 	}
+	if err := validateUpstream(name, s.Upstream.URL); err != nil {
+		return err
+	}
 	return c.validateModes(name, s)
+}
+
+// validateUpstream проверяет адрес языковой модели: он обязан разбираться как
+// URL, иметь схему http или https и непустой хост. Проверка здесь, а не в
+// момент обращения, потому что адрес задаёт оператор в файле настроек, и
+// неверный адрес должен быть отвергнут при загрузке, а не в бою.
+func validateUpstream(name, raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("система %q: адрес языковой модели не разобран: %w", name, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("система %q: адрес языковой модели допускает только http и https", name)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("система %q: адрес языковой модели без хоста", name)
+	}
+	return nil
 }
 
 // validatePresets проверяет пресеты системы: общий и по типам. Пресет, не
