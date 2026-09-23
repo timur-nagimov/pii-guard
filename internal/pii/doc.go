@@ -1,6 +1,7 @@
 package pii
 
 import (
+	"math"
 	"sort"
 	"strings"
 	"unicode"
@@ -110,6 +111,30 @@ func classify(r rune) Kind {
 	}
 }
 
+// int32Offset переводит байтовое смещение в int32 для индекса runeStarts.
+// Смещения хранятся в int32, а не в int, потому что индекс строится на каждый
+// разбор и вдвое меньший элемент заметно экономит память на длинных текстах.
+//
+// На практике до предела не дотянуться: тело запроса ограничено
+// server.max_body_bytes, по умолчанию это 4 МиБ, то есть на пять порядков
+// меньше двух гигабайт. Но ограничение задаётся конфигом, а не типом, поэтому
+// граница проверяется явно: без неё текст больше предела дал бы отрицательное
+// смещение, а по нему срез в детекторах упал бы с паникой. Упёршись в
+// границу, индекс остаётся неубывающим, и поиск по нему продолжает работать.
+func int32Offset(off int) int32 {
+	// Обе границы проверяются явно, хотя отрицательным off не бывает: он
+	// приходит из range по строке и из len. Нижняя проверка нужна, чтобы из
+	// самой функции было видно — в int32 попадает только то, что в него
+	// помещается, и гадать об этом не приходится ни читателю, ни линтеру.
+	if off < 0 {
+		return 0
+	}
+	if off > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(off)
+}
+
 // tokenize проходит по тексту один раз и заполняет Tokens и runeStarts.
 // Срезы переиспользуются между разборами: ёмкость, накопленная на прошлых
 // текстах, сохраняется, и на горячем пути не тратится на повторное выделение.
@@ -129,7 +154,7 @@ func (d *Doc) tokenize() {
 	cur := Token{Start: 0, End: 0, Kind: KindOther}
 	started := false
 	for i, r := range d.Text {
-		d.runeStarts = append(d.runeStarts, int32(i))
+		d.runeStarts = append(d.runeStarts, int32Offset(i))
 		// Размер руны берём из DecodeRuneInString, а не из utf8.RuneLen(r):
 		// для невалидного UTF-8 range отдаёт RuneError и съедает один байт,
 		// тогда как RuneLen(RuneError) возвращает три. Конец токена по
@@ -155,7 +180,7 @@ func (d *Doc) tokenize() {
 	if started {
 		d.Tokens = append(d.Tokens, cur)
 	}
-	d.runeStarts = append(d.runeStarts, int32(n))
+	d.runeStarts = append(d.runeStarts, int32Offset(n))
 }
 
 // RuneLen возвращает число рун в документе.
@@ -199,15 +224,15 @@ func (d *Doc) byteAtRune(runeIdx int) int {
 //
 // Окна задаются в рунах, а не в байтах: для кириллицы байтовое окно вдвое
 // короче задуманного, и якорь перестаёт доставать до значения.
-func (d *Doc) WindowRunes(start, end, before, after int) (int, int) {
+func (d *Doc) WindowRunes(start, end, before, after int) (lo, hi int) {
 	if start < 0 {
 		start = 0
 	}
 	if end > len(d.Text) {
 		end = len(d.Text)
 	}
-	lo := d.byteAtRune(d.runeIndexAt(start) - before)
-	hi := d.byteAtRune(d.runeIndexAt(end) + after)
+	lo = d.byteAtRune(d.runeIndexAt(start) - before)
+	hi = d.byteAtRune(d.runeIndexAt(end) + after)
 	if hi > len(d.Text) {
 		hi = len(d.Text)
 	}
@@ -251,15 +276,15 @@ func (d *Doc) HasAnchorBefore(start int, anchors []string, before int) (string, 
 
 // LineBounds возвращает байтовые границы строки, в которую попадает смещение.
 // Фрагменты персональных данных не должны пересекать перевод строки.
-func (d *Doc) LineBounds(off int) (int, int) {
+func (d *Doc) LineBounds(off int) (lo, hi int) {
 	if off < 0 {
 		off = 0
 	}
 	if off > len(d.Text) {
 		off = len(d.Text)
 	}
-	lo := strings.LastIndexByte(d.Text[:off], '\n') + 1
-	hi := strings.IndexByte(d.Text[off:], '\n')
+	lo = strings.LastIndexByte(d.Text[:off], '\n') + 1
+	hi = strings.IndexByte(d.Text[off:], '\n')
 	if hi < 0 {
 		hi = len(d.Text)
 	} else {
